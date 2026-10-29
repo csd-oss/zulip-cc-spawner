@@ -51,6 +51,31 @@ export const HAND_WAKE_POLICY = {
   hold: [['chat:ambient']],
 };
 
+/**
+ * The bridge's default grant, plus the two channel extras it leaves out
+ * (streaming, typing — it never uses them). zulip_mcp's `zulip.messaging`
+ * feature set lists `channels.streaming` among its uses, and the bridge
+ * disables a feature set whole when any use is not granted: without these the
+ * hand has no zulip__send_message and falls back to mcpl_send, which cannot
+ * pick a topic.
+ */
+export const HAND_GRANT = [
+  'tools',
+  'pushEvents',
+  'modelInfo',
+  'inferenceRequest',
+  'inferenceLifecycle',
+  'channels.register',
+  'channels.lifecycle',
+  'channels.incoming',
+  'channels.publish',
+  'channels.acknowledge',
+  'channels.streaming',
+  'channels.typing',
+  'contextHooks.beforeInference.observe',
+  'contextHooks.beforeInference.inject.beforeUser',
+];
+
 export function renderBridgeConfig(cfg: SpawnerConfig, shortName: string, stream: string, p: HandPaths): object {
   return {
     servers: {
@@ -66,6 +91,8 @@ export function renderBridgeConfig(cfg: SpawnerConfig, shortName: string, stream
             ZULIP_CATCHUP_LIMIT: String(cfg.catchupLimit),
           },
         },
+        grant: HAND_GRANT,
+        enableFeatureSets: ['*'],
         // A crashed stdio server is not restarted by default — a deaf hand.
         reconnect: true,
         wake: HAND_WAKE_POLICY,

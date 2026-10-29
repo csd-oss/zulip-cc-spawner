@@ -97,6 +97,13 @@ test('spawn provisions a bot, writes its files and starts claude', async () => {
   assert.equal(z.openChannelsOnly, true);
   assert.equal(z.reconnect, true);
   assert.deepEqual(z.dmAllowlist, []);
+  // zulip_mcp's zulip.messaging uses (e5c4b4c, typing included): all granted, or the
+  // bridge disables the set and the hand loses zulip__send_message.
+  for (const use of ['channels.register', 'channels.lifecycle', 'channels.publish', 'channels.incoming',
+    'channels.acknowledge', 'channels.streaming', 'channels.typing', 'pushEvents', 'tools']) {
+    assert.ok(z.grant.includes(use), `grant lacks ${use}`);
+  }
+  assert.ok(!z.grant.includes('contextHooks.beforeInference.inject.system'), 'no system-prompt injection');
   assert.equal(z.transport.env.ZULIP_RC_PATH, join(handDir, 'zuliprc'));
   assert.equal(z.transport.env.ZULIP_FILTERS_FILE, join(handDir, 'zulip-state', 'filters.json'));
   assert.deepEqual(JSON.parse(readFileSync(join(handDir, 'zulip-state', 'filters.json'), 'utf8')), { streams: ['cc-hands'] });
