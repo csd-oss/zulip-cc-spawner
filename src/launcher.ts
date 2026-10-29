@@ -35,6 +35,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The shell command tmux runs (via the agents user's shell -c). No secret is
  *  ever on it: the API key comes from the sourced env file. */
+/**
+ * Claude Code remembers an MCP server that failed to connect and skips it for
+ * ~15 minutes (mcp-needs-auth-cache.json), for EVERY session of the user. One
+ * hand whose bridge failed would leave the next ones without Zulip, so the
+ * bridge plugin's entries are dropped before each launch. Best effort: it never
+ * stops a launch.
+ */
+const FORGET_FAILURES_JS =
+  'const fs=require("fs"),[f,p]=process.argv.slice(1);try{const j=JSON.parse(fs.readFileSync(f,"utf8"));' +
+  'const k=Object.keys(j).filter((x)=>x.startsWith(p));if(k.length){k.forEach((x)=>delete j[x]);fs.writeFileSync(f,JSON.stringify(j))}}catch{}';
+
 export function buildCommand(cfg: SpawnerConfig, req: LaunchRequest): string {
   // Every step is chained with && : a missing env file or seed must stop the
   // launch (bash, unlike POSIX sh, carries on after a failed `.`), never start
@@ -42,6 +53,10 @@ export function buildCommand(cfg: SpawnerConfig, req: LaunchRequest): string {
   const parts: string[] = [];
   if (cfg.agentsEnvFile) parts.push(`set -a && . ${shq(cfg.agentsEnvFile)} && set +a &&`);
   parts.push(`test -r ${shq(req.seedFile)} &&`);
+  const plugin = cfg.bridgePlugin.split('@')[0];
+  parts.push(
+    `{ ${shq(cfg.nodeBin)} -e ${shq(FORGET_FAILURES_JS)} "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}/mcp-needs-auth-cache.json" ${shq(`plugin:${plugin}:`)} || true; } &&`,
+  );
   const env = ['exec', 'env'];
   // CLAUDE_CODE_EFFORT_LEVEL outranks --effort (upstream, claude 2.1.286).
   if (req.effort) env.push('-u', 'CLAUDE_CODE_EFFORT_LEVEL');

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { LocalHost } from '../src/host.js';
@@ -102,6 +102,45 @@ const API_KEY_ARROWS = [
   '  ❯ No (recommended)',
   '  Enter to confirm · Esc to cancel',
 ].join('\n');
+
+test("a launch forgets the bridge's cached connection failure, and only that", async () => {
+  const d = tmp();
+  const c = testConfig(d);
+  const cfgDir = join(d, 'claude-config');
+  mkdirSync(cfgDir);
+  const cache = join(cfgDir, 'mcp-needs-auth-cache.json');
+  writeFileSync(cache, JSON.stringify({ 'plugin:mcpl-bridge:mcpl': { timestamp: 1 }, 'other-server': { timestamp: 2 } }));
+  appendFileSync(c.agentsEnvFile!, `CLAUDE_CONFIG_DIR=${cfgDir}\n`);
+  const t = new Tmux(new LocalHost(), c.tmuxSocket);
+  try {
+    await new ClaudeLauncher(c, t).launch({
+      personaName: 'p', model: 'claude-opus-5-5', sessionId: 's-cache', resume: false, tmuxSession: 'cc-test-cache',
+      bridgeConfig: join(d, 'b.json'), seedFile: seedIn(d), spawnedBy: 'x', streamName: 's', topic: 't',
+    });
+    assert.deepEqual(JSON.parse(readFileSync(cache, 'utf8')), { 'other-server': { timestamp: 2 } });
+  } finally {
+    await t.killSession('cc-test-cache');
+  }
+});
+
+test('a missing or broken failure cache never stops a launch', async () => {
+  const d = tmp();
+  const c = testConfig(d);
+  const cfgDir = join(d, 'claude-config');
+  mkdirSync(cfgDir);
+  writeFileSync(join(cfgDir, 'mcp-needs-auth-cache.json'), '{not json');
+  appendFileSync(c.agentsEnvFile!, `CLAUDE_CONFIG_DIR=${cfgDir}\n`);
+  const t = new Tmux(new LocalHost(), c.tmuxSocket);
+  try {
+    const r = await new ClaudeLauncher(c, t).launch({
+      personaName: 'p', model: 'claude-opus-5-5', sessionId: 's-cache2', resume: false, tmuxSession: 'cc-test-cache2',
+      bridgeConfig: join(d, 'b.json'), seedFile: seedIn(d), spawnedBy: 'x', streamName: 's', topic: 't',
+    });
+    assert.deepEqual(r, {});
+  } finally {
+    await t.killSession('cc-test-cache2');
+  }
+});
 
 test('Yes on the API-key dialog: digits when numbered, arrows otherwise', () => {
   const q = /Do you want to use this API key\?/i;
