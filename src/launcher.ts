@@ -95,6 +95,34 @@ export function classifyStartup(pane: string): StartupScreen {
   return 'unknown';
 }
 
+/**
+ * Keys that pick the option labelled "Yes…" on the dialog under `question`: its digit on a
+ * numbered dialog, else arrows from the cursor (❯) to it, then Enter. Claude Code 2.1.312's
+ * API-key dialog is the arrow kind:
+ *     Do you want to use this API key?
+ *       Yes
+ *     ❯ No (recommended)
+ *     Enter to confirm · Esc to cancel
+ */
+export function keysForYes(pane: string, question: RegExp): string[] | undefined {
+  const digit = yesOption(pane);
+  if (digit) return [digit];
+  const lines = pane.split('\n');
+  const start = lines.findIndex((l) => question.test(l));
+  if (start < 0) return undefined;
+  const items: { label: string; cursor: boolean }[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/Enter to confirm|Esc to cancel/i.test(line)) break;
+    const m = line.match(/^\s*(❯\s*)?(\S.*?)\s*$/);
+    if (m) items.push({ label: m[2], cursor: !!m[1] });
+  }
+  const cursor = items.findIndex((i) => i.cursor);
+  const yes = items.findIndex((i) => /^yes\b/i.test(i.label));
+  if (cursor < 0 || yes < 0) return undefined;
+  const step = yes < cursor ? 'Up' : 'Down';
+  return [...Array<string>(Math.abs(yes - cursor)).fill(step), 'Enter'];
+}
+
 /** The digit of the option labelled "Yes…" on a numbered dialog. */
 export function yesOption(pane: string): string | undefined {
   for (const line of pane.split('\n')) {
@@ -143,9 +171,9 @@ export class ClaudeLauncher {
         case 'trust':
           throw new Error(`Claude Code asks whether to trust ${this.cfg.projectDir} — a person must run \`claude\` there once as the agents user and accept`);
         case 'api-key': {
-          const yes = yesOption(pane);
-          if (!yes) throw new Error('Claude Code asks whether to use the API key and I cannot find its Yes option — attach and answer it');
-          await press('api-key', yes);
+          const keys = keysForYes(pane, API_KEY_RE);
+          if (!keys) throw new Error('Claude Code asks whether to use the API key and I cannot find its Yes option — attach and answer it');
+          await press('api-key', ...keys);
           break;
         }
         case 'dev-channels':

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { LocalHost } from '../src/host.js';
-import { ClaudeLauncher, classifyStartup, yesOption } from '../src/launcher.js';
+import { ClaudeLauncher, classifyStartup, keysForYes, yesOption } from '../src/launcher.js';
 import { Tmux } from '../src/tmux.js';
 import { fakeClaude, testConfig, tmp } from './helpers.js';
 
@@ -89,6 +89,42 @@ test('the API-key screen is answered with its Yes option', async () => {
     assert.ok(!run.argv.includes('--effort'));
   } finally {
     await t.killSession('cc-test-2');
+  }
+});
+
+// Verbatim from claude 2.1.312 on the deploy VM (key redacted).
+const API_KEY_ARROWS = [
+  '────────────────────────────────────────────────────────────────────────────────',
+  '  Detected a custom API key in your environment',
+  '  ANTHROPIC_API_KEY: sk-ant-...redacted',
+  '  Do you want to use this API key?',
+  '    Yes',
+  '  ❯ No (recommended)',
+  '  Enter to confirm · Esc to cancel',
+].join('\n');
+
+test('Yes on the API-key dialog: digits when numbered, arrows otherwise', () => {
+  const q = /Do you want to use this API key\?/i;
+  assert.equal(classifyStartup(API_KEY_ARROWS), 'api-key');
+  assert.deepEqual(keysForYes(API_KEY_ARROWS, q), ['Up', 'Enter']);
+  assert.deepEqual(keysForYes(API_KEY_ARROWS.replace('    Yes', '  ❯ Yes').replace('  ❯ No', '    No'), q), ['Enter']);
+  assert.deepEqual(keysForYes('Do you want to use this API key?\n   1. No\n ❯ 2. Yes', q), ['2']);
+  assert.equal(keysForYes('Do you want to use this API key?\n  ❯ No\n  Maybe', q), undefined);
+});
+
+test('the arrow-style API-key screen is answered Up, Enter', async () => {
+  const d = tmp();
+  const c = testConfig(d, { claudeBin: fakeClaude(d, 'api-key-arrows') });
+  const t = new Tmux(new LocalHost(), c.tmuxSocket);
+  try {
+    const r = await new ClaudeLauncher(c, t).launch({
+      personaName: 'p', model: 'claude-opus-5-5', sessionId: 's2a', resume: false, tmuxSession: 'cc-test-2a',
+      bridgeConfig: join(d, 'b.json'), seedFile: seedIn(d), spawnedBy: 'x', streamName: 's', topic: 't',
+    });
+    assert.deepEqual(r, {});
+    assert.match(readFileSync(join(d, 'keys'), 'utf8'), /033 \[ A/);
+  } finally {
+    await t.killSession('cc-test-2a');
   }
 });
 

@@ -13,11 +13,13 @@ export function tmp(prefix = 'ccsp-'): string {
  * <dir>/<session-or-resume id>.json, optionally shows a startup screen first
  * (waiting for one keypress), then shows the ready status line and idles.
  */
-export function fakeClaude(dir: string, screen: 'none' | 'api-key' | 'bypass' = 'none'): string {
+export function fakeClaude(dir: string, screen: 'none' | 'api-key' | 'api-key-arrows' | 'bypass' = 'none'): string {
   const path = join(dir, 'fake-claude');
   const screens: Record<string, string> = {
     none: '',
     'api-key': `printf 'Detected a custom API key in your environment\\n Do you want to use this API key?\\n   1. Yes\\n ❯ 2. No (recommended)\\n'; IFS= read -r -n 1 k; echo "picked=$k" >> "${dir}/keys"; clear`,
+    // 2.1.312: no digits; read keys until Enter, record them.
+    'api-key-arrows': `printf 'Detected a custom API key in your environment\\n Do you want to use this API key?\\n   Yes\\n ❯ No (recommended)\\n Enter to confirm · Esc to cancel\\n'; ks=""; while IFS= read -r -s -n 1 k; do [ -z "$k" ] && break; ks="$ks$k"; done; printf '%s' "$ks" | od -An -c | tr -s ' ' >> "${dir}/keys"; clear`,
     bypass: `printf 'WARNING: Claude Code running in Bypass Permissions mode\\n ❯ 1. No, exit\\n   2. Yes, I accept\\n'; sleep 60`,
   };
   writeFileSync(
