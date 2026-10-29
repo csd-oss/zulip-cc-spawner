@@ -17,7 +17,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { SpawnerActions } from './actions.js';
+import type { ActionResult, SpawnerActions } from './actions.js';
 import type { Invoker, Where } from './auth.js';
 import { streamAllowed } from './auth.js';
 import { parseCommand, stripMentions } from './commands.js';
@@ -192,7 +192,15 @@ export class ZulipControl {
       return;
     }
     const where = this.whereOf(m);
-    const result = await this.actions.run({ cmd, body, where, invoker });
+    let result: ActionResult;
+    try {
+      result = await this.actions.run({ cmd, body, where, invoker });
+    } catch (err) {
+      // Never leave a command unanswered: the asker sees the failure, the log the stack.
+      log(`command failed (message ${m.id}): ${(err as Error).stack ?? err}`);
+      const why = String((err as Error).message ?? err).split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 2).join(' — ');
+      result = { content: `⚠️ That failed: ${why.slice(0, 300)}` };
+    }
     if (result.private) {
       await this.notifier.dm([m.sender_id], result.content);
       if (where.kind === 'stream') await this.notifier.reply(where, `@_**${invoker.name}|${invoker.userId}** 📬 sent you a DM.`);

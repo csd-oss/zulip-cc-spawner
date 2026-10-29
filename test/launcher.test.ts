@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { LocalHost } from '../src/host.js';
 import { ClaudeLauncher, classifyStartup, keysForYes, yesOption } from '../src/launcher.js';
-import { Tmux } from '../src/tmux.js';
+import { isAbsentError, Tmux } from '../src/tmux.js';
 import { fakeClaude, testConfig, tmp } from './helpers.js';
 
 const dir = tmp();
@@ -143,6 +143,11 @@ test('first-run consent screens abort with an operator instruction', async () =>
   } finally {
     await t.killSession('cc-test-3');
   }
+});
+
+test('tmux 3.2a: "no current target" (server up, no sessions) means absent', () => {
+  assert.equal(isAbsentError({ stderr: 'no current target\n' }), true);
+  assert.equal(isAbsentError({ stderr: 'sudo: a password is required\n' }), false);
 });
 
 test('tmux: absent sessions and absent servers are not errors; kill is confirmed', async () => {

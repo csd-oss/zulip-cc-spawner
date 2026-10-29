@@ -11,8 +11,9 @@
 import type { AgentHost } from './host.js';
 
 // "server exited unexpectedly": the server quit because its last session just
-// ended (default exit-empty) — no server, hence no session.
-const ABSENT_RE = /can't find session|can't find pane|session not found|no server running|server exited unexpectedly|error connecting to .*\((No such file or directory|Connection refused)\)/i;
+// ended (default exit-empty) — no server, hence no session. "no current target":
+// tmux 3.2a (RHEL 9) resolving `=name` on a running server with no sessions.
+const ABSENT_RE = /can't find session|can't find pane|session not found|no server running|server exited unexpectedly|no current target|error connecting to .*\((No such file or directory|Connection refused)\)/i;
 
 export function isAbsentError(err: unknown): boolean {
   const e = err as { stderr?: string | Buffer; message?: string };

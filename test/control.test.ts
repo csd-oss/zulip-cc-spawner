@@ -84,10 +84,11 @@ function setup(lastSeen?: number) {
   const notifier = new Spy();
   const runs: Invocation[] = [];
   const activity: number[] = [];
-  let result: ActionResult = { content: 'ok' };
+  let result: ActionResult | Error = { content: 'ok' };
   const actions = {
     run: async (inv: Invocation) => {
       runs.push(inv);
+      if (result instanceof Error) throw result;
       return result;
     },
     isHand: (id: number) => id === 100,
@@ -96,7 +97,7 @@ function setup(lastSeen?: number) {
   const state = new ControlState(join(dir, 'state.json'));
   if (lastSeen !== undefined) state.advance(lastSeen);
   const control = new ZulipControl(zulip as unknown as ZulipClient, actions, notifier, testConfig(dir), state);
-  return { zulip, notifier, runs, activity, control, state, setResult: (r: ActionResult) => (result = r) };
+  return { zulip, notifier, runs, activity, control, state, setResult: (r: ActionResult | Error) => (result = r) };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 300));
@@ -234,4 +235,16 @@ test('backlog paging excludes the anchor and counts each message once', async ()
   s.control.stop();
   assert.ok(anchors.every((a) => a.include === false));
   assert.match(s.notifier.out[0].content, /150 commands arrived/);
+});
+
+test('a command that throws is answered with the failure, not silence', async () => {
+  const s = setup();
+  s.setResult(new Error('Command failed: sudo -n -H -u cc-agents -- tmux has-session -t =x\nno current target\n    at genericNodeError'));
+  s.zulip.batches.push([{ id: 1, type: 'message', message: msg(21, '@**CC Spawner** spawn sonnet-5-5 name=x'), flags: ['mentioned'] }]);
+  await s.control.start();
+  await settle();
+  s.control.stop();
+  assert.deepEqual(s.notifier.out, [
+    { to: '#cc-hands>release', content: '@_**Tester|1** ⚠️ That failed: Command failed: sudo -n -H -u cc-agents -- tmux has-session -t =x — no current target' },
+  ]);
 });
