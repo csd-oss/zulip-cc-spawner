@@ -56,9 +56,13 @@ manager you use, readable by `cc-agents` and nobody else who runs untrusted code
 
 ```sh
 # /etc/cc-agents/agents.env   (root:cc-agents, 0640; /etc/cc-agents 0750 root:cc-agents)
+PATH=/home/cc-agents/.local/bin:/usr/local/bin:/usr/bin:/bin   # wherever claude, bun, node live
 ANTHROPIC_BASE_URL=https://your-model-endpoint.example
 ANTHROPIC_API_KEY=...
 ```
+
+Set `PATH` here: hands start with the environment of the `sudo` that created their tmux
+session (its `secure_path`), and the bridge plugin needs `bun` on it.
 
 If `claude` asks "Do you want to use this API key?" at startup, the spawner answers Yes. For
 per-hand attribution on a gateway, set `attributionHeaders` in the config

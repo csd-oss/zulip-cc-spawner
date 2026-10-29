@@ -11,7 +11,9 @@ Group=cc-agents
 RuntimeDirectory=cc-agents
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
-# What every hand's shell starts with (sudo resets the caller's environment).
+# For the server itself. A new session (tmux ≥ 3.2) takes the environment of the client that
+# creates it — the spawner through sudo, i.e. secure_path — so set the hands' PATH in
+# agentsEnvFile (SETUP.md, step 4), not here.
 Environment=PATH=/home/cc-agents/.local/bin:/home/cc-agents/.bun/bin:/usr/local/bin:/usr/bin:/bin
 # Through sh: SELinux (RHEL) labels tmux screen_exec_t, which systemd itself (init_t) may not
 # execute ("Failed at step EXEC … Permission denied"); started from sh, the service runs as
