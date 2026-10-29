@@ -7,7 +7,8 @@
  *    or a quoted mention, must not run anything);
  *  - any DM to the spawner.
  * Zulip delivers stream messages to subscribers only, so the spawner hears
- * streams it is subscribed to; auth additionally requires allowedStreams.
+ * streams it is subscribed to; auth additionally requires allowedStreams
+ * (`"*"` = all of those).
  *
  * Offline commands are never executed (upstream semantics). The queue is
  * registered FIRST; its max_message_id bounds the backlog, which is paged back

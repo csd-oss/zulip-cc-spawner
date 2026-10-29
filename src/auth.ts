@@ -33,9 +33,10 @@ export interface AuthResult {
 
 export type GroupCheck = (groupId: number, userId: number) => Promise<boolean>;
 
+/** `"*"` allows every stream the spawner is subscribed to (it hears no others). */
 export function streamAllowed(streamName: string, cfg: Pick<AuthConfig, 'allowedStreams'>): boolean {
   const s = streamName.toLowerCase();
-  return cfg.allowedStreams.some((a) => a.toLowerCase() === s);
+  return cfg.allowedStreams.some((a) => a === '*' || a.toLowerCase() === s);
 }
 
 export async function isAllowed(inv: Invoker, where: Where, cfg: AuthConfig, isMember: GroupCheck): Promise<AuthResult> {

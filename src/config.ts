@@ -3,7 +3,8 @@
  * plus env overrides for the timing knobs.
  *
  * Fail-closed by design: empty `allowedStreams` means the spawner answers
- * nowhere; empty `allowedUsers` + `allowedGroups` means nobody may drive it.
+ * nowhere (`["*"]`: every stream the spawner bot is subscribed to); empty
+ * `allowedUsers` + `allowedGroups` means nobody may drive it.
  * A template is written on first run so the operator has something concrete
  * to fill in. Secrets never live here: the two zuliprc files are referenced
  * by path.

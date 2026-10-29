@@ -72,12 +72,20 @@ per-hand attribution on a gateway, set `attributionHeaders` in the config
    and subscribes them to their home stream. Zulip lets a bot post to any stream its owner is
    subscribed to — use a dedicated account that is in few or no private streams. Its zuliprc →
    `adminRc` (owned by `cc-spawner`, 0600).
-2. **Spawner bot**: a generic bot (e.g. "CC Spawner"), subscribed to every stream in
-   `allowedStreams`. Its zuliprc → `spawnerRc`.
+2. **Spawner bot**: a generic bot owned by the same account. Create it (or, on a rerun, find
+   it) and write its zuliprc → `spawnerRc`:
+   ```sh
+   node dist/src/setup-bot.js --owner owner.zuliprc --out spawner.zuliprc \
+     [--name "CC Spawner"] [--short cc-spawner] [--subscribe <stream>]…
+   ```
+   The spawner hears only streams its bot is subscribed to; add it to more streams in Zulip
+   at any time.
 3. Config: copy `deploy/config.example.json` to `~cc-spawner/.cc-spawner/config.json` and fill in
-   `allowedStreams`, `allowedUsers` (Zulip user ids) and/or `allowedGroups` (user-group ids;
-   system groups such as administrators work), and optionally `allowedResidents` (bot user ids of
-   agents allowed to summon hands). Empty lists deny everyone.
+   `allowedStreams` (stream names, or `["*"]` for every stream the spawner bot is in),
+   `allowedUsers` (Zulip user ids) and/or `allowedGroups` (user-group ids; system groups such as
+   administrators work), and optionally `allowedResidents` (bot user ids of agents allowed to
+   summon hands). Empty lists deny everyone. A hand can only be spawned in a stream the bot
+   owner may add bots to (for a private stream: one the owner is in).
 
 ```sh
 systemctl enable --now cc-spawner.service

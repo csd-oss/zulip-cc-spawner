@@ -34,3 +34,10 @@ test('empty allow-lists deny everyone', async () => {
   const empty: AuthConfig = { allowedStreams: ['cc-hands'], allowedUsers: [], allowedGroups: [], allowedResidents: [] };
   assert.equal((await isAllowed({ userId: 1, name: 'a', kind: 'user' }, inStream, empty, async () => true)).ok, false);
 });
+
+test('"*" allows any stream the spawner hears; users are still checked', async () => {
+  const any: AuthConfig = { ...cfg, allowedStreams: ['*'] };
+  const general: Where = { kind: 'stream', streamName: 'general', streamId: 1, topic: 't' };
+  assert.equal((await isAllowed({ userId: 1, name: 'a', kind: 'user' }, general, any, never)).ok, true);
+  assert.equal((await isAllowed({ userId: 2, name: 'b', kind: 'user' }, general, any, never)).ok, false);
+});
