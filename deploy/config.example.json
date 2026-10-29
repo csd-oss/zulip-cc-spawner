@@ -1,0 +1,22 @@
+{
+  "spawnerRc": "/home/cc-spawner/.cc-spawner/spawner.zuliprc",
+  "adminRc": "/home/cc-spawner/.cc-spawner/owner.zuliprc",
+  "allowedStreams": ["cc-hands"],
+  "allowedUsers": [],
+  "allowedGroups": [],
+  "allowedResidents": [],
+  "agentsUser": "cc-agents",
+  "agentsHome": "/home/cc-agents",
+  "tmuxSocket": "/run/cc-agents/tmux.sock",
+  "projectDir": "/home/cc-agents/workspace",
+  "handsDir": "/home/cc-agents/hands",
+  "agentsEnvFile": "/etc/cc-agents/agents.env",
+  "claudeBin": "/home/cc-agents/.local/bin/claude",
+  "nodeBin": "/usr/bin/node",
+  "zulipMcp": "/opt/zulip_mcp/build/index.js",
+  "bridgePlugin": "mcpl-bridge@mcpl-bridge-dev",
+  "attributionHeaders": {},
+  "handDmAllowlist": [],
+  "maxSessions": 10,
+  "catchupLimit": 500
+}

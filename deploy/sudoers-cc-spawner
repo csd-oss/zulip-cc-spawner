@@ -1,0 +1,4 @@
+# /etc/sudoers.d/cc-spawner  (visudo -cf before installing; mode 0440)
+# One way only: the spawner may act as the hands' user; the hands get nothing back.
+Defaults:cc-spawner !requiretty
+cc-spawner ALL=(cc-agents) NOPASSWD: ALL

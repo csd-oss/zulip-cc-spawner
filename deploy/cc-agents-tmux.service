@@ -1,0 +1,22 @@
+# The hands' tmux server, as its own unit. Sessions the spawner creates with
+# `sudo -u cc-agents tmux -S /run/cc-agents/tmux.sock new-session …` are
+# children of THIS server, so they survive spawner restarts.
+# tmux -D (≥ 3.2) stays in the foreground and turns exit-empty off.
+[Unit]
+Description=tmux server for Claude Code hands
+
+[Service]
+User=cc-agents
+Group=cc-agents
+RuntimeDirectory=cc-agents
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# What every hand's shell starts with (sudo resets the caller's environment).
+Environment=PATH=/home/cc-agents/.local/bin:/home/cc-agents/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/tmux -D -S /run/cc-agents/tmux.sock
+Restart=always
+# Stopping this unit DOES stop every hand.
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

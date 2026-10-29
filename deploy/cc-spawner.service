@@ -1,0 +1,20 @@
+# The spawner daemon. Runs as its own user, which holds the two zuliprc files
+# (spawner bot + bot owner) and reaches the hands only through sudo -u cc-agents.
+[Unit]
+Description=zulip-cc-spawner
+After=network-online.target cc-agents-tmux.service
+Wants=network-online.target cc-agents-tmux.service
+
+[Service]
+User=cc-spawner
+Group=cc-spawner
+WorkingDirectory=/opt/zulip-cc-spawner
+ExecStart=/usr/bin/node /opt/zulip-cc-spawner/dist/src/main.js
+Restart=always
+RestartSec=5
+UMask=0077
+# Hands live in cc-agents-tmux.service's cgroup, not here, so stopping or
+# restarting the spawner never kills them.
+
+[Install]
+WantedBy=multi-user.target

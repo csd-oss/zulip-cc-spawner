@@ -1,0 +1,117 @@
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { after, test } from 'node:test';
+import { LocalHost } from '../src/host.js';
+import { ClaudeLauncher, classifyStartup, yesOption } from '../src/launcher.js';
+import { Tmux } from '../src/tmux.js';
+import { fakeClaude, testConfig, tmp } from './helpers.js';
+
+const dir = tmp();
+const cfg = testConfig(dir);
+const tmux = new Tmux(new LocalHost(), cfg.tmuxSocket);
+after(async () => {
+  for (const s of await tmux.listSessions()) await tmux.killSession(s);
+});
+
+const seedIn = (d: string) => {
+  writeFileSync(join(d, 'seed.md'), 'hello');
+  return join(d, 'seed.md');
+};
+
+const waitFor = async (path: string) => {
+  for (let i = 0; i < 50 && !existsSync(path); i++) await new Promise((r) => setTimeout(r, 100));
+  return JSON.parse(readFileSync(path, 'utf8')) as { argv: string[]; env: Record<string, string | undefined> };
+};
+
+test('startup screens are classified', () => {
+  assert.equal(classifyStartup('Loading development channels…'), 'dev-channels');
+  assert.equal(classifyStartup('Do you want to use this API key?\n 1. Yes\n 2. No (recommended)'), 'api-key');
+  assert.equal(classifyStartup('Bypass Permissions mode\n 2. Yes, I accept'), 'bypass-consent');
+  assert.equal(classifyStartup('⏵⏵ bypass permissions on'), 'ready');
+  assert.equal(yesOption('   1. No (recommended)\n ❯ 2. Yes'), '2');
+});
+
+test('launch line: env file sourced, headers set, effort env cleared, seed passed verbatim', async () => {
+  const seed = join(dir, 'seed.md');
+  writeFileSync(seed, `Hi "there" — it's $(touch ${dir}/pwned) and \`backticks\`\n`);
+  const launcher = new ClaudeLauncher(cfg, tmux);
+  const r = await launcher.launch({
+    personaName: 'Claude-Code-opus-5-5-t1',
+    model: 'claude-opus-5-5',
+    effort: 'high',
+    sessionId: 'sess-1',
+    resume: false,
+    tmuxSession: 'cc-test-1',
+    bridgeConfig: join(dir, 'bridge.json'),
+    seedFile: seed,
+    spawnedBy: "Tess O'Tester",
+    streamName: 'cc-hands',
+    topic: 't',
+  });
+  assert.deepEqual(r, {});
+  const run = await waitFor(join(dir, 'run-sess-1.json'));
+  assert.deepEqual(run.argv.slice(0, 9), [
+    '--dangerously-skip-permissions',
+    '--dangerously-load-development-channels',
+    'plugin:mcpl-bridge@mcpl-bridge-dev',
+    '--session-id',
+    'sess-1',
+    '--model',
+    'claude-opus-5-5',
+    '--effort',
+    'high',
+  ]);
+  assert.equal(run.argv[9], readFileSync(seed, 'utf8').replace(/\n$/, ''));
+  assert.ok(!existsSync(join(dir, 'pwned')), 'seed text must not be executed');
+  assert.equal(run.env.ANTHROPIC_API_KEY, 'gate-token-from-env-file');
+  assert.equal(run.env.CLAUDE_CODE_EFFORT_LEVEL, undefined, 'effort env var is cleared when --effort is passed');
+  assert.equal(run.env.MCPL_BRIDGE_CONFIG, join(dir, 'bridge.json'));
+  assert.equal(
+    run.env.ANTHROPIC_CUSTOM_HEADERS,
+    "x-origin: cc-spawner\nx-channel: Claude-Code-opus-5-5-t1\nx-counterparty: Tess O'Tester",
+  );
+});
+
+test('the API-key screen is answered with its Yes option', async () => {
+  const d = tmp();
+  const c = testConfig(d, { claudeBin: fakeClaude(d, 'api-key') });
+  const t = new Tmux(new LocalHost(), c.tmuxSocket);
+  try {
+    const r = await new ClaudeLauncher(c, t).launch({
+      personaName: 'p', model: 'claude-opus-5-5', sessionId: 's2', resume: true, tmuxSession: 'cc-test-2',
+      bridgeConfig: join(d, 'b.json'), seedFile: seedIn(d), spawnedBy: 'x', streamName: 's', topic: 't',
+    });
+    assert.deepEqual(r, {});
+    assert.equal(readFileSync(join(d, 'keys'), 'utf8').trim(), 'picked=1');
+    const run = await waitFor(join(d, 'run-s2.json'));
+    assert.ok(run.argv.includes('--resume'));
+    assert.ok(!run.argv.includes('--effort'));
+  } finally {
+    await t.killSession('cc-test-2');
+  }
+});
+
+test('first-run consent screens abort with an operator instruction', async () => {
+  const d = tmp();
+  const c = testConfig(d, { claudeBin: fakeClaude(d, 'bypass') });
+  const t = new Tmux(new LocalHost(), c.tmuxSocket);
+  try {
+    await assert.rejects(
+      new ClaudeLauncher(c, t).launch({
+        personaName: 'p', model: 'claude-opus-5-5', sessionId: 's3', resume: false, tmuxSession: 'cc-test-3',
+        bridgeConfig: join(d, 'b.json'), seedFile: seedIn(d), spawnedBy: 'x', streamName: 's', topic: 't',
+      }),
+      /one-time .*consent/,
+    );
+  } finally {
+    await t.killSession('cc-test-3');
+  }
+});
+
+test('tmux: absent sessions and absent servers are not errors; kill is confirmed', async () => {
+  const t = new Tmux(new LocalHost(), join(tmp(), 'no-server.sock'));
+  assert.equal(await t.hasSession('nope'), false);
+  assert.deepEqual(await t.listSessions(), []);
+  await t.killSession('nope');
+});

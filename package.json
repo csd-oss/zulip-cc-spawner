@@ -1,0 +1,24 @@
+{
+  "name": "zulip-cc-spawner",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Zulip bot that spawns, tracks and reaps Claude Code sessions in tmux, each talking to Zulip through mcpl-cc-bridge + zulip_mcp.",
+  "main": "./dist/src/main.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "clean": "rm -rf dist",
+    "coverage": "node --import tsx --experimental-test-coverage --test-coverage-include='src/**' --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

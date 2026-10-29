@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+# secrets — never commit
+zuliprc
+*.zuliprc
+.env
+# local clones used as reading material
+reference/
