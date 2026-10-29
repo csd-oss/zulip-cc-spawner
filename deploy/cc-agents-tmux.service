@@ -13,7 +13,10 @@ RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 # What every hand's shell starts with (sudo resets the caller's environment).
 Environment=PATH=/home/cc-agents/.local/bin:/home/cc-agents/.bun/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/tmux -D -S /run/cc-agents/tmux.sock
+# Through sh: SELinux (RHEL) labels tmux screen_exec_t, which systemd itself (init_t) may not
+# execute ("Failed at step EXEC … Permission denied"); started from sh, the service runs as
+# unconfined_service_t, which may.
+ExecStart=/bin/sh -c 'exec /usr/bin/tmux -D -S /run/cc-agents/tmux.sock'
 Restart=always
 # Stopping this unit DOES stop every hand.
 KillMode=control-group
