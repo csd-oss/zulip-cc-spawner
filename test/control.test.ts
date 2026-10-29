@@ -248,3 +248,18 @@ test('a command that throws is answered with the failure, not silence', async ()
     { to: '#cc-hands>release', content: '@_**Tester|1** ⚠️ That failed: Command failed: sudo -n -H -u cc-agents -- tmux has-session -t =x — no current target' },
   ]);
 });
+
+test('a bot gets an answer for a rejected command (so it can correct itself), not for chatter', async () => {
+  const s = setup();
+  s.zulip.batches.push([
+    { id: 1, type: 'message', message: msg(21, '@**CC Spawner** spawn haiku-4-5 name=hello effort=low', { sender_id: 500 }), flags: ['mentioned'] },
+    { id: 2, type: 'message', message: msg(22, '@**CC Spawner** thanks!', { sender_id: 500 }), flags: ['mentioned'] },
+    { id: 3, type: 'message', message: msg(23, '@**CC Spawner**', { sender_id: 500 }), flags: ['mentioned'] },
+  ]);
+  await s.control.start();
+  await settle();
+  s.control.stop();
+  assert.equal(s.runs.length, 1);
+  assert.equal(s.runs[0].cmd.kind, 'help');
+  assert.match(String((s.runs[0].cmd as { error?: string }).error), /no effort setting/);
+});

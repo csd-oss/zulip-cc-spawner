@@ -186,8 +186,12 @@ export class ZulipControl {
     const cmd = parseCommand(body);
     const info = await this.userInfo(m.sender_id).catch(() => ({ isBot: true, name: m.sender_full_name }));
     const invoker: Invoker = { userId: m.sender_id, name: info.name, kind: info.isBot ? 'resident' : 'user' };
-    // Loop guard: a bot gets replies only for real commands.
-    if (invoker.kind === 'resident' && cmd.kind === 'help') {
+    // Loop guard: a bot that merely mentions the spawner (thanks, chatter, an
+    // unknown first word, nothing at all) gets no reply. A real attempt does —
+    // `help`, and a known command that was rejected (bad model, effort, name…),
+    // so an agent can correct itself.
+    const chatter = cmd.kind === 'help' && (cmd.unknownVerb || body.trim() === '');
+    if (invoker.kind === 'resident' && chatter) {
       log(`ignoring non-command mention from bot ${invoker.userId}: ${JSON.stringify(body.slice(0, 120))}`);
       return;
     }
