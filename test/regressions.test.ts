@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
 import type { Invoker, Where } from '../src/auth.js';
 import { parseCommand } from '../src/commands.js';
+import type { SpawnerConfig } from '../src/config.js';
 import { LocalHost, SudoHost, type AgentHost } from '../src/host.js';
 import { ClaudeLauncher } from '../src/launcher.js';
 import { splitContent, ZulipNotifier, type Notifier } from '../src/notifier.js';
@@ -45,9 +46,9 @@ const provisioner = {
   credsFor: () => ({ email: 'b@example.org', key: 'k', site: 'https://chat.example.org' }),
 } as unknown as Provisioner;
 
-function core(opts: { tmux: Tmux; launcher: ClaudeLauncher; host?: AgentHost; registry?: Registry }) {
+function core(opts: { tmux: Tmux; launcher: ClaudeLauncher; host?: AgentHost; registry?: Registry; cfg?: Partial<SpawnerConfig> }) {
   const dir = tmp();
-  const cfg = testConfig(dir);
+  const cfg = testConfig(dir, opts.cfg);
   const registry = opts.registry ?? new Registry(join(dir, 'r.json'));
   const host = opts.host ?? new LocalHost();
   const posts = new Posts();
@@ -56,7 +57,7 @@ function core(opts: { tmux: Tmux; launcher: ClaudeLauncher; host?: AgentHost; re
     config: cfg, registry, host, tmux: opts.tmux, provisioner, launcher: opts.launcher, notifier: posts, watcher,
     groupCheck: async () => false, realm: 'https://chat.example.org',
   });
-  const run = (text: string) => actions.run({ cmd: parseCommand(text), body: text, where: home, invoker: tester });
+  const run = (text: string, invoker: Invoker = tester) => actions.run({ cmd: parseCommand(text), body: text, where: home, invoker });
   return { registry, posts, run, cfg };
 }
 
@@ -215,4 +216,22 @@ test('notifier: long content is split on lines; failures are swallowed', async (
   assert.ok(sent.length >= 2);
   await n.dm([1], 'hello'); // must not throw
   await n.reply({ kind: 'dm', userIds: [1] }, 'hello');
+});
+
+test('with allowedResidents "*", any bot may drive the spawner, but never one of its own hands', async () => {
+  const dir = tmp();
+  const registry = new Registry(join(dir, 'r.json'));
+  registry.add({
+    suffix: 'scout', personaName: 'Claude-Code-opus-5-5-scout', botUserId: 100, botEmail: 'b@example.org', tmuxSession: 'cc-x',
+    streamName: 'cc-hands', streamId: 7, topic: 'release', handDir: '/x', model: 'claude-opus-5-5', sessionId: 's',
+    spawnedBy: { userId: 1, username: 'Tester' }, spawnedAt: new Date().toISOString(), lastActivity: new Date().toISOString(),
+    status: 'alive', seedFile: '/x/seed',
+  });
+  const tmux = { hasSession: async () => true, listSessions: async () => ['cc-x'] } as unknown as Tmux;
+  const launcher = {} as unknown as ClaudeLauncher;
+  const c = core({ tmux, launcher, registry, cfg: { allowedResidents: ['*'] } });
+  const otherBot: Invoker = { userId: 777, name: 'Helper Bot', kind: 'resident' };
+  const ownHand: Invoker = { userId: 100, name: 'Claude-Code-opus-5-5-scout', kind: 'resident' };
+  assert.match((await c.run('list', otherBot)).content, /scout/);
+  assert.match((await c.run('list', ownHand)).content, /Spawned hands cannot drive the spawner/);
 });

@@ -88,7 +88,8 @@ per-hand attribution on a gateway, set `attributionHeaders` in the config
    `allowedStreams` (stream names, or `["*"]` for every stream the spawner bot is in),
    `allowedUsers` (Zulip user ids) and/or `allowedGroups` (user-group ids; system groups such as
    administrators work), and optionally `allowedResidents` (bot user ids of agents allowed to
-   summon hands). Empty lists deny everyone. A hand can only be spawned in a stream the bot
+   summon hands; `["*"]` for every bot — the spawner's own hands are always refused). Empty lists
+   deny everyone. A hand can only be spawned in a stream the bot
    owner may add bots to (for a private stream: one the owner is in).
 
 ```sh

@@ -30,9 +30,10 @@ export interface SpawnerConfig {
   /** Zulip user-group ids whose members may drive the spawner (system groups
    *  like role:administrators work too; membership is checked recursively). */
   allowedGroups: number[];
-  /** Bot user ids of RESIDENT agents allowed to summon/dismiss their own hands.
-   *  Hands this spawner created are always refused (no recursion). */
-  allowedResidents: number[];
+  /** Bot user ids of RESIDENT agents allowed to summon/dismiss their own hands;
+   *  `"*"` allows every bot. Hands this spawner created are always refused (no
+   *  recursion). */
+  allowedResidents: (number | '*')[];
   /** Max concurrently alive hands. */
   maxSessions: number;
   /** Reap a hand after this long without PUBLIC Zulip activity (default 24h). */

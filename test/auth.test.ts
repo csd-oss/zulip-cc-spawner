@@ -41,3 +41,10 @@ test('"*" allows any stream the spawner hears; users are still checked', async (
   assert.equal((await isAllowed({ userId: 1, name: 'a', kind: 'user' }, general, any, never)).ok, true);
   assert.equal((await isAllowed({ userId: 2, name: 'b', kind: 'user' }, general, any, never)).ok, false);
 });
+
+test('"*" in allowedResidents lets any bot drive the spawner', async () => {
+  const anyBot: AuthConfig = { ...cfg, allowedResidents: ['*'] };
+  const dm: Where = { kind: 'dm', userIds: [777] };
+  assert.equal((await isAllowed({ userId: 777, name: 'some-bot', kind: 'resident' }, dm, anyBot, never)).ok, true);
+  assert.equal((await isAllowed({ userId: 777, name: 'some-bot', kind: 'resident' }, dm, cfg, never)).ok, false);
+});

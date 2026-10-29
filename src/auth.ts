@@ -23,7 +23,7 @@ export interface AuthConfig {
   allowedStreams: string[];
   allowedUsers: number[];
   allowedGroups: number[];
-  allowedResidents: number[];
+  allowedResidents: (number | '*')[];
 }
 
 export interface AuthResult {
@@ -44,7 +44,7 @@ export async function isAllowed(inv: Invoker, where: Where, cfg: AuthConfig, isM
     return { ok: false, reason: `#${where.streamName} is not allow-listed for the spawner` };
   }
   if (inv.kind === 'resident') {
-    return cfg.allowedResidents.includes(inv.userId)
+    return cfg.allowedResidents.includes('*') || cfg.allowedResidents.includes(inv.userId)
       ? { ok: true }
       : { ok: false, reason: 'this bot is not allow-listed to drive the spawner' };
   }
