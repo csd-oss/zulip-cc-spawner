@@ -34,6 +34,8 @@ export interface BotEntry {
   handDir: string;
   /** Absent on legacy hands: retain config.projectDir. */
   workDir?: string;
+  /** Set only after exclusive workspace creation and trust preparation succeed. */
+  workDirReady?: boolean;
   nameScheme?: 'bracket-v1';
   harness?: string;
   model: string;

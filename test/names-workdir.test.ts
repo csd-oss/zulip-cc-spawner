@@ -171,6 +171,8 @@ test('new identity never adopts an existing workspace or unregistered legacy bot
   mkdirSync(path, { recursive: true }); writeFileSync(join(path, 'keep'), 'keep');
   assert.match((await c.run('spawn opus-5-5 name=old')).content, /failed/);
   assert.equal(c.launches.length, 0);
+  assert.match((await c.run('spawn opus-5-5 name=old')).content, /failed/);
+  assert.equal(c.launches.length, 0, 'retry must not adopt the pre-existing directory either');
   assert.equal(readFileSync(join(path, 'keep'), 'utf8'), 'keep');
   let creates = 0;
   const api = {

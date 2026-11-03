@@ -234,6 +234,7 @@ export class SpawnerActions {
       topic: where.topic,
       handDir: paths.dir,
       workDir,
+      workDirReady: prior?.workDirReady,
       nameScheme: prior ? prior.nameScheme : 'bracket-v1',
       harness: prior ? prior.harness : 'cc',
       model: cmd.model,
@@ -253,7 +254,10 @@ export class SpawnerActions {
       registry.update(entry, { botUserId: bot.userId, botEmail: bot.email });
       if (!created && !prior) log(`${personaName}: reusing an existing bot ${bot.email} with no registry history`);
       await this.d.provisioner.subscribe(bot.userId, where.streamName);
-      if (workDir) await prepareWorkDir(this.d.host, cfg, workDir, !prior);
+      if (workDir) {
+        await prepareWorkDir(this.d.host, cfg, workDir, !prior?.workDirReady);
+        registry.update(entry, { workDirReady: true });
+      }
 
       const seedCtx = { personaName, streamName: where.streamName, topic: where.topic, realm: this.d.realm };
       const seed = canResume
