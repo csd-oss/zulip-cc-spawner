@@ -235,3 +235,18 @@ test('with allowedResidents "*", any bot may drive the spawner, but never one of
   assert.match((await c.run('list', otherBot)).content, /scout/);
   assert.match((await c.run('list', ownHand)).content, /Spawned hands cannot drive the spawner/);
 });
+
+for (const literal of ['-x', '--base', '--']) {
+  test(`sendText ends tmux options before literal ${literal}`, async () => {
+    const host = new LocalHost();
+    const calls: { cmd: string; args: string[] }[] = [];
+    host.exec = async (cmd, args) => {
+      calls.push({ cmd, args });
+      return { stdout: '' };
+    };
+    await new Tmux(host, '/tmp/test.sock').sendText('scout', literal);
+    assert.deepEqual(calls, [{
+      cmd: 'tmux', args: ['-S', '/tmp/test.sock', 'send-keys', '-t', '=scout:', '-l', '--', literal],
+    }]);
+  });
+}

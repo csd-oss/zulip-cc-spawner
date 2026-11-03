@@ -149,3 +149,54 @@ test('attribution headers: templates filled, unsafe names refused', () => {
   ]);
   assert.throws(() => renderHeaders({ 'bad name': 'v' }, req), /bad header name/);
 });
+
+test('press reports the completed prefix and stops after a literal send failure', async () => {
+  const s = setup();
+  s.tmux.sendText = async (_n, text) => {
+    if (text === '--base') throw new Error('tmux send failed');
+    s.tmux.text.push(text);
+  };
+  const r = await s.run('press scout /codex:review space --base space main enter');
+  assert.match(r.content, /Could not send `--base`.*tmux rejected key 3/);
+  assert.match(r.content, /Sent before failure: `\/codex:review` `Space`/);
+  assert.match(r.content, /input may be half-typed/);
+  assert.match(r.content, /press scout ctrl-u/);
+  assert.match(r.content, /press scout esc/);
+  assert.deepEqual(s.tmux.text, ['/codex:review']);
+  assert.deepEqual(s.tmux.keys, ['Space']);
+});
+
+test('press reports no confirmed keys when the first named key fails', async () => {
+  const s = setup();
+  s.tmux.sendKeys = async () => { throw new Error('tmux unavailable'); };
+  const r = await s.run('press scout enter hello');
+  assert.match(r.content, /Could not send `enter`/);
+  assert.match(r.content, /Sent before failure: none confirmed/);
+  assert.match(r.content, /input may be half-typed/);
+  assert.deepEqual(s.tmux.text, []);
+});
+
+test('press keeps child_process command and private paths out of its reply', async () => {
+  const s = setup();
+  const detail = 'Command failed: sudo -n -H -u private-agent -- tmux -S /private/agents/tmux.sock send-keys -t =scout: -l -- --base\nerror connecting to /private/agents/tmux.sock';
+  s.tmux.sendText = async () => {
+    throw Object.assign(new Error(detail), { code: 1, stderr: 'private stderr', stdout: '' });
+  };
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+  try {
+    const r = await s.run('press scout space --base enter');
+    assert.doesNotMatch(r.content, /Command failed|sudo|private-agent|\/private\/|tmux\.sock|send-keys|private stderr/);
+    assert.match(r.content, /Could not send `--base`.*tmux rejected key 2/);
+    assert.match(r.content, /Sent before failure: `Space`/);
+    assert.match(r.content, /input may be half-typed/);
+    assert.match(r.content, /press scout ctrl-u/);
+    assert.match(r.content, /press scout esc/);
+    assert.deepEqual(s.tmux.keys, ['Space']);
+    assert.ok(logs.some((line) => line.includes(detail)), 'detailed error stays in internal logs');
+    assert.deepEqual(s.posts.out, [], 'internal logging does not post to chat');
+  } finally {
+    console.log = originalLog;
+  }
+});
