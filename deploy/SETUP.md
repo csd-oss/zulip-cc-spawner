@@ -32,10 +32,13 @@ install -m 0440 deploy/sudoers-cc-spawner /etc/sudoers.d/cc-spawner && visudo -c
   ```
 - [zulip_mcp](https://github.com/antra-tess/zulip_mcp), built (`npm ci && npm run build`); point
   `zulipMcp` at its `build/index.js`.
-- The shared working directory (`projectDir`), e.g. `mkdir ~/workspace`.
+- The legacy working directory (`projectDir`), e.g. `mkdir ~/workspace`. New hands use
+  empty `<workRoot>/<short-name>` directories (default root: `<projectDir>/hands`),
+  auto-trusted by the spawner. Keep `handsDir` separate from `workRoot`.
 - **One-time consents a person gives** (the spawner refuses to click these for you): run
   `cd ~/workspace && claude --dangerously-skip-permissions` once, accept the bypass-permissions
-  warning and trust the folder, then exit.
+  warning and trust the legacy folder, then exit. New workspace trust is automatic;
+  bypass-permissions consent remains manual.
 
 ## 3. The tmux server and the daemon
 

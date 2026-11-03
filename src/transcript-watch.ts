@@ -57,8 +57,8 @@ export class TranscriptWatcher {
     private readonly spawnerName: () => string,
   ) {}
 
-  transcriptPath(sessionId: string): string {
-    return transcriptPath(this.paths.agentsHome, this.paths.projectDir, sessionId);
+  transcriptPath(sessionId: string, workDir?: string): string {
+    return transcriptPath(this.paths.agentsHome, workDir ?? this.paths.projectDir, sessionId);
   }
 
   async sweep(): Promise<void> {
@@ -115,7 +115,7 @@ export class TranscriptWatcher {
   }
 
   private async check(entry: BotEntry): Promise<void> {
-    const path = this.transcriptPath(entry.sessionId);
+    const path = this.transcriptPath(entry.sessionId, entry.workDir);
     const size = await this.host.size(path);
     if (size === undefined) return;
 

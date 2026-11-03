@@ -58,7 +58,7 @@ export function testConfig(dir: string, overrides: Partial<SpawnerConfig> = {}):
     watchIntervalMs: 20_000,
     projectDir: dir,
     agentsHome: join(dir, 'home'),
-    handsDir: join(dir, 'hands'),
+    handsDir: join(dir, 'hand-files'),
     agentsEnvFile: envFile,
     claudeBin: overrides.claudeBin ?? fakeClaude(dir),
     nodeBin: 'node',

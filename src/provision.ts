@@ -25,11 +25,12 @@ export class Provisioner {
   constructor(private readonly admin: ZulipClient) {}
 
   /** An owned bot with this short name, with its key, or undefined. */
-  async find(shortName: string): Promise<BotIdentity | undefined> {
+  async find(shortName: string, expectedName?: string): Promise<BotIdentity | undefined> {
     const prefix = botEmailPrefix(shortName);
     const bot = (await this.admin.ownedBots()).find((b) => b.username.toLowerCase().startsWith(prefix));
     if (!bot) return undefined;
     const { user } = await this.admin.user(bot.username);
+    if (expectedName && user.full_name !== expectedName) throw new Error('bot name collision — refusing to reuse a different persona');
     return { userId: user.user_id, email: bot.username, apiKey: bot.api_key };
   }
 
@@ -37,21 +38,21 @@ export class Provisioner {
    * Find, else create. A create that errors or times out may still have
    * happened server-side, so the owned-bot list is re-read before giving up.
    */
-  async ensure(fullName: string, shortName: string): Promise<{ bot: BotIdentity; created: boolean }> {
-    const existing = await this.find(shortName);
+  async ensure(fullName: string, shortName: string, strictName = false): Promise<{ bot: BotIdentity; created: boolean }> {
+    const existing = await this.find(shortName, strictName ? fullName : undefined);
     if (existing) return { bot: existing, created: false };
     try {
       await this.admin.createBot(fullName, shortName);
       log(`created bot ${fullName} (${shortName})`);
     } catch (err) {
-      const again = await this.find(shortName).catch(() => undefined);
+      const again = await this.find(shortName, strictName ? fullName : undefined).catch(() => undefined);
       if (again) {
         log(`create of ${shortName} reported "${(err as Error).message}" but the bot exists — using it`);
         return { bot: again, created: true };
       }
       throw new Error(explain(err as Error, shortName));
     }
-    const bot = await this.find(shortName);
+    const bot = await this.find(shortName, strictName ? fullName : undefined);
     if (!bot) throw new Error(`created bot ${shortName} but cannot find it among the owner's bots`);
     return { bot, created: true };
   }

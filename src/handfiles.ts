@@ -24,8 +24,8 @@ export interface HandPaths {
   seed: string;
 }
 
-export function handPaths(handsDir: string, shortName: string): HandPaths {
-  const dir = join(handsDir, shortName);
+export function handPaths(handsDir: string, shortName: string, existingDir?: string): HandPaths {
+  const dir = existingDir ?? join(handsDir, shortName);
   const stateDir = join(dir, 'zulip-state');
   return {
     dir,
@@ -144,8 +144,9 @@ export async function writeHandFiles(
   stream: string,
   creds: ZulipCreds,
   seedText: string,
+  existingDir?: string,
 ): Promise<HandPaths> {
-  const p = handPaths(cfg.handsDir, shortName);
+  const p = handPaths(cfg.handsDir, shortName, existingDir);
   await host.mkdirp(p.stateDir);
   await host.writeFile(p.zuliprc, renderZuliprc(creds), 0o600);
   await host.writeFile(p.filters, JSON.stringify(renderFilters(stream), null, 2) + '\n', 0o600);

@@ -32,6 +32,10 @@ export interface BotEntry {
   topic: string;
   /** Per-hand files: zuliprc, bridge config, seed, zulip_mcp state. */
   handDir: string;
+  /** Absent on legacy hands: retain config.projectDir. */
+  workDir?: string;
+  nameScheme?: 'bracket-v1';
+  harness?: string;
   model: string;
   /** Reasoning effort this launch ran with; re-passed on revival (CC does not restore it). */
   effort?: string;

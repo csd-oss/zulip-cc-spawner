@@ -27,7 +27,7 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
   id). Bare `opus`/`sonnet` are refused: the model is part of the hand's name, so a name must keep
   meaning one model. **Effort** (`low`…`max`, `ultracode`) is validated per model and kept across
   revivals; `effort=default` clears it.
-- **Names**: hand `Claude-Code-<model>-<name>`, bot `cc-<model>-<name>-bot@…`, tmux `cc-<model>-<name>`.
+- **Names**: new hand `[cc-<model>] <name>`, bot `cc-<model>-<name>-bot@…`, tmux `cc-<model>-<name>`.
 - **Revival**: `spawn <same model> name=<same>` brings back the same bot **and** the same
   conversation (`claude --resume`), in the same stream (a new topic is fine).
 - **Blocked hands**: a question dialog or permission prompt is posted in the hand's topic; answer
@@ -80,3 +80,40 @@ Requires tmux on PATH for the tests.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## New-hand names and workspaces
+
+New hands display as `[cc-<modelSlug>] <name>` (the supplied name's case is
+preserved, otherwise four random hex characters). `cc` is the harness label;
+this does not add Codex support. Tmux and bot short names remain lowercase
+`cc-<modelSlug>-<name>`. Names are bounded to 49 display characters, 40 short
+characters and 44 email-local-part characters including `-bot`. These are
+local compatibility budgets; actual Zulip server limits are **GUESS**, not
+verified against a live server. Full bracket names, legacy names, short names,
+and suffixes work with stop/peek/answer.
+
+`workRoot` optionally sets the root for new hands' working directories. Its
+default is `<projectDir>/hands`; each hand uses `<root>/<short-name>`, created
+empty and mode 0700 as the hand OS user. Keep this root separate from
+`handsDir`, which contains credentials and bridge files, not workspace content.
+An existing directory is never adopted for a brand-new identity. Revivals keep
+the recorded directory and its contents. Neither stop nor the reaper deletes
+workspaces, hand files, trust entries or transcripts. Cleanup is manual: only
+remove them after stopping the hand and deciding to discard its continuity.
+
+Before launch, the spawner merges
+`projects[<absolute workDir>].hasTrustDialogAccepted = true` into
+`<agentsHome>/.claude.json`, retaining other keys and atomically renaming a
+0600 temporary file. A lock directory serializes cooperating spawns across
+processes. A lock older than a crashed process is not automatically stolen:
+after verifying no spawner writer is alive, remove `.claude.json.spawner-lock`
+and retry. Invalid JSON fails closed. Other writers (including Claude itself)
+do not honor this lock; avoid concurrent external configuration edits. This
+assumes Claude uses the normal agentsHome configuration, not an overridden
+`CLAUDE_CONFIG_DIR`/HOME. Bypass-permissions consent still requires a person.
+
+Legacy registry entries without `workDir`/`nameScheme` keep their old identity,
+hand directory and global `projectDir` cwd. Do not change `projectDir` while
+legacy hands need their transcripts. Spawn with the same model and suffix to
+revive them. Optional fields leave the JSON array readable by the old binary,
+but **downgrade is not behaviorally safe**: it ignores new cwd/name metadata.
