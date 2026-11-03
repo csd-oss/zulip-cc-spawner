@@ -9,6 +9,7 @@
   "agentsHome": "/home/cc-agents",
   "tmuxSocket": "/run/cc-agents/tmux.sock",
   "projectDir": "/home/cc-agents/workspace",
+  "workRoot": "/home/cc-agents/workspace/hands",
   "handsDir": "/home/cc-agents/hands",
   "agentsEnvFile": "/etc/cc-agents/agents.env",
   "claudeBin": "/home/cc-agents/.local/bin/claude",

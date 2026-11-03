@@ -193,7 +193,7 @@ export function stripMentions(content: string): string {
 
 /** Parse a message body (mentions already stripped). */
 export function parseCommand(body: string): Command {
-  const tokens = body.split(/\s+/).filter(Boolean);
+  const tokens: string[] = body.match(/@_?\*\*[^*]+\*\*|\[[a-z0-9-]+\]\s+[A-Za-z0-9-]+|\S+/gi) ?? [];
   if (tokens.length === 0) return { kind: 'help' };
   const verb = tokens[0].toLowerCase();
 
@@ -233,7 +233,7 @@ export function parseCommand(body: string): Command {
     case 'answer': {
       // The spec is free text — take the raw remainder after the target token.
       const afterVerb = body.trim().slice(tokens[0].length).trim();
-      const target = afterVerb.split(/\s+/)[0];
+      const target = tokens[1];
       const spec = afterVerb.slice(target?.length ?? 0).trim();
       return buildAnswerCommand(target || undefined, spec || undefined);
     }

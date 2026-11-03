@@ -15,6 +15,7 @@ import type { Tmux } from './tmux.js';
 
 export interface LaunchRequest {
   personaName: string;
+  workDir?: string;
   model: string;
   /** Validated effort; absent ⇒ no flag (CLI default). */
   effort?: string;
@@ -161,11 +162,11 @@ export class ClaudeLauncher {
    *  cannot start (the caller kills the session); returns a warning when it
    *  started but something needs a human look. */
   async launch(req: LaunchRequest): Promise<{ warning?: string }> {
-    await this.tmux.newSession(req.tmuxSession, this.cfg.projectDir, buildCommand(this.cfg, req));
-    return this.settleStartup(req.tmuxSession);
+    await this.tmux.newSession(req.tmuxSession, req.workDir ?? this.cfg.projectDir, buildCommand(this.cfg, req));
+    return this.settleStartup(req.tmuxSession, req.workDir ?? this.cfg.projectDir);
   }
 
-  private async settleStartup(session: string): Promise<{ warning?: string }> {
+  private async settleStartup(session: string, workDir: string): Promise<{ warning?: string }> {
     const deadline = Date.now() + HANDSHAKE_TIMEOUT_MS;
     const sends: Record<string, number> = {};
     const press = async (screen: string, ...keys: string[]) => {
@@ -184,7 +185,7 @@ export class ClaudeLauncher {
         case 'bypass-consent':
           throw new Error('Claude Code wants its one-time "Bypass Permissions mode" consent — a person must run `claude --dangerously-skip-permissions` once as the agents user and accept');
         case 'trust':
-          throw new Error(`Claude Code asks whether to trust ${this.cfg.projectDir} — a person must run \`claude\` there once as the agents user and accept`);
+          throw new Error(`Claude Code asks whether to trust ${workDir} — a person must run \`claude\` there once as the agents user and accept`);
         case 'api-key': {
           const keys = keysForYes(pane, API_KEY_RE);
           if (!keys) throw new Error('Claude Code asks whether to use the API key and I cannot find its Yes option — attach and answer it');

@@ -10,6 +10,9 @@
  * exist; the reaper's startup reconcile closes it out.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
+import { prepareWorkDir } from './workdir.js';
+import { handName } from './names.js';
 import { isAllowed, type GroupCheck, type Invoker, type Where } from './auth.js';
 import {
   EFFORT_DEFAULT,
@@ -164,8 +167,20 @@ export class SpawnerActions {
 
     const suffix = (cmd.friendly ?? (await this.freshSuffix())).toLowerCase();
     const slug = modelSlug(cmd.model);
-    const personaName = `Claude-Code-${slug}-${suffix}`;
-    const shortName = `cc-${slug}-${suffix}`;
+    const names = handName(cmd.model, cmd.friendly ?? suffix);
+    // Prefer an existing legacy identity for the same model/suffix. Never
+    // reinterpret an unmarked bracket-name entry as a new-style identity.
+    const legacy = registry.latestFor(`Claude-Code-${slug}-${suffix}`);
+    const modern = registry.latestFor(names.personaName);
+    if (modern && modern.nameScheme !== 'bracket-v1') return 'Name collision with a legacy persona — pick another name.';
+    if (legacy && modern) return 'Ambiguous legacy/new identity — pick another name.';
+    const prior = legacy ?? modern;
+    const personaName = prior?.personaName ?? names.personaName;
+    const shortName = prior?.tmuxSession ?? names.shortName;
+    const workDir = prior ? prior.workDir : resolve(cfg.workRoot ?? resolve(cfg.projectDir, 'hands'), shortName);
+    if (!prior && registry.all().some((e) => e.tmuxSession === shortName && e.personaName.toLowerCase() !== personaName.toLowerCase())) {
+      return 'Name collision with an existing identity — pick another name.';
+    }
 
     const clash = registry.busy(suffix);
     if (clash) {
@@ -175,7 +190,6 @@ export class SpawnerActions {
       return `tmux session \`${shortName}\` already exists outside my registry — pick another name or clean it up.`;
     }
 
-    const prior = registry.latestFor(personaName);
     if (prior && prior.streamId !== where.streamId) {
       return `**${personaName}** already exists with its home in #${prior.streamName} — revive it there, or pick another name here.`;
     }
@@ -196,7 +210,7 @@ export class SpawnerActions {
     let canResume = false;
     if (priorSession) {
       try {
-        canResume = await this.d.host.exists(this.d.watcher.transcriptPath(priorSession));
+        canResume = await this.d.host.exists(this.d.watcher.transcriptPath(priorSession, workDir));
       } catch (err) {
         // Unsure ≠ missing: never start amnesiac because sudo hiccuped.
         return `Could not check **${personaName}**'s previous conversation (${(err as Error).message}) — nothing was started.`;
@@ -206,7 +220,8 @@ export class SpawnerActions {
     // A failed first launch may never have written a transcript — not "lost".
     const lostContext = Boolean(priorSession) && !canResume && prior?.status !== 'failed';
 
-    const paths = handPaths(cfg.handsDir, shortName);
+    const paths = handPaths(cfg.handsDir, shortName, prior?.handDir);
+    if (workDir && resolve(workDir) === resolve(paths.dir)) return 'workRoot must be separate from handsDir — refusing a non-empty working directory.';
     const now = new Date().toISOString();
     const entry: BotEntry = {
       suffix,
@@ -218,6 +233,10 @@ export class SpawnerActions {
       streamId: where.streamId,
       topic: where.topic,
       handDir: paths.dir,
+      workDir,
+      workDirReady: prior?.workDirReady,
+      nameScheme: prior ? prior.nameScheme : 'bracket-v1',
+      harness: prior ? prior.harness : 'cc',
       model: cmd.model,
       effort,
       sessionId,
@@ -231,21 +250,26 @@ export class SpawnerActions {
 
     let launched = false;
     try {
-      const { bot, created } = await this.d.provisioner.ensure(personaName, shortName);
+      const { bot, created } = await this.d.provisioner.ensure(personaName, shortName, !prior);
       registry.update(entry, { botUserId: bot.userId, botEmail: bot.email });
       if (!created && !prior) log(`${personaName}: reusing an existing bot ${bot.email} with no registry history`);
       await this.d.provisioner.subscribe(bot.userId, where.streamName);
+      if (workDir) {
+        await prepareWorkDir(this.d.host, cfg, workDir, !prior?.workDirReady);
+        registry.update(entry, { workDirReady: true });
+      }
 
       const seedCtx = { personaName, streamName: where.streamName, topic: where.topic, realm: this.d.realm };
       const seed = canResume
         ? buildResumePrompt({ ...seedCtx, awaySince: prior?.endReason ? `(${prior.endReason})` : undefined })
         : buildSeedPrompt(seedCtx);
-      await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed);
+      await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir);
 
-      const startOffset = canResume ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId))) ?? 0 : 0;
+      const startOffset = canResume ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
       launched = true;
       const result = await this.d.launcher.launch({
         personaName,
+        workDir,
         model: cmd.model,
         effort,
         sessionId,
@@ -401,7 +425,7 @@ export class SpawnerActions {
     const sessions = await this.d.tmux.listSessions();
     for (let i = 0; i < 16; i++) {
       const s = randomBytes(2).toString('hex');
-      if (!this.d.registry.busy(s) && !sessions.some((n) => n.endsWith(`-${s}`))) return s;
+      if (!this.d.registry.all().some((e) => e.suffix.toLowerCase() === s) && !sessions.some((n) => n.endsWith(`-${s}`))) return s;
     }
     throw new Error('could not find a free suffix');
   }

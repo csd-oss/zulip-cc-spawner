@@ -42,8 +42,10 @@ export interface SpawnerConfig {
   reapIntervalMs: number;
   /** Transcript/dialog watch interval (default 20s). */
   watchIntervalMs: number;
-  /** cwd for every hand — shared, like upstream (project auto-memory applies). */
+  /** Legacy hands’ cwd; must remain unchanged for transcript continuity. */
   projectDir: string;
+  /** Root for new hands’ empty working directories; defaults to projectDir/hands. */
+  workRoot?: string;
   /** OS user the hands run as (via `sudo -n -u`). Required unless `devMode`. */
   agentsUser?: string;
   /** Run hands as the spawner's own user (dev machine only: hands can then

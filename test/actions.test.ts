@@ -80,7 +80,7 @@ const run = (text: string, where: Where = home, invoker: Invoker = tester) =>
 
 test('spawn provisions a bot, writes its files and starts claude', async () => {
   const r = await run('spawn opus-5-5 name=Scout effort=high');
-  assert.match(r.content, /Spawned @\*\*Claude-Code-opus-5-5-scout\*\*/);
+  assert.match(r.content, /Spawned @\*\*\[cc-opus-5-5\] Scout\*\*/);
   const e = registry.findAlive('scout')!;
   assert.equal(e.status, 'alive');
   assert.equal(e.botUserId, 100);
@@ -117,7 +117,7 @@ test('spawn provisions a bot, writes its files and starts claude', async () => {
 test('a busy name, a DM spawn and a hand driving the spawner are refused', async () => {
   assert.match((await run('spawn opus-5-5 name=scout')).content, /is taken/);
   assert.match((await run('spawn opus-5-5', { kind: 'dm', userIds: [1] })).content, /not from a DM/);
-  const hand: Invoker = { userId: 100, name: 'Claude-Code-opus-5-5-scout', kind: 'resident' };
+  const hand: Invoker = { userId: 100, name: '[cc-opus-5-5] Scout', kind: 'resident' };
   assert.match((await run('list', home, hand)).content, /cannot drive/);
 });
 
@@ -128,7 +128,7 @@ test('unauthorized users and streams are refused', async () => {
 });
 
 test('list shows the hand; stop kills it and keeps the identity', async () => {
-  assert.match((await run('list')).content, /Claude-Code-opus-5-5-scout.*#cc-hands > release/);
+  assert.match((await run('list')).content, /\[cc-opus-5-5\] Scout.*#cc-hands > release/);
   const r = await run('stop scout');
   assert.match(r.content, /Stopped/);
   assert.equal(await tmux.hasSession('cc-opus-5-5-scout'), false);
@@ -136,8 +136,8 @@ test('list shows the hand; stop kills it and keeps the identity', async () => {
 });
 
 test('revival resumes the same transcript, keeps effort, refuses another stream or model', async () => {
-  const prior = registry.latestFor('Claude-Code-opus-5-5-scout')!;
-  const t = transcriptPath(cfg.agentsHome, cfg.projectDir, prior.sessionId);
+  const prior = registry.latestFor('[cc-opus-5-5] Scout')!;
+  const t = transcriptPath(cfg.agentsHome, prior.workDir!, prior.sessionId);
   mkdirSync(dirname(t), { recursive: true });
   writeFileSync(t, '{"type":"user"}\n');
 
