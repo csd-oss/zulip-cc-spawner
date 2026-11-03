@@ -106,11 +106,44 @@ Before launch, the spawner merges
 `<agentsHome>/.claude.json`, retaining other keys and atomically renaming a
 0600 temporary file. A lock directory serializes cooperating spawns across
 processes. A lock older than a crashed process is not automatically stolen:
-after verifying no spawner writer is alive, remove `.claude.json.spawner-lock`
-and retry. Invalid JSON fails closed. Other writers (including Claude itself)
+follow the first-preparation recovery procedure below. Invalid JSON fails closed. Other writers (including Claude itself)
 do not honor this lock; avoid concurrent external configuration edits. This
 assumes Claude uses the normal agentsHome configuration, not an overridden
 `CLAUDE_CONFIG_DIR`/HOME. Bypass-permissions consent still requires a person.
+
+### First-preparation recovery (manual, fail closed)
+
+A failed first preparation (invalid `.claude.json`, lock timeout, or a crash)
+can leave an empty workspace **before** `workDirReady` is persisted. Repairing
+the JSON or removing the lock alone does not fix this: the retry deliberately
+refuses the existing directory, naming its absolute path in the error.
+
+1. Stop the spawner and verify that no other spawner/helper writer is running
+   as the hand user. Inspect the registry entries for the exact identity and
+   `workDir`, and the hand user's tmux sessions. Proceed only if this is a
+   **never-launched, failed first preparation**, no session uses the directory,
+   and no history for that directory has `workDirReady: true`. If uncertain,
+   retain the directory and investigate; do not reset registry fields.
+2. Repair `<agentsHome>/.claude.json` as the hand user, preserving unrelated
+   keys (do not replace an existing real config with `{}`). If the lock is
+   stale, inspect `<agentsHome>/.claude.json.spawner-lock`. After confirming no
+   writer is alive, remove only its leftover `config.tmp`, if present, then
+   `rmdir -- '<agentsHome>/.claude.json.spawner-lock'`. Unexpected contents or
+   symlinks require investigation, not recursive removal.
+3. As the hand user, inspect the **exact workspace path named in the error**:
+   check its owner and use `ls -ld -- '<workDir>'` and
+   `ls -la -- '<workDir>'` to include hidden files. It must be a real directory,
+   not a symlink, owned by the hand user and completely empty. For example,
+   after the history/session checks above:
+   ```sh
+   workdir='/absolute/path/from/the/error'  # replace with the verified path
+   test ! -L "$workdir" && test -d "$workdir" && rmdir -- "$workdir"
+   ```
+   `rmdir` refuses a nonempty directory. Never use `rm -rf`, remove contents to
+   make it empty, or delete a previously launched hand's workspace.
+4. Restart the spawner and retry the same model/name. It will exclusively
+   create a fresh empty directory and prepare trust again. Keep the registry,
+   bot identity and hand credential files; do not delete them for this repair.
 
 Legacy registry entries without `workDir`/`nameScheme` keep their old identity,
 hand directory and global `projectDir` cwd. Do not change `projectDir` while

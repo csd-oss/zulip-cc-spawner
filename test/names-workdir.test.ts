@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, openSync, readSync, closeSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, openSync, readSync, closeSync, rmdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
@@ -184,4 +184,37 @@ test('new identity never adopts an existing workspace or unregistered legacy bot
   await assert.rejects(p.ensure('[cc-opus-5-5] old', 'cc-opus-5-5-old', true), /collision/);
   assert.equal(creates, 0);
   assert.equal((await p.ensure('Claude-Code-opus-5-5-old', 'cc-opus-5-5-old')).created, false);
+});
+
+
+test('first trust failure stays fail-closed after JSON repair; manual empty-dir recovery permits retry', async () => {
+  const c = fixture();
+  mkdirSync(c.cfg.agentsHome);
+  const file = join(c.cfg.agentsHome, '.claude.json');
+  writeFileSync(file, 'broken');
+  assert.match((await c.run('spawn opus-5-5 name=retry')).content, /failed/);
+  const first = c.registry.all()[0];
+  const workDir = first.workDir!;
+  assert.equal(first.status, 'failed');
+  assert.equal(first.workDirReady, undefined);
+  assert.deepEqual(readdirSync(workDir), []);
+  assert.equal(c.launches.length, 0);
+
+  writeFileSync(file, '{}'); // isolated test config; real operators preserve keys
+  const retry = await c.run('spawn opus-5-5 name=retry');
+  assert.match(retry.content, /Workspace already exists:/);
+  assert.ok(retry.content.includes(workDir), 'action reply names the exact workspace');
+  assert.match(retry.content, /Refusing to adopt it/);
+  assert.equal(c.launches.length, 0);
+  assert.deepEqual(readdirSync(workDir), []);
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {});
+
+  rmdirSync(workDir); // documented manual recovery, refuses nonempty directories
+  assert.match((await c.run('spawn opus-5-5 name=retry')).content, /Spawned/);
+  const recovered = c.registry.findAlive('retry')!;
+  assert.equal(recovered.workDir, workDir);
+  assert.equal(recovered.botEmail, first.botEmail);
+  assert.equal(recovered.workDirReady, true);
+  assert.equal(c.launches.length, 1);
+  assert.deepEqual(readdirSync(workDir), []);
 });

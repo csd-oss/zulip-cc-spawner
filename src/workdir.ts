@@ -11,7 +11,14 @@ const fs = require('node:fs/promises'), path = require('node:path');
   const [dir, file, fresh] = process.argv.slice(1);
   if (!path.isAbsolute(dir)) throw Error('workDir must be absolute');
   await fs.mkdir(path.dirname(dir), {recursive:true, mode:0o700});
-  if (fresh === 'yes') await fs.mkdir(dir, {mode:0o700});
+  if (fresh === 'yes') {
+    try { await fs.mkdir(dir, {mode:0o700}); }
+    catch(e) {
+      if (e.code === 'EEXIST') throw Error('Workspace already exists: ' + dir +
+        '. Refusing to adopt it. Inspect the failed preparation and follow README first-preparation recovery before retrying.');
+      throw e;
+    }
+  }
   const st = await fs.lstat(dir);
   if (!st.isDirectory() || st.isSymbolicLink()) throw Error('unsafe workDir');
   await fs.chmod(dir, 0o700);
