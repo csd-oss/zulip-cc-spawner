@@ -389,9 +389,16 @@ export class SpawnerActions {
     const sent: string[] = [];
     for (const raw of keys) {
       const named = KEY_NAMES[raw.toLowerCase()];
-      if (named) await this.d.tmux.sendKeys(entry.tmuxSession, named);
-      else if (/^\d$/.test(raw)) await this.d.tmux.sendKeys(entry.tmuxSession, raw);
-      else await this.d.tmux.sendText(entry.tmuxSession, raw);
+      try {
+        if (named) await this.d.tmux.sendKeys(entry.tmuxSession, named);
+        else if (/^\d$/.test(raw)) await this.d.tmux.sendKeys(entry.tmuxSession, raw);
+        else await this.d.tmux.sendText(entry.tmuxSession, raw);
+      } catch (err) {
+        const prefix = sent.length ? sent.map((k) => `\`${k}\``).join(' ') : 'none confirmed';
+        return `Could not send \`${raw}\` to **${entry.personaName}**: ${(err as Error).message}\n` +
+          `Sent before failure: ${prefix}. The input may be half-typed (the failed send may also have reached the terminal). ` +
+          `Inspect with \`peek ${entry.suffix}\`; try \`press ${entry.suffix} ctrl-u\` to clear the line or \`press ${entry.suffix} esc\` to cancel.`;
+      }
       sent.push(named ?? raw);
       await new Promise((r) => setTimeout(r, 300));
     }

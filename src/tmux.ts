@@ -83,7 +83,7 @@ export class Tmux {
 
   /** Literal text (no key-name interpretation — `-l`). */
   async sendText(name: string, text: string): Promise<void> {
-    await this.tmux(['send-keys', '-t', `=${name}:`, '-l', text]);
+    await this.tmux(['send-keys', '-t', `=${name}:`, '-l', '--', text]);
   }
 
   async listSessions(): Promise<string[]> {

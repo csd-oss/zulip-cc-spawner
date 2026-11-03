@@ -32,6 +32,9 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
   conversation (`claude --resume`), in the same stream (a new topic is fine).
 - **Blocked hands**: a question dialog or permission prompt is posted in the hand's topic; answer
   with `answer`, or in that topic simply `@**CC Spawner** yes` / `2` / `esc`.
+- **Raw keys**: `press` uses the `space` keyword for spaces; literal text starting with
+  `-` or `--` works too, e.g. `press scout /codex:review space --base space main enter`.
+  Sends are sequential, not atomic; on failure the reply lists the completed keys and recovery options.
 - **Reaping**: a hand with no public Zulip activity for 24 h (checked against Zulip before acting)
   is stopped; its identity and conversation are kept. A hand that says nothing for 10 minutes
   after starting gets a warning — it may not be connected.

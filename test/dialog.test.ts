@@ -149,3 +149,29 @@ test('attribution headers: templates filled, unsafe names refused', () => {
   ]);
   assert.throws(() => renderHeaders({ 'bad name': 'v' }, req), /bad header name/);
 });
+
+test('press reports the completed prefix and stops after a literal send failure', async () => {
+  const s = setup();
+  s.tmux.sendText = async (_n, text) => {
+    if (text === '--base') throw new Error('tmux send failed');
+    s.tmux.text.push(text);
+  };
+  const r = await s.run('press scout /codex:review space --base space main enter');
+  assert.match(r.content, /Could not send `--base`.*tmux send failed/);
+  assert.match(r.content, /Sent before failure: `\/codex:review` `Space`/);
+  assert.match(r.content, /input may be half-typed/);
+  assert.match(r.content, /press scout ctrl-u/);
+  assert.match(r.content, /press scout esc/);
+  assert.deepEqual(s.tmux.text, ['/codex:review']);
+  assert.deepEqual(s.tmux.keys, ['Space']);
+});
+
+test('press reports no confirmed keys when the first named key fails', async () => {
+  const s = setup();
+  s.tmux.sendKeys = async () => { throw new Error('tmux unavailable'); };
+  const r = await s.run('press scout enter hello');
+  assert.match(r.content, /Could not send `enter`/);
+  assert.match(r.content, /Sent before failure: none confirmed/);
+  assert.match(r.content, /input may be half-typed/);
+  assert.deepEqual(s.tmux.text, []);
+});
