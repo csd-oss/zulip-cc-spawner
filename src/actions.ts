@@ -394,8 +394,9 @@ export class SpawnerActions {
         else if (/^\d$/.test(raw)) await this.d.tmux.sendKeys(entry.tmuxSession, raw);
         else await this.d.tmux.sendText(entry.tmuxSession, raw);
       } catch (err) {
+        log(`press ${entry.suffix} failed at key ${sent.length + 1}: ${(err as Error).stack ?? err}`);
         const prefix = sent.length ? sent.map((k) => `\`${k}\``).join(' ') : 'none confirmed';
-        return `Could not send \`${raw}\` to **${entry.personaName}**: ${(err as Error).message}\n` +
+        return `Could not send \`${raw}\` to **${entry.personaName}**: tmux rejected key ${sent.length + 1}.\n` +
           `Sent before failure: ${prefix}. The input may be half-typed (the failed send may also have reached the terminal). ` +
           `Inspect with \`peek ${entry.suffix}\`; try \`press ${entry.suffix} ctrl-u\` to clear the line or \`press ${entry.suffix} esc\` to cancel.`;
       }
