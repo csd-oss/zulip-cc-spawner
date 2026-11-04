@@ -47,12 +47,18 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 and default behaviour. `gpt-*` selects Codex; other ids select Claude. Override
 with `engine=codex|claude`. Codex hands are named `[cx-<model>] <name>`.
 
-Codex accepts `minimal`, `low`, `medium`, `high`, `xhigh`; `gpt-6-astra`,
-`gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` also accept `max`.
-`gpt-5.5`, `gpt-5.4-mini`, and unlisted GPT models (including `gpt-6.1-sol`)
-stop at `xhigh`. Codex does not accept `ultra` or `ultracode`.
-For example: `spawn gpt-6-astra name=scout effort=max`.
-Claude's model-dependent effort rules are unchanged; consult `models`.
+Thin-portal rule: pass through what the CLI accepts or rejects loudly; refuse only to prevent a silent downgrade, never impose guessed limits.
+
+All Codex models accept the portal vocabulary `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`, and `ultra` for pass-through, including listed models, unlisted
+models and arbitrary ids with `engine=codex`. Codex decides model compatibility;
+local packaged CLI/help does not establish unsupported-effort behavior.
+`models` shows relayed capability data (upstream codex PR #761, not independently
+verified) as **advisory only**: Astra/Sol/Terra up to ultra, Luna up to max,
+and 5.5/5.4-mini up to xhigh. Higher vocabulary efforts are still passed through.
+`ultracode` is Claude-only. For example: `spawn gpt-5.5 name=scout effort=ultra`.
+Claude's existing rules are unchanged: they are documented as preventing silent
+CLI fallback; consult `models`.
 There is no default model. `effort=default` clears any stored effort and lets
 the CLI choose (no override); omitting effort inherits it on revival.
 

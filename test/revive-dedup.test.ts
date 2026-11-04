@@ -128,3 +128,74 @@ test('Claude seed and resume prompts remain byte-identical to pre-ADD1', () => {
     assert.ok(!prompt.includes('When answering a message found during catch-up'));
   }
 });
+
+for (const [label, boundary] of [
+  ['valid', async () => 10],
+  ['rejected', async () => { throw new Error('lookup failed'); }],
+  ['missing', undefined],
+  ...[-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, undefined, '12'].map((value) =>
+    [`invalid ${String(value)}`, async () => value] as const),
+] as const) test(`Codex revive: ${label} boundary controls launch and releases intake`, { timeout: 2000 }, async (t) => {
+  const valid = label === 'valid';
+  const diagnostics = t.mock.method(console, 'error', () => {});
+  const dir = tmp();
+  const config = testConfig(dir);
+  const registry = new Registry(join(dir, 'registry.json'));
+  registry.add({ suffix: 'test', personaName: '[cx-gpt-5] test', nameScheme: 'bracket-v1',
+    engine: 'codex', model: 'gpt-5', botUserId: 42, status: 'reaped', streamId: 7,
+    sessionId: '12345678-1234-1234-1234-123456789abc', tmuxSession: 'cx-gpt-5-test',
+    handDir: join(dir, 'prior'), topic: 'topic', streamName: 'cc-hands',
+  } as BotEntry);
+  const notifier = { async postHome() { return 1; }, async reply() {}, async dm() {} };
+  let reads = 0;
+  let launches = 0;
+  let releases = 0;
+  let running = false;
+  const wake = new CodexWake(registry, notifier,
+    async () => { reads++; return undefined; },
+    async () => { assert.fail('failed revive must not queue'); }, async () => {});
+  const ready = wake.ready.bind(wake);
+  const releasedStatuses: string[] = [];
+  wake.ready = (entry) => { releases++; releasedStatuses.push(entry.status); ready(entry); };
+  const actions = new SpawnerActions({ config, registry, host: new LocalHost(), notifier,
+    tmux: {
+      async hasSession() { return running; },
+      async newSession() { launches++; running = true; },
+      async capturePane() { return 'Ask Codex to do anything'; },
+      async killSession() { running = false; },
+    } as unknown as Tmux,
+    launcher: { async launch() { launches++; } } as unknown as ClaudeLauncher,
+    watcher: {} as TranscriptWatcher,
+    provisioner: {
+      async ensure() {
+        // Intake really waits while the action is provisioning, even if the
+        // boundary callback is absent. drain() below detects a leaked waiter.
+        wake.onMessage({ id: 11, type: 'stream', stream_id: 7, subject: 'topic', sender_id: 1 } as ZulipMessage);
+        await Promise.resolve();
+        return { bot: { userId: 42, email: 'hand@example.org', apiKey: 'fake' }, created: false };
+      },
+      async subscribe() {},
+      credsFor() { return { email: 'hand@example.org', key: 'fake', site: 'offline' }; },
+    } as unknown as Provisioner,
+    groupCheck: async () => false, realm: 'offline', codexWake: wake,
+    // Invalid external values deliberately exercise the runtime guard.
+    codexBoundary: boundary as (() => Promise<number>) | undefined,
+  });
+  const result = await actions.run({ cmd: parseCommand('spawn gpt-5 name=test'), body: '',
+    where: { kind: 'stream', streamId: 7, streamName: 'cc-hands', topic: 'topic' },
+    invoker: { kind: 'user', userId: 1, name: 'Tester' } });
+  assert.match(result.content, valid ? /Revived/ : /Codex launch failed/);
+  assert.equal(launches, valid ? 1 : 0);
+  const persisted = new Registry(join(dir, 'registry.json'));
+  persisted.load();
+  assert.equal(persisted.latestFor('[cx-gpt-5] test')!.codexCatchupThrough, valid ? 10 : undefined);
+  const errors = diagnostics.mock.calls.map(call => (call.arguments[0] as Error).message);
+  assert.deepEqual(errors, valid ? [] : [label === 'rejected' ? 'lookup failed'
+    : label === 'missing' ? 'Codex catch-up boundary unavailable' : 'Invalid Codex catch-up boundary']);
+  assert.equal(releases, 1);
+  assert.deepEqual(releasedStatuses, [valid ? 'alive' : 'failed']);
+  await wake.drain();
+  assert.equal(reads, valid ? 1 : 0);
+  assert.equal(registry.provisioning().length, 0);
+  assert.equal(registry.alive().length, valid ? 1 : 0);
+});

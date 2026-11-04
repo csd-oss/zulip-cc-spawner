@@ -51,21 +51,26 @@ interface ModelCapability {
   engine: Engine;
   matches: (model: string) => boolean;
   efforts: readonly string[];
+  /** Advisory only: Codex compatibility is decided by the CLI. */
+  upstreamMax?: string;
 }
-const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+const CODEX_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 /** Ordered, first match per engine. Preserve the existing Claude pattern rules. */
 export const MODEL_CAPABILITIES: readonly ModelCapability[] = [
-  // Per upstream openai/codex model capabilities (codex PR #761); not independently
-  // verified. max enabled for these exact ids; ultra deliberately excluded.
-  ...['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'].map((model) => ({
+  // Relayed upstream codex PR #761 capability data; not independently verified.
+  ...([
+    ['gpt-6-astra', 'ultra'], ['gpt-5.6-sol', 'ultra'], ['gpt-5.6-terra', 'ultra'],
+    ['gpt-5.6-luna', 'max'], ['gpt-5.5', 'xhigh'], ['gpt-5.4-mini', 'xhigh'],
+  ] as const).map(([model, upstreamMax]) => ({
     label: model, engine: 'codex' as const,
     matches: (id: string) => id.toLowerCase() === model,
-    efforts: [...CODEX_EFFORTS, 'max'],
+    efforts: CODEX_EFFORTS, upstreamMax,
   })),
-  // gpt-6.1-sol was previously generic Codex: retain xhigh, not an inferred max.
-  { label: 'gpt-5.5 / gpt-5.4-mini / gpt-6.1-sol / other gpt-* (or engine=codex)',
-    engine: 'codex', matches: () => true, efforts: CODEX_EFFORTS },
+  // Local packaged CLI/help does not establish unsupported-model behaviour.
+  // Never enforce a ceiling, listed or not (including explicit engine=codex).
+  { label: 'Other gpt-* / other ids with engine=codex', engine: 'codex',
+    matches: () => true, efforts: CODEX_EFFORTS },
   { label: 'Claude 3.x / Haiku 3.x, 4.5 / Sonnet 4.0, 4.5',
     engine: 'claude', matches: (id) => NO_EFFORT_RE.test(id), efforts: [] },
   { label: 'Opus 4.0, 4.1, 4.5', engine: 'claude',
@@ -85,7 +90,7 @@ export function modelCapability(model: string, engine?: Engine): ModelCapability
 export function effortError(effort: string, model: string, engine?: Engine): string | undefined {
   if (effort === EFFORT_DEFAULT) return undefined;
   const capability = modelCapability(model, engine);
-  if (capability.engine === 'codex') return capability.efforts.includes(effort) ? undefined : `Codex effort must be ${capability.efforts.join(', ')}, or default.`;
+  if (capability.engine === 'codex') return capability.efforts.includes(effort) ? undefined : `effort \`${effort}\` is not available on \`${model}\` — Codex efforts: ${capability.efforts.join(', ')}, or default.`;
   const valid = `${EFFORT_LEVELS.map((l) => `\`${l}\``).join(', ')}, or \`${EFFORT_DEFAULT}\``;
   if (!EFFORT_LEVELS.includes(effort)) return `effort \`${effort}\` not supported — ${valid}`;
   if (capability.efforts.includes(effort)) return undefined;
@@ -100,7 +105,7 @@ export const USAGE = [
   'Usage (mention me):',
   '`spawn <model> [name=<friendly>] [effort=<level>] [engine=codex|claude]` — spawn a hand whose home is this stream + topic (model explicit: fable-5-1, opus-5-5, sonnet-5-5, haiku-4-5, … or a full id; Claude effort: low, medium, high, xhigh, max, ultracode — kept across revivals, `effort=default` clears it)',
   'Codex: `gpt-*` → `codex` CLI; other ids → `claude`. Override with `engine=codex|claude`. Names: `[cx-<model>] <name>` (Claude: `[cc-<model>] <name>`).',
-  `Codex efforts: ${[...new Set(MODEL_CAPABILITIES.filter((r) => r.engine === 'codex').flatMap((r) => r.efforts))].join(', ')} (model-dependent); no ultra.`,
+  `Codex efforts: ${[...new Set(MODEL_CAPABILITIES.filter((r) => r.engine === 'codex').flatMap((r) => r.efforts))].join(', ')} (passed through; model-dependent).`,
   '`models` (or `help models`) — aliases, full ids, CLIs, allowed efforts and default behaviour',
   '`list` — show running hands',
   '`stop <name>` — stop a hand (identity and conversation are kept; `spawn` the same model + name revives it)',
@@ -134,7 +139,7 @@ export const MODEL_CHOICES = Object.keys(MODEL_ALIASES);
 /** Human-readable listing uses the same capability rows as validation. */
 export function modelsListing(): string {
   const format = (label: string, row: ModelCapability) =>
-    `* ${label} — ${row.engine}: ${[...row.efforts, EFFORT_DEFAULT].join(', ')}`;
+    `* ${label} — ${row.engine}: ${[...row.efforts, EFFORT_DEFAULT].join(', ')}${row.engine === 'codex' ? ' — passed to codex (model-dependent)' : ''}${row.upstreamMax ? `; advisory: up to ${row.upstreamMax} (upstream data; higher passed through, codex decides)` : ''}`;
   return [
     'Models → CLI: allowed efforts (patterns below are first-match per CLI).',
     ...Object.entries(MODEL_ALIASES).map(([alias, id]) => format(`\`${alias}\` → \`${id}\``, modelCapability(id))),
