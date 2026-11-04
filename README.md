@@ -153,3 +153,59 @@ hand directory and global `projectDir` cwd. Do not change `projectDir` while
 legacy hands need their transcripts. Spawn with the same model and suffix to
 revive them. Optional fields leave the JSON array readable by the old binary,
 but **downgrade is not behaviorally safe**: it ignores new cwd/name metadata.
+
+## Codex hands
+
+`spawn gpt-5 name=scout effort=high` infers Codex; Claude remains the default
+for other models. `engine=codex` or `engine=claude` overrides inference.
+Codex identities use `[cx-<model>] <name>` (the existing bounded model slug).
+Set optional `codexBin` to the agents user's Codex executable; default: `codex`.
+Use the deployed **0.163.0** pin. The supplied dispatch brief confirms that
+version's `queue --thread/--message` and `resume [SESSION_ID]` help.
+Offline verification here used installed 0.166.0 help only; no model/gate calls.
+
+Hands use the same isolated working-directory allocation under `workRoot`
+(deployment: `/home/cc-agents/workspace/hands/<short>`), not their credential
+directory. Codex does not write Claude trust settings. Startup accepts directory
+trust, the existing-model option, and press-enter prompts; login fails with an
+operator message, and startup times out after 90 seconds.
+
+The existing agents user's `~/.codex/config.toml` supplies provider/base URL
+(including the deployment gate's `/codex` route). No URL or token is hardcoded.
+Model and optional effort are passed on every launch, including resume.
+MCP overrides are per invocation; no Codex config edits. The same `nodeBin`,
+`zulipMcp`, and five `ZULIP_*` transport variables as Claude's bridge are
+reused directly in **plain MCP** mode (`MCPL_ENABLED=false`). Codex does not
+forward arbitrary parent environment variables to MCP children: we explicitly
+pass these variables and HOME; do not rely on agentsEnvFile variables, PATH,
+MCPL_BRIDGE_CONFIG, or model credentials reaching that child. Prefer absolute
+nodeBin/zulipMcp paths. MCPL push/channel features are not used in this mode.
+
+The spawner must be subscribed to each home stream. It fetches each candidate
+message **as the hand's bot**, using Zulip's authoritative `mentioned` flag
+(the spawner's own flag is not evidence). Only non-self mentions in the home
+stream/topic wake Codex, including mentions from bots; DMs/ambient traffic do
+not. Sender, topic and message are queued using execFile argv, never evaluated
+as shell text. Addressing checks use a separate bounded intake retaining the newest 20 pending
+candidates; overload and lookup failures are console-only. Only confirmed mentions
+consume wake capacity. Per-hand wake queues serialize, space attempts by one second,
+and cap backlog at 20. Public failures (including addressed overflow) use fixed
+text, coalesced to at most one per hand per minute with no concurrent notices;
+details are console-only.
+Offline messages are not replayed by the spawner. The hand can fetch backscroll.
+
+New rollouts must match launch time and canonical cwd; ambiguity is refused.
+Discovered session ids persist in the registry. Revival uses `codex resume <id>`
+with the same model/workdir/MCP. Without an id it starts fresh and says so; an
+unavailable id disables mention-wake. Known ids are not silently replaced on
+resume failure. Stop, peek (private), and press still use tmux. Claude-specific
+transcript/dialog parsing is skipped for Codex; use peek/press for its dialogs.
+
+### Risks
+
+Codex runs with **--dangerously-bypass-approvals-and-sandbox (YOLO)**.
+This is not a sandbox. Hands share the agents Unix user, ~/.codex authentication,
+and one subscription's limits. Credentials/tokens may be persisted in Codex
+state/WAL; protect the entire agents home and backups, not just config.toml.
+No new sandbox is installed. Bubblewrap was not on PATH in this implementation
+environment; host availability must be checked by the operator.

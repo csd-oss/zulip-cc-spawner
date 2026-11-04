@@ -38,6 +38,7 @@ export interface BotEntry {
   workDirReady?: boolean;
   nameScheme?: 'bracket-v1';
   harness?: string;
+  engine?: 'claude' | 'codex';
   model: string;
   /** Reasoning effort this launch ran with; re-passed on revival (CC does not restore it). */
   effort?: string;

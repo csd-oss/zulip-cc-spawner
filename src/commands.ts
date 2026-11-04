@@ -1,5 +1,5 @@
 /**
- * Command grammar and validation (ported from cc-spawner, codex removed).
+ * Command grammar and validation (ported from cc-spawner).
  *
  * Text grammar, over the message body with leading @-mentions stripped:
  *   spawn <model> [name=<friendly>] [effort=<level>]
@@ -12,7 +12,7 @@
  *   help
  */
 export type Command =
-  | { kind: 'spawn'; model: string; friendly?: string; effort?: string }
+  | { kind: 'spawn'; model: string; friendly?: string; effort?: string; engine?: 'claude' | 'codex' }
   | { kind: 'list' }
   | { kind: 'stop'; target: string }
   | { kind: 'peek'; target: string; lines?: number }
@@ -43,8 +43,9 @@ const NO_MAX_RE = /opus-4(?:-[015])?(?:-\d{8})?(?![-.]?\d)/i;
 // No effort parameter at all: 3.x, Sonnet 4.0/4.5, Haiku 3.x/4.5.
 const NO_EFFORT_RE = /claude-3-|haiku-[34]|sonnet-4(?:-[05])?(?:-\d{8})?(?![-.]?\d)/i;
 
-export function effortError(effort: string, model: string): string | undefined {
+export function effortError(effort: string, model: string, engine?: 'claude' | 'codex'): string | undefined {
   if (effort === EFFORT_DEFAULT) return undefined;
+  if ((engine ?? (/^gpt-/i.test(model) ? 'codex' : 'claude')) === 'codex') return ['minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort) ? undefined : 'Codex effort must be minimal, low, medium, high, xhigh, or default.';
   const valid = `${EFFORT_LEVELS.map((l) => `\`${l}\``).join(', ')}, or \`${EFFORT_DEFAULT}\``;
   if (!EFFORT_LEVELS.includes(effort)) return `effort \`${effort}\` not supported — ${valid}`;
   if (NO_EFFORT_RE.test(model)) return `\`${model}\` has no effort setting — drop \`effort=\``;
@@ -123,7 +124,7 @@ export function modelSlug(model: string): string {
   return s.slice(0, 12).replace(/-+$/, '') || 'model';
 }
 
-export function buildSpawnCommand(model: string | undefined, friendly?: string, effort?: string): Command {
+export function buildSpawnCommand(model: string | undefined, friendly?: string, effort?: string, engine?: 'claude' | 'codex'): Command {
   if (friendly !== undefined && !FRIENDLY_RE.test(friendly)) {
     return { kind: 'help', error: `bad name \`${friendly}\` — use 1-24 chars of [A-Za-z0-9-]` };
   }
@@ -136,7 +137,7 @@ export function buildSpawnCommand(model: string | undefined, friendly?: string, 
     };
   }
   const resolved = resolveModel(model);
-  const error = effort === undefined ? undefined : effortError(effort, resolved);
+  const error = effort === undefined ? undefined : effortError(effort, resolved, engine);
   if (error) return { kind: 'help', error };
   return { kind: 'spawn', model: resolved, friendly, effort };
 }
@@ -207,11 +208,16 @@ export function parseCommand(body: string): Command {
       let model: string | undefined;
       let friendly: string | undefined;
       let effort: string | undefined;
+      let engine: 'claude' | 'codex' | undefined;
       for (const tok of tokens.slice(1)) {
         const kv = tok.match(/^([a-z]+)=(.*)$/);
         if (kv) {
           const [, key, value] = kv;
-          if (key === 'name') friendly = value;
+          if (key === 'engine') {
+            if (value !== 'claude' && value !== 'codex') return { kind: 'help', error: 'engine must be claude or codex' };
+            engine = value;
+          }
+          else if (key === 'name') friendly = value;
           else if (key === 'effort') effort = value.toLowerCase();
           else if (key === 'model') model = value;
           else return { kind: 'help', error: `unknown option \`${key}=\`` };
@@ -221,7 +227,8 @@ export function parseCommand(body: string): Command {
           return { kind: 'help', error: `unexpected token \`${tok}\`` };
         }
       }
-      return buildSpawnCommand(model, friendly, effort);
+      const command = buildSpawnCommand(model, friendly, effort, engine);
+      return command.kind === 'spawn' && engine ? { ...command, engine } : command;
     }
     case 'list':
       return extra(1) ?? { kind: 'list' };

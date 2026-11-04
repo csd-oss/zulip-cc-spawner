@@ -65,6 +65,7 @@ export interface SpawnerConfig {
   agentsEnvFile?: string;
   /** Claude Code CLI, absolute path as the agents user sees it. */
   claudeBin: string;
+  codexBin?: string;
   /** node binary that runs zulip_mcp under the bridge. */
   nodeBin: string;
   /** zulip_mcp entry point (build/index.js). */
