@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { CodexWake } from '../src/codex-wake.js';
-import { buildResumePrompt } from '../src/handfiles.js';
+import { buildResumePrompt, buildSeedPrompt } from '../src/handfiles.js';
 import { Registry, type BotEntry } from '../src/registry.js';
 import type { ZulipMessage } from '../src/zulip.js';
 import { tmp } from './helpers.js';
@@ -84,6 +85,7 @@ for (const resume of [false, true]) test(`${resume ? 'revive' : 'fresh'} product
   assert.deepEqual(queued, [11]);
   assert.match(seed, /Catch-up boundary: message id <= 10/);
   assert.match(seed, /only still-unanswered mentions/);
+  assert.ok(seed.includes("When answering a message found during catch-up, @-mention its sender using Zulip @**Name** syntax (replace Name with the sender's full name), just as for live mentions, so they receive a mention notification."));
   assert.match(seed, /do not repeat answers already in your earlier conversation or backscroll/);
   assert.match(seed, /Messages with id > 10 belong exclusively to the spawner wake queue/);
   // Fake reader obeys the seed contract: pre-stop answered 8 is context;
@@ -111,4 +113,18 @@ test('failed startup releases buffered intake without queueing; Claude is exclud
   wake.ready(e);
   await wake.drain();
   assert.equal(reads, 0);
+});
+
+test('Claude seed and resume prompts remain byte-identical to pre-ADD1', () => {
+  const ctx = { personaName: 'hand', streamName: 'home', topic: 'topic', realm: 'offline' };
+  // SHA-256 snapshots captured at 67bca6e before the Codex-only prompt change.
+  const cases = [
+    [buildSeedPrompt(ctx), '0ed68e47856b24fbbf6104e593dd1435f0039530246f3e3d0eb26b1e0374ab7c'],
+    [buildResumePrompt(ctx), '0e517c9b1a9b8f75206c66f976ddea1a016702100584beaae0a6d0e278523491'],
+    [buildResumePrompt({ ...ctx, awaySince: 'yesterday' }), 'cb27128cf867201544a27bc719ea28a0c550bfa9f67a305c80e55dfc2fca66ae'],
+  ];
+  for (const [prompt, hash] of cases) {
+    assert.equal(createHash('sha256').update(prompt).digest('hex'), hash);
+    assert.ok(!prompt.includes('When answering a message found during catch-up'));
+  }
 });

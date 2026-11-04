@@ -15,6 +15,7 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 
 ```
 @**CC Spawner** spawn opus-5-5 [name=scout] [effort=high]   # home = this stream + topic
+@**CC Spawner** models                                     # also: help models
 @**CC Spawner** list
 @**CC Spawner** stop scout                                   # alias: kill
 @**CC Spawner** peek scout [lines]                           # terminal tail, by DM
@@ -39,6 +40,21 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
   is stopped; its identity and conversation are kept. A hand that says nothing for 10 minutes
   after starting gets a warning — it may not be connected.
 - Commands sent while the spawner was offline are never run; it says so once per topic.
+
+## Models and effort
+
+`models` (or `help models`) lists aliases → full model ids, CLI, allowed efforts,
+and default behaviour. `gpt-*` selects Codex; other ids select Claude. Override
+with `engine=codex|claude`. Codex hands are named `[cx-<model>] <name>`.
+
+Codex accepts `minimal`, `low`, `medium`, `high`, `xhigh`; `gpt-6-astra`,
+`gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` also accept `max`.
+`gpt-5.5`, `gpt-5.4-mini`, and unlisted GPT models (including `gpt-6.1-sol`)
+stop at `xhigh`. Codex does not accept `ultra` or `ultracode`.
+For example: `spawn gpt-6-astra name=scout effort=max`.
+Claude's model-dependent effort rules are unchanged; consult `models`.
+There is no default model. `effort=default` clears any stored effort and lets
+the CLI choose (no override); omitting effort inherits it on revival.
 
 ## How a hand is wired
 

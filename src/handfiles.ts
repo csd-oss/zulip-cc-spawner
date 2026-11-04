@@ -161,6 +161,7 @@ export function buildCodexPrompt(ctx: SeedContext, through: number, resume: bool
 Your home is #${ctx.streamName} > ${ctx.topic}. Reply with the Zulip MCP send_message tool (stream "${ctx.streamName}", topic "${ctx.topic}").
 Catch-up boundary: message id <= ${through}. Read recent home-topic backscroll only through this inclusive boundary.
 Answer only still-unanswered mentions addressed to you within that boundary; do not repeat answers already in your earlier conversation or backscroll. Messages already delivered in your earlier conversation are not new requests: finish any pending work there rather than admitting them again from backscroll.
+When answering a message found during catch-up, @-mention its sender using Zulip @**Name** syntax (replace Name with the sender's full name), just as for live mentions, so they receive a mention notification.
 Messages with id > ${through} belong exclusively to the spawner wake queue, including messages you see in tool results during catch-up. Do not answer those from backscroll; wait for their queued delivery.
 Only home-topic mentions wake you. Other backscroll is context, not a request to answer. ${resume ? '' : 'Say hi when ready.'}
 `;
