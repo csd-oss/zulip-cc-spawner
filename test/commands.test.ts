@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { modelSlug, parseCommand, resolveModel, stripMentions } from '../src/commands.js';
+import { modelSlug, parseCommand, resolveModel, stripMentions, effortError, modelCapability, modelsListing, MODEL_ALIASES, USAGE } from '../src/commands.js';
 import { startsWithMention } from '../src/control.js';
 
 test('spawn resolves explicit model aliases and options', () => {
@@ -71,4 +71,46 @@ test('a stream command must start with the spawner mention', () => {
 test('modelSlug keeps names short and stable', () => {
   assert.equal(modelSlug('claude-opus-5-5'), 'opus-5-5');
   assert.equal(modelSlug('global.anthropic.claude-sonnet-4-5-20250929'), 'sonnet-4-5');
+});
+
+test('models and help models parse with fixed arity; help documents Codex', () => {
+  for (const text of ['models', 'help models', 'HELP MODELS']) assert.deepEqual(parseCommand(text), { kind: 'models' });
+  for (const text of ['models extra', 'help models extra']) assert.equal(parseCommand(text).kind, 'help');
+  for (const text of ['gpt-*', 'engine=codex|claude', '[cx-<model>] <name>', 'Codex efforts:', 'minimal', 'xhigh', 'max', 'models']) assert.ok(USAGE.includes(text), text);
+});
+
+const capabilityCases: [string, string[]][] = [
+  ...['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'].map((m): [string, string[]] => [m, ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']]),
+  ...['gpt-5.5', 'gpt-5.4-mini', 'gpt-6.1-sol', 'gpt-unknown'].map((m): [string, string[]] => [m, ['minimal', 'low', 'medium', 'high', 'xhigh']]),
+  ...['claude-3-opus', 'claude-haiku-4-5', 'claude-sonnet-4-5'].map((m): [string, string[]] => [m, []]),
+  ['claude-opus-4-5', ['low', 'medium', 'high']],
+  ['claude-opus-4-6', ['low', 'medium', 'high', 'max']],
+  ['claude-sonnet-4-6', ['low', 'medium', 'high', 'max']],
+  ['claude-opus-4-7', ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']],
+  ['claude-opus-5-5', ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']],
+];
+for (const [model, allowed] of capabilityCases) {
+  test(`capabilities, validation and listing agree: ${model}`, () => {
+    const row = modelCapability(model);
+    assert.deepEqual(row.efforts, allowed);
+    assert.ok(modelsListing().includes(`${row.label} — ${row.engine}: ${[...allowed, 'default'].join(', ')}`));
+    for (const effort of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode', 'bogus', 'default']) {
+      const valid = allowed.includes(effort) || effort === 'default';
+      assert.equal(effortError(effort, model) === undefined, valid, effort);
+      assert.equal(parseCommand(`spawn ${model} effort=${effort}`).kind, valid ? 'spawn' : 'help');
+    }
+  });
+}
+
+test('listing resolves every alias and explains defaults; overrides select the engine', () => {
+  for (const [alias, id] of Object.entries(MODEL_ALIASES)) {
+    const row = modelCapability(id);
+    assert.ok(modelsListing().includes(`\`${alias}\` → \`${id}\` — ${row.engine}: ${[...row.efforts, 'default'].join(', ')}`));
+  }
+  assert.match(modelsListing(), /no default model/);
+  assert.match(modelsListing(), /no override/);
+  assert.equal(effortError('max', 'GPT-6-ASTRA'), undefined);
+  assert.match(effortError('max', 'other', 'codex')!, /^Codex effort must be minimal, low, medium, high, xhigh, or default\.$/);
+  assert.equal(effortError('ultracode', 'gpt-6-astra', 'claude'), undefined);
+  assert.ok(effortError('ultracode', 'gpt-6-astra', 'codex'));
 });

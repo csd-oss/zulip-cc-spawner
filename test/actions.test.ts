@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { SpawnerActions, type Invocation } from '../src/actions.js';
 import type { Invoker, Where } from '../src/auth.js';
-import { parseCommand } from '../src/commands.js';
+import { parseCommand, modelsListing } from '../src/commands.js';
 import { LocalHost } from '../src/host.js';
 import { ClaudeLauncher } from '../src/launcher.js';
 import type { Notifier } from '../src/notifier.js';
@@ -242,4 +242,11 @@ setInterval(()=>{},1000);
   assert.match((await run('spawn gpt-5 name=cxtest')).content, /starts fresh/);
   assert.notEqual(registry.findAlive('cxtest')!.sessionId, id);
   await run('stop cxtest');
+});
+
+test('models and help models return the capability listing through actions', async () => {
+  const direct = await run('models');
+  assert.equal(direct.content, modelsListing());
+  assert.deepEqual(await run('help models'), direct);
+  assert.match((await run('help')).content, /Codex efforts:/);
 });

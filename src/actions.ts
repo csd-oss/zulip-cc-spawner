@@ -22,6 +22,7 @@ import {
   buildAnswerCommand,
   effortError,
   modelSlug,
+  modelsListing,
   type Command,
 } from './commands.js';
 import type { SpawnerConfig } from './config.js';
@@ -125,6 +126,8 @@ export class SpawnerActions {
     switch (cmd.kind) {
       case 'spawn':
         return { content: await this.spawn(inv, cmd) };
+      case 'models':
+        return { content: modelsListing() };
       case 'list':
         return { content: this.list() };
       case 'stop':

@@ -125,3 +125,19 @@ test('explicit engine grammar and effort override', async () => {
   assert.equal(parseCommand('spawn gpt-5 engine=wrong').kind, 'help');
   assert.equal(parseCommand('spawn gpt-5 effort=ultracode').kind, 'help');
 });
+
+test('parsed max reaches the production Codex config override unchanged', async () => {
+  const { parseCommand } = await import('../src/commands.js');
+  for (const model of ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+    const cmd = parseCommand(`spawn ${model} effort=max`);
+    assert.equal(cmd.kind, 'spawn');
+    if (cmd.kind !== 'spawn') throw new Error('spawn expected');
+    for (const resume of [false, true]) {
+      const args = codexArgs(cfg, { ...req, model: cmd.model, effort: cmd.effort, resume, sessionId: id });
+      const index = args.indexOf('model_reasoning_effort="max"');
+      assert.ok(index > 0);
+      assert.equal(args[index - 1], '-c');
+      assert.ok(args.includes(`--model=${model}`));
+    }
+  }
+});
