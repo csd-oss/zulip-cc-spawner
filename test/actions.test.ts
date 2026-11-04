@@ -68,6 +68,7 @@ const actions = new SpawnerActions({
   watcher,
   groupCheck: async () => false,
   realm: 'https://chat.example.org',
+  codexBoundary: async () => 0,
 });
 after(async () => {
   for (const s of await tmux.listSessions()) await tmux.killSession(s);

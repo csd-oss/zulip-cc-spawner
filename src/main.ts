@@ -82,6 +82,9 @@ async function main(): Promise<void> {
   // Asked as the hand's own bot: covers every stream it posted in.
   const lastPost = (e: { botEmail: string }) => provisioner.lastPostOf(e.botEmail, (c) => new ZulipClient(c));
   const reaper = new Reaper(registry, tmux, notifier, config, lastPost);
+  const codexWake = new CodexWake(registry, notifier,
+    (e, id) => provisioner.messageAsHand(e.botEmail, id, (c) => new ZulipClient(c)),
+    (e, text) => queueCodex(host, config, e.sessionId, text));
   const actions = new SpawnerActions({
     config,
     registry,
@@ -93,11 +96,16 @@ async function main(): Promise<void> {
     watcher,
     groupCheck: new GroupChecker(spawnerClient).check,
     realm: spawnerClient.site,
+    codexWake,
+    codexBoundary: async (e) => {
+      const messages = await spawnerClient.messages([
+        { operator: 'stream', operand: e.streamId }, { operator: 'topic', operand: e.topic },
+      ], 'newest', 1, 0);
+      return Math.max(0, ...messages.map((m) => m.id));
+    },
   });
   control = new ZulipControl(spawnerClient, actions, notifier, config, new ControlState(STATE_PATH),
-    new CodexWake(registry, notifier,
-      (e, id) => provisioner.messageAsHand(e.botEmail, id, (c) => new ZulipClient(c)),
-      (e, text) => queueCodex(host, config, e.sessionId, text)));
+    codexWake);
 
   await actions.enqueue(() => reaper.reconcile());
   await control.start();

@@ -154,3 +154,14 @@ export async function writeHandFiles(
   await host.writeFile(p.seed, seedText, 0o600);
   return p;
 }
+
+/** Codex has a separate live queue: never let a later tool read expand catch-up. */
+export function buildCodexPrompt(ctx: SeedContext, through: number, resume: boolean): string {
+  return `You're ${resume ? 'back in the same session; your earlier context is intact' : 'connected to Zulip as ' + ctx.personaName}.
+Your home is #${ctx.streamName} > ${ctx.topic}. Reply with the Zulip MCP send_message tool (stream "${ctx.streamName}", topic "${ctx.topic}").
+Catch-up boundary: message id <= ${through}. Read recent home-topic backscroll only through this inclusive boundary.
+Answer only still-unanswered mentions addressed to you within that boundary; do not repeat answers already in your earlier conversation or backscroll. Messages already delivered in your earlier conversation are not new requests: finish any pending work there rather than admitting them again from backscroll.
+Messages with id > ${through} belong exclusively to the spawner wake queue, including messages you see in tool results during catch-up. Do not answer those from backscroll; wait for their queued delivery.
+Only home-topic mentions wake you. Other backscroll is context, not a request to answer. ${resume ? '' : 'Say hi when ready.'}
+`;
+}

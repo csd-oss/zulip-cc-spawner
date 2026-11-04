@@ -25,7 +25,7 @@ import {
   type Command,
 } from './commands.js';
 import type { SpawnerConfig } from './config.js';
-import { buildResumePrompt, buildSeedPrompt, writeHandFiles, handPaths } from './handfiles.js';
+import { buildCodexPrompt, buildResumePrompt, buildSeedPrompt, writeHandFiles, handPaths } from './handfiles.js';
 import type { AgentHost } from './host.js';
 import type { ClaudeLauncher } from './launcher.js';
 import type { Notifier } from './notifier.js';
@@ -72,6 +72,8 @@ export interface ActionDeps {
   watcher: TranscriptWatcher;
   groupCheck: GroupCheck;
   realm: string;
+  codexBoundary?: (entry: BotEntry) => Promise<number>;
+  codexWake?: { ready(entry: BotEntry): void };
 }
 
 function modelLabel(e: { model: string; effort?: string }): string {
@@ -267,9 +269,13 @@ export class SpawnerActions {
       let seed = canResume
         ? buildResumePrompt({ ...seedCtx, awaySince: prior?.endReason ? `(${prior.endReason})` : undefined })
         : buildSeedPrompt(seedCtx);
-      if (engine === 'codex') seed = seed.replace(/zulip__send_message/g, 'the Zulip MCP send_message tool')
-        .replace('Mentions of you (and DMs, where allowed) wake you;', 'Only mentions in your home stream/topic wake you;')
-        .replace('other traffic in #' + where.streamName + ' reaches you as context on your next wake.', 'Read recent backscroll with the Zulip tools when needed.');
+      if (engine === 'codex') {
+        if (!this.d.codexBoundary) throw new Error('Codex catch-up boundary unavailable');
+        const boundary = await this.d.codexBoundary(entry);
+        if (!Number.isSafeInteger(boundary) || boundary < 0) throw new Error('Invalid Codex catch-up boundary');
+        registry.update(entry, { codexCatchupThrough: boundary });
+        seed = buildCodexPrompt(seedCtx, boundary, canResume);
+      }
       await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir);
 
       const startOffset = canResume && engine !== 'codex' ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
@@ -291,6 +297,8 @@ export class SpawnerActions {
       });
       registry.update(entry, { ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}), status: 'alive', transcriptOffset: startOffset, lastActivity: new Date().toISOString() });
 
+      this.d.codexWake?.ready(entry);
+
       const label = modelLabel({ model: cmd.model, effort });
       const note = result.warning ? `\n⚠️ ${result.warning}` : '';
       if (canResume) {
@@ -311,10 +319,12 @@ export class SpawnerActions {
           // of capacity and sweeps. The reaper retries the kill.
           log(`cleanup kill ${shortName}: ${(killErr as Error).message}`);
           registry.update(entry, { status: 'cleanup', endReason: `spawn failed: ${message}` });
+          this.d.codexWake?.ready(entry);
           return `Spawn of **${personaName}** failed: ${message}\n⚠️ Its tmux session could not be confirmed stopped; I'll keep retrying. The name stays taken until then.`;
         }
       }
       registry.update(entry, { status: 'failed', endReason: `spawn failed: ${message}` });
+      this.d.codexWake?.ready(entry);
       return `Spawn of **${personaName}** failed: ${message}${kept}`;
     }
   }
