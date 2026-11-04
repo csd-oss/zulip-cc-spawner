@@ -70,15 +70,16 @@ test('launch production path discovers and returns session; resume retains id; l
     async newSession(_s: string, cwd: string, command: string) {
       assert.equal(cwd, req.workDir);
       assert.match(command, /mcp_servers.zulip/);
+      assert.ok(command.includes('model_reasoning_effort="ultra"'));
       writeFileSync(join(root, 'rollout-test.jsonl'), JSON.stringify({ type: 'session_meta', payload: { id, cwd, timestamp: new Date().toISOString() } }));
     },
     async hasSession() { return true; }, async capturePane() { return 'Ask Codex to do anything'; },
   } as unknown as Tmux;
   const launcher = new CodexLauncher(local, tmux, new LocalHost());
-  assert.equal((await launcher.launch(req)).sessionId, id);
-  assert.equal((await launcher.launch({ ...req, resume: true, sessionId: id })).sessionId, id);
+  assert.equal((await launcher.launch({ ...req, model: 'gpt-6.1-sol', effort: 'ultra' })).sessionId, id);
+  assert.equal((await launcher.launch({ ...req, effort: 'ultra', resume: true, sessionId: id })).sessionId, id);
   tmux.capturePane = async () => 'codex login';
-  await assert.rejects(launcher.launch(req), /needs login/);
+  await assert.rejects(launcher.launch({ ...req, model: 'gpt-6.1-sol', effort: 'ultra' }), /needs login/);
 });
 test('queue production runner uses hand env and literal argv, no shell text evaluation', async () => {
   const dir = tmp();

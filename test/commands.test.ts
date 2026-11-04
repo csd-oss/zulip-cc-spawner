@@ -76,12 +76,11 @@ test('modelSlug keeps names short and stable', () => {
 test('models and help models parse with fixed arity; help documents Codex', () => {
   for (const text of ['models', 'help models', 'HELP MODELS']) assert.deepEqual(parseCommand(text), { kind: 'models' });
   for (const text of ['models extra', 'help models extra']) assert.equal(parseCommand(text).kind, 'help');
-  for (const text of ['gpt-*', 'engine=codex|claude', '[cx-<model>] <name>', 'Codex efforts:', 'minimal', 'xhigh', 'max', 'models']) assert.ok(USAGE.includes(text), text);
+  for (const text of ['gpt-*', 'engine=codex|claude', '[cx-<model>] <name>', 'Codex efforts:', 'minimal', 'xhigh', 'max', 'ultra', 'models']) assert.ok(USAGE.includes(text), text);
 });
 
 const capabilityCases: [string, string[]][] = [
-  ...['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'].map((m): [string, string[]] => [m, ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']]),
-  ...['gpt-5.5', 'gpt-5.4-mini', 'gpt-6.1-sol', 'gpt-unknown'].map((m): [string, string[]] => [m, ['minimal', 'low', 'medium', 'high', 'xhigh']]),
+  ...['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6.1-sol', 'gpt-unknown', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4-mini'].map((m): [string, string[]] => [m, ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']]),
   ...['claude-3-opus', 'claude-haiku-4-5', 'claude-sonnet-4-5'].map((m): [string, string[]] => [m, []]),
   ['claude-opus-4-5', ['low', 'medium', 'high']],
   ['claude-opus-4-6', ['low', 'medium', 'high', 'max']],
@@ -110,7 +109,40 @@ test('listing resolves every alias and explains defaults; overrides select the e
   assert.match(modelsListing(), /no default model/);
   assert.match(modelsListing(), /no override/);
   assert.equal(effortError('max', 'GPT-6-ASTRA'), undefined);
-  assert.match(effortError('max', 'other', 'codex')!, /^Codex effort must be minimal, low, medium, high, xhigh, or default\.$/);
+  assert.equal(effortError('ultra', 'other', 'codex'), undefined);
+  assert.match(modelsListing(), /passed to codex \(model-dependent\)/);
+  assert.equal(effortError('max', 'gpt-5.5'), undefined);
+  assert.match(effortError('bogus', 'other', 'codex')!, /`bogus` is not available on `other`/);
   assert.equal(effortError('ultracode', 'gpt-6-astra', 'claude'), undefined);
   assert.ok(effortError('ultracode', 'gpt-6-astra', 'codex'));
+});
+
+for (const model of ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4-mini', 'gpt-6.1-sol', 'gpt-new', 'provider/custom']) {
+  test(`Codex model preserves every effort: ${model}`, () => {
+    for (const effort of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']) {
+      const cmd = parseCommand(`spawn ${model} effort=${effort} engine=codex`);
+      assert.equal(cmd.kind, 'spawn');
+      if (cmd.kind === 'spawn') {
+        assert.equal(cmd.model, model);
+        assert.equal(cmd.effort, effort);
+        assert.equal(cmd.engine, 'codex');
+      }
+    }
+  });
+}
+
+test('Codex upstream ceilings are advisory, never validation limits', () => {
+  for (const [model, ceiling] of [
+    ['gpt-6-astra', 'ultra'], ['gpt-5.6-sol', 'ultra'], ['gpt-5.6-terra', 'ultra'],
+    ['gpt-5.6-luna', 'max'], ['gpt-5.5', 'xhigh'], ['gpt-5.4-mini', 'xhigh'],
+  ]) {
+    const row = modelCapability(model);
+    assert.equal(row.upstreamMax, ceiling);
+    const line = modelsListing().split('\n').find(line => line.startsWith(`* ${model} —`))!;
+    assert.ok(line.includes(`advisory: up to ${ceiling} (upstream data; higher passed through, codex decides)`));
+    for (const effort of ['bogus', 'ultracode', "high';echo-PWN", '$(id)', 'high;id', 'high"']) {
+      assert.ok(effortError(effort, model)!.includes(`on \`${model}\``));
+      assert.equal(parseCommand(`spawn ${model} effort=${effort}`).kind, 'help');
+    }
+  }
 });
