@@ -66,6 +66,13 @@ export class Provisioner {
     }
   }
 
+  async messageAsHand(botEmail: string, id: number, makeClient: (c: ZulipCreds) => ZulipClient) {
+    const bot = (await this.admin.ownedBots()).find((b) => b.username.toLowerCase() === botEmail.toLowerCase());
+    if (!bot) throw new Error('hand bot not owned');
+    const own = makeClient({ email: bot.username, key: bot.api_key, site: this.admin.site });
+    return (await own.messages([], id, 0, 0)).find((m) => m.id === id);
+  }
+
   /**
    * Epoch ms of the newest message a hand's bot sent, anywhere. Asked with the
    * bot's OWN key (`sender:me`), so posts in streams the spawner is not in

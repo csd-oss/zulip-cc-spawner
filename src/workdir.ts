@@ -22,6 +22,7 @@ const fs = require('node:fs/promises'), path = require('node:path');
   const st = await fs.lstat(dir);
   if (!st.isDirectory() || st.isSymbolicLink()) throw Error('unsafe workDir');
   await fs.chmod(dir, 0o700);
+  if (process.argv[4] === 'no-trust') return;
   await fs.mkdir(path.dirname(file), {recursive:true, mode:0o700});
   const lock = file + '.spawner-lock';
   const deadline = Date.now() + 10000;
@@ -54,6 +55,6 @@ const fs = require('node:fs/promises'), path = require('node:path');
 })().catch(e => { console.error(e.message); process.exitCode = 1; });
 `;
 
-export async function prepareWorkDir(host: AgentHost, cfg: SpawnerConfig, workDir: string, fresh: boolean): Promise<void> {
-  await host.exec(cfg.nodeBin, ['-e', PREPARE_WORKDIR_JS, workDir, join(cfg.agentsHome, '.claude.json'), fresh ? 'yes' : 'no']);
+export async function prepareWorkDir(host: AgentHost, cfg: SpawnerConfig, workDir: string, fresh: boolean, claudeTrust = true): Promise<void> {
+  await host.exec(cfg.nodeBin, ['-e', PREPARE_WORKDIR_JS, workDir, join(cfg.agentsHome, '.claude.json'), fresh ? 'yes' : 'no', claudeTrust ? 'trust' : 'no-trust']);
 }

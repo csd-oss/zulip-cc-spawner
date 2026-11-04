@@ -208,3 +208,37 @@ test('activity from a hand updates lastActivity and firstPostAt', async () => {
   await run('stop talker');
   assert.ok(!existsSync(join(dir, 'pwned')));
 });
+
+test('Codex spawn and revival use discovered id, fresh fallback, and tmux controls', async () => {
+  const bin = join(dir, 'fake-codex');
+  cfg.codexBin = bin;
+  writeFileSync(bin, `#!/usr/bin/env node
+const fs=require('fs'),path=require('path'),crypto=require('crypto');
+const args=process.argv.slice(2);
+const boundary=args.indexOf('--');
+const id=args[0]==='resume'?args[boundary+1]:crypto.randomUUID();
+const root=path.join(process.env.HOME,'.codex/sessions');
+fs.mkdirSync(root,{recursive:true});
+fs.writeFileSync(path.join(root,'rollout-'+id+'.jsonl'),JSON.stringify({type:'session_meta',payload:{id,cwd:process.cwd(),timestamp:new Date().toISOString()}})+'\\n');
+console.log('Ask Codex to do anything');
+process.stdin.resume();
+setInterval(()=>{},1000);
+`, { mode: 0o700 });
+  const first = await run('spawn gpt-5 name=cxtest');
+  assert.match(first.content, /Spawned/);
+  const entry = registry.findAlive('cxtest')!;
+  assert.equal(entry.engine, 'codex');
+  assert.match(entry.sessionId, /^[0-9a-f-]{36}$/);
+  const id = entry.sessionId;
+  assert.equal(entry.harness, 'cx');
+  assert.match((await run('peek cxtest')).content, /Ask Codex/);
+  assert.match((await run('press cxtest hello enter')).content, /Sent/);
+  await run('stop cxtest');
+  assert.match((await run('spawn gpt-5 name=cxtest')).content, /Revived/);
+  assert.equal(registry.findAlive('cxtest')!.sessionId, id);
+  await run('stop cxtest');
+  registry.update(registry.latestFor(entry.personaName)!, { sessionId: '' });
+  assert.match((await run('spawn gpt-5 name=cxtest')).content, /starts fresh/);
+  assert.notEqual(registry.findAlive('cxtest')!.sessionId, id);
+  await run('stop cxtest');
+});

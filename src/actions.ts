@@ -9,6 +9,7 @@
  * files, tmux), so a failure or a crash mid-spawn leaves a record of what may
  * exist; the reaper's startup reconcile closes it out.
  */
+import { CodexLauncher, inferEngine } from './codex.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { prepareWorkDir } from './workdir.js';
@@ -166,11 +167,12 @@ export class SpawnerActions {
     if (active >= cfg.maxSessions) return `At capacity (${active}/${cfg.maxSessions} hands). \`stop\` one first.`;
 
     const suffix = (cmd.friendly ?? (await this.freshSuffix())).toLowerCase();
+    const engine = cmd.engine ?? inferEngine(cmd.model);
     const slug = modelSlug(cmd.model);
-    const names = handName(cmd.model, cmd.friendly ?? suffix);
+    const names = handName(cmd.model, cmd.friendly ?? suffix, engine === 'codex' ? 'cx' : 'cc');
     // Prefer an existing legacy identity for the same model/suffix. Never
     // reinterpret an unmarked bracket-name entry as a new-style identity.
-    const legacy = registry.latestFor(`Claude-Code-${slug}-${suffix}`);
+    const legacy = engine === 'codex' ? undefined : registry.latestFor(`Claude-Code-${slug}-${suffix}`);
     const modern = registry.latestFor(names.personaName);
     if (modern && modern.nameScheme !== 'bracket-v1') return 'Name collision with a legacy persona — pick another name.';
     if (legacy && modern) return 'Ambiguous legacy/new identity — pick another name.';
@@ -201,14 +203,15 @@ export class SpawnerActions {
     // overridden; `effort=default` clears it.
     const effort = cmd.effort === EFFORT_DEFAULT ? undefined : cmd.effort ?? prior?.effort;
     if (effort && !cmd.effort) {
-      const error = effortError(effort, cmd.model);
+      const error = effortError(effort, cmd.model, engine);
       if (error) return `Stored ${error} (or \`effort=${EFFORT_DEFAULT}\`).`;
     }
 
     // Continuity: resume the same transcript when it still exists.
     const priorSession = prior?.sessionId;
     let canResume = false;
-    if (priorSession) {
+    if (engine === 'codex') canResume = Boolean(priorSession);
+    if (priorSession && engine !== 'codex') {
       try {
         canResume = await this.d.host.exists(this.d.watcher.transcriptPath(priorSession, workDir));
       } catch (err) {
@@ -216,9 +219,9 @@ export class SpawnerActions {
         return `Could not check **${personaName}**'s previous conversation (${(err as Error).message}) — nothing was started.`;
       }
     }
-    const sessionId = canResume ? priorSession! : randomUUID();
+    const sessionId = canResume ? priorSession! : engine === 'codex' ? '' : randomUUID();
     // A failed first launch may never have written a transcript — not "lost".
-    const lostContext = Boolean(priorSession) && !canResume && prior?.status !== 'failed';
+    const lostContext = Boolean(prior) && !canResume && (engine === 'codex' || prior?.status !== 'failed');
 
     const paths = handPaths(cfg.handsDir, shortName, prior?.handDir);
     if (workDir && resolve(workDir) === resolve(paths.dir)) return 'workRoot must be separate from handsDir — refusing a non-empty working directory.';
@@ -236,7 +239,8 @@ export class SpawnerActions {
       workDir,
       workDirReady: prior?.workDirReady,
       nameScheme: prior ? prior.nameScheme : 'bracket-v1',
-      harness: prior ? prior.harness : 'cc',
+      harness: engine === 'codex' ? 'cx' : prior ? prior.harness : 'cc',
+      engine,
       model: cmd.model,
       effort,
       sessionId,
@@ -255,19 +259,23 @@ export class SpawnerActions {
       if (!created && !prior) log(`${personaName}: reusing an existing bot ${bot.email} with no registry history`);
       await this.d.provisioner.subscribe(bot.userId, where.streamName);
       if (workDir) {
-        await prepareWorkDir(this.d.host, cfg, workDir, !prior?.workDirReady);
+        await prepareWorkDir(this.d.host, cfg, workDir, !prior?.workDirReady, engine === 'claude');
         registry.update(entry, { workDirReady: true });
       }
 
       const seedCtx = { personaName, streamName: where.streamName, topic: where.topic, realm: this.d.realm };
-      const seed = canResume
+      let seed = canResume
         ? buildResumePrompt({ ...seedCtx, awaySince: prior?.endReason ? `(${prior.endReason})` : undefined })
         : buildSeedPrompt(seedCtx);
+      if (engine === 'codex') seed = seed.replace(/zulip__send_message/g, 'the Zulip MCP send_message tool')
+        .replace('Mentions of you (and DMs, where allowed) wake you;', 'Only mentions in your home stream/topic wake you;')
+        .replace('other traffic in #' + where.streamName + ' reaches you as context on your next wake.', 'Read recent backscroll with the Zulip tools when needed.');
       await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir);
 
-      const startOffset = canResume ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
+      const startOffset = canResume && engine !== 'codex' ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
       launched = true;
-      const result = await this.d.launcher.launch({
+      const launcher = engine === 'codex' ? new CodexLauncher(cfg, tmux, this.d.host) : this.d.launcher;
+      const result: { warning?: string; sessionId?: string } = await launcher.launch({
         personaName,
         workDir,
         model: cmd.model,
@@ -281,17 +289,18 @@ export class SpawnerActions {
         streamName: where.streamName,
         topic: where.topic,
       });
-      registry.update(entry, { status: 'alive', transcriptOffset: startOffset, lastActivity: new Date().toISOString() });
+      registry.update(entry, { ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}), status: 'alive', transcriptOffset: startOffset, lastActivity: new Date().toISOString() });
 
       const label = modelLabel({ model: cmd.model, effort });
       const note = result.warning ? `\n⚠️ ${result.warning}` : '';
       if (canResume) {
         return `Revived **${personaName}** (${label}) in tmux \`${shortName}\` — same identity **and** same conversation; it is catching up on ${home(entry)}.${note}`;
       }
-      const amnesia = lostContext ? `\n⚠️ Its previous transcript is gone, so it starts fresh — same Zulip identity, no memory of before.` : '';
+      const amnesia = lostContext ? `\n⚠️ Its previous conversation is unavailable, so it starts fresh — same Zulip identity, no memory of before.` : '';
       return `Spawned @**${personaName}** (${label}) in tmux \`${shortName}\`, home ${home(entry)} — it should introduce itself shortly.${amnesia}${note}`;
     } catch (err) {
-      const message = (err as Error).message;
+      console.error(err);
+      const message = engine === 'codex' ? (/^Codex (needs login|startup timed out|exited during startup)/.test((err as Error).message) ? (err as Error).message : 'Codex launch failed; ask an operator to inspect the logs.') : (err as Error).message;
       log(`spawn of ${personaName} failed: ${message}`);
       const kept = entry.botUserId ? ` Its Zulip bot (${entry.botEmail}) is kept, so a retry reuses it.` : '';
       if (launched) {

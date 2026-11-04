@@ -63,6 +63,7 @@ export class TranscriptWatcher {
 
   async sweep(): Promise<void> {
     for (const entry of this.registry.alive()) {
+      if (entry.engine === 'codex') continue;
       try {
         await this.check(entry);
       } catch (err) {
@@ -226,6 +227,7 @@ export class TranscriptWatcher {
   async rescanDialogs(): Promise<string[]> {
     const lines: string[] = [];
     for (const entry of this.registry.alive()) {
+      if (entry.engine === 'codex') continue;
       let pane: string;
       try {
         pane = await this.tmux.capturePane(entry.tmuxSession);

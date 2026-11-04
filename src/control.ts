@@ -79,6 +79,7 @@ export class ZulipControl {
     private readonly notifier: Notifier,
     private readonly config: SpawnerConfig,
     private readonly state: ControlState,
+    private readonly wake?: { onMessage(m: ZulipMessage): void },
   ) {}
 
   get name(): string {
@@ -142,7 +143,9 @@ export class ZulipControl {
     if (e.type === 'message' && e.message) {
       const m = e.message;
       const flags = e.flags ?? [];
+      if (this.state.lastSeenMessageId !== undefined && m.id <= this.state.lastSeenMessageId) return;
       this.state.advance(m.id);
+      this.wake?.onMessage(m);
       if (this.actions.isHand(m.sender_id)) this.actions.noteActivity(m.sender_id, 'message');
       this.intake = this.intake
         .then(() => this.onMessage(m, flags))

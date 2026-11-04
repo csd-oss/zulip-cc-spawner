@@ -1,3 +1,5 @@
+import { CodexWake } from './codex-wake.js';
+import { queueCodex } from './codex.js';
 /**
  * zulip-cc-spawner daemon — spawns, tracks and reaps Claude Code hands on
  * command from Zulip. See README.md and docs/PLAN.md.
@@ -92,7 +94,10 @@ async function main(): Promise<void> {
     groupCheck: new GroupChecker(spawnerClient).check,
     realm: spawnerClient.site,
   });
-  control = new ZulipControl(spawnerClient, actions, notifier, config, new ControlState(STATE_PATH));
+  control = new ZulipControl(spawnerClient, actions, notifier, config, new ControlState(STATE_PATH),
+    new CodexWake(registry, notifier,
+      (e, id) => provisioner.messageAsHand(e.botEmail, id, (c) => new ZulipClient(c)),
+      (e, text) => queueCodex(host, config, e.sessionId, text)));
 
   await actions.enqueue(() => reaper.reconcile());
   await control.start();
