@@ -209,3 +209,5 @@ and one subscription's limits. Credentials/tokens may be persisted in Codex
 state/WAL; protect the entire agents home and backups, not just config.toml.
 No new sandbox is installed. Bubblewrap was not on PATH in this implementation
 environment; host availability must be checked by the operator.
+
+Codex spawn/revive snapshots an inclusive home-topic message-ID boundary: catch-up may answer only still-unanswered mentions at or below it; newer mentions are delivered only by the spawner queue, buffered until startup completes. Earlier conversation requests are not re-admitted from backscroll; Claude catch-up is unchanged.

@@ -44,6 +44,8 @@ export interface BotEntry {
   effort?: string;
   /** Claude Code conversation id — assigned at first launch, --resume'd on revival. */
   sessionId: string;
+  /** Inclusive model-owned backscroll boundary; wake owns only newer ids. */
+  codexCatchupThrough?: number;
   spawnedBy: { userId: number; username: string };
   spawnedAt: string;
   /** Last PUBLIC Zulip activity (message/reaction) the spawner observed. */

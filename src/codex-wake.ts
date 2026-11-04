@@ -14,6 +14,14 @@ const MAX_PENDING = 20;
 const NOTICE_INTERVAL_MS = 60_000;
 
 export class CodexWake {
+  private startup = new Map<BotEntry, { promise: Promise<void>; resolve: () => void }>();
+
+  /** Release startup intake only after the session id and boundary are durable. */
+  ready(e: BotEntry): void {
+    this.startup.get(e)?.resolve();
+    this.startup.delete(e);
+  }
+
   private candidates = new Map<BotEntry, number[]>();
   private checks = new Map<BotEntry, Promise<void>>();
   private pending = new Map<BotEntry, number>();
@@ -27,9 +35,14 @@ export class CodexWake {
     private now = Date.now) {}
 
   onMessage(m: ZulipMessage): void {
-    for (const e of this.registry.alive()) {
+    for (const e of [...this.registry.alive(), ...(this.registry.provisioning?.() ?? [])]) {
       if (e.engine !== 'codex' || m.type !== 'stream' || m.stream_id !== e.streamId ||
           m.subject.toLowerCase() !== e.topic.toLowerCase() || m.sender_id === e.botUserId) continue;
+      if (e.status === 'provisioning' && !this.startup.has(e)) {
+        let resolve!: () => void;
+        const promise = new Promise<void>((r) => { resolve = r; });
+        this.startup.set(e, { promise, resolve });
+      }
       let candidates = this.candidates.get(e);
       if (!candidates) {
         candidates = [];
@@ -46,8 +59,10 @@ export class CodexWake {
       if (!this.checks.has(e)) {
         const check = Promise.resolve().then(async () => {
           try {
+            await this.startup.get(e)?.promise;
             while (candidates.length && e.status === 'alive') {
               const id = candidates.shift()!;
+              if (id <= (e.codexCatchupThrough ?? 0)) continue;
               try {
                 const own = await this.asHand(e, id);
                 if (own && addressed(e, own)) await this.admit(e, own);
