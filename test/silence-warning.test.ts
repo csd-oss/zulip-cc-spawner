@@ -88,7 +88,7 @@ test('silence: provisioning message through control intake survives alive transi
   intake.me = { user_id: 42, full_name: 'CC Spawner' };
   intake.onEvent({ id: 1, type: 'message', message: {
     id: 10, type: 'stream', sender_id: 100, sender_email: s.entry.botEmail, sender_full_name: 'renamed fuzzer',
-    content: 'hello', subject: 'home', stream_id: 7, display_recipient: 'cc-hands', timestamp: Date.now() / 1000,
+    content: 'hello', subject: 'home', stream_id: 7, display_recipient: 'cc-hands', timestamp: Math.floor(Date.now() / 1000),
   } });
   await intake.intake;
   // Activity intake is synchronous, even while spawn owns the action queue.
@@ -103,27 +103,131 @@ test('silence: provisioning message through control intake survives alive transi
   assert.equal(lookups, 0, 'no fallback is needed once a message was observed');
 });
 
-test('silence: provisioning reactions count as activity, not proof of a message', () => {
+test('silence: delayed old-launch message during provisioning revival still warns', async () => {
+  const s = setup();
+  const old = { ...s.entry, status: 'reaped' as const, sessionId: 'old' };
+  const registry = new Registry(join(s.dir, 'revived.json'));
+  registry.add(old);
+  registry.add(s.entry);
+  registry.update(s.entry, { status: 'provisioning' });
+  const previous = s.entry.lastActivity;
+  const timestamp = Math.floor(Date.parse(s.entry.spawnedAt) / 1000) - 60;
+  const actions = new SpawnerActions({ registry } as ActionDeps);
+  const control = new ZulipControl({} as ZulipClient, actions, s.notifier, testConfig(s.dir), new ControlState(join(s.dir, 'cursor.json')));
+  const intake = control as unknown as { me: { user_id: number; full_name: string }; onEvent(e: ZulipEvent): void; intake: Promise<void> };
+  intake.me = { user_id: 42, full_name: 'CC Spawner' };
+  intake.onEvent({ id: 1, type: 'message', message: {
+    id: 10, type: 'stream', sender_id: 100, sender_email: s.entry.botEmail, sender_full_name: 'fuzzer',
+    content: 'previous launch', subject: 'home', stream_id: 7, display_recipient: 'cc-hands', timestamp,
+  } });
+  await intake.intake;
+  registry.update(s.entry, { status: 'alive' });
+  let lookups = 0;
+  const reaper = new Reaper(registry, { hasSession: async () => true } as unknown as Tmux, s.notifier, { inactivityMs: 24 * 3600_000 }, async () => { lookups++; return timestamp * 1000; });
+  await reaper.sweep();
+  await reaper.sweep();
+  assert.equal(s.posts.length, 1, 'an old launch must not suppress the new launch warning');
+  assert.match(s.posts[0], /has not posted anything/);
+  assert.equal(lookups, 1);
+  assert.equal(s.entry.firstPostAt, undefined);
+  assert.equal(s.entry.lastActivity, previous, 'stale delivery is not current activity');
+  assert.equal(old.firstPostAt, undefined);
+  assert.equal(old.lastActivity, previous);
+});
+
+test('silence: provisioning reactions cannot credit an unproven revival', () => {
   const s = setup();
   s.registry.update(s.entry, { status: 'provisioning' });
   const previous = s.entry.lastActivity;
   s.actions.noteActivity(100, 'reaction');
-  assert.notEqual(s.entry.lastActivity, previous);
+  assert.equal(s.entry.lastActivity, previous);
+  assert.equal(s.entry.firstPostAt, undefined);
+});
+
+test('silence: alive reactions use receipt time but never prove a first post or move activity backwards', (t) => {
+  const s = setup();
+  const now = Date.parse(s.entry.spawnedAt) + 60_000;
+  t.mock.method(Date, 'now', () => now);
+  s.actions.noteActivity(100, 'reaction');
+  assert.equal(s.entry.lastActivity, new Date(now).toISOString());
+  assert.equal(s.entry.firstPostAt, undefined);
+  s.registry.update(s.entry, { lastActivity: new Date(now + 1000).toISOString() });
+  s.actions.noteActivity(100, 'reaction');
+  assert.equal(s.entry.lastActivity, new Date(now + 1000).toISOString());
+});
+
+test('silence: same-second provisioning post counts without moving activity backwards', () => {
+  const s = setup();
+  const timestamp = Math.floor(Date.parse(s.entry.spawnedAt) / 1000);
+  const spawnedAt = new Date(timestamp * 1000 + 999).toISOString();
+  s.registry.update(s.entry, { status: 'provisioning', spawnedAt, lastActivity: spawnedAt });
+  s.actions.noteActivity(100, 'message', timestamp);
+  assert.equal(s.entry.firstPostAt, new Date(timestamp * 1000).toISOString());
+  assert.equal(s.entry.lastActivity, spawnedAt);
+});
+
+test('silence: fallback also accepts a same-second startup post', async () => {
+  const s = setup();
+  const posted = Math.floor(Date.parse(s.entry.spawnedAt) / 1000) * 1000;
+  s.registry.update(s.entry, { spawnedAt: new Date(posted + 999).toISOString() });
+  const reaper = new Reaper(s.registry, { hasSession: async () => true } as unknown as Tmux, s.notifier, { inactivityMs: 24 * 3600_000 }, async () => posted);
+  await reaper.sweep();
+  assert.equal(s.entry.firstPostAt, new Date(posted).toISOString());
+  assert.deepEqual(s.posts, []);
+});
+
+test('silence: alive pre-launch messages do not renew activity or prove startup', () => {
+  const s = setup();
+  const previous = s.entry.lastActivity;
+  s.actions.noteActivity(100, 'message', Math.floor(Date.parse(s.entry.spawnedAt) / 1000) - 1);
+  assert.equal(s.entry.lastActivity, previous);
+  assert.equal(s.entry.firstPostAt, undefined);
+});
+
+test('silence: out-of-order current-launch messages use event time and retain the activity watermark', () => {
+  const s = setup();
+  const timestamp = Math.floor(Date.parse(s.entry.spawnedAt) / 1000) + 60;
+  s.actions.noteActivity(100, 'message', timestamp);
+  const postedAt = new Date(timestamp * 1000).toISOString();
+  assert.equal(s.entry.firstPostAt, postedAt);
+  assert.equal(s.entry.lastActivity, postedAt, 'delayed delivery must not credit receipt time');
+  s.actions.noteActivity(100, 'message', timestamp - 30);
+  assert.equal(s.entry.firstPostAt, postedAt);
+  assert.equal(s.entry.lastActivity, postedAt);
+});
+
+test('reaping: a delayed current-launch message cannot make an idle hand look active now', async () => {
+  const s = setup();
+  const timestamp = Math.floor((Date.now() - 25 * 3600_000) / 1000);
+  s.registry.update(s.entry, { spawnedAt: new Date((timestamp - 60) * 1000).toISOString(), lastActivity: new Date((timestamp - 60) * 1000).toISOString() });
+  s.actions.noteActivity(100, 'message', timestamp);
+  await s.reaper.sweep();
+  assert.equal(s.entry.status, 'reaped');
+  assert.equal(s.kills(), 1);
+});
+
+test('silence: malformed message timestamps do not credit receipt time', () => {
+  const s = setup();
+  const previous = s.entry.lastActivity;
+  for (const timestamp of [NaN, Infinity, -Infinity, undefined]) {
+    s.actions.noteActivity(100, 'message', timestamp as number);
+  }
+  assert.equal(s.entry.lastActivity, previous);
   assert.equal(s.entry.firstPostAt, undefined);
 });
 
 test('silence: stopped history and unknown senders do not mark a current hand as posted', () => {
   const s = setup();
-  s.actions.noteActivity(999, 'message');
+  s.actions.noteActivity(999, 'message', Math.floor(Date.now() / 1000));
   assert.equal(s.entry.firstPostAt, undefined);
   s.registry.update(s.entry, { status: 'reaped' });
-  s.actions.noteActivity(100, 'message');
+  s.actions.noteActivity(100, 'message', Math.floor(Date.now() / 1000));
   assert.equal(s.entry.firstPostAt, undefined);
 });
 
 test('silence: traffic under a different identity cannot prove this bot posted', async () => {
   const s = setup(); // Registered bot's history is empty.
-  s.actions.noteActivity(999, 'message'); // A bridge posting as another account.
+  s.actions.noteActivity(999, 'message', Math.floor(Date.now() / 1000)); // A bridge posting as another account.
   await s.reaper.sweep();
   assert.equal(s.entry.firstPostAt, undefined);
   assert.equal(s.posts.length, 1, 'attribution uses bot id/key, not persona display name');
@@ -147,7 +251,7 @@ test('silence: an older post from a revived identity is not proof of this launch
 
 test('silence: a message observed while fallback is in flight prevents a warning', async () => {
   const s = setup(async () => {
-    s.actions.noteActivity(100, 'message');
+    s.actions.noteActivity(100, 'message', Math.floor(Date.now() / 1000));
     return undefined; // Snapshot predates the event just received.
   });
   await s.reaper.sweep();

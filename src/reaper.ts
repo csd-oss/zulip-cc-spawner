@@ -94,7 +94,9 @@ export class Reaper {
     if (!entry.firstPostAt && !entry.silenceWarned && sinceSpawn > SILENCE_WARN_MS) {
       // Lookup failure is uncertainty, not silence: sweep logs it and retries.
       const posted = await this.lastPost(entry);
-      if (posted !== undefined && posted >= Date.parse(entry.spawnedAt)) {
+      // Match event intake: floor spawn to Zulip's seconds so same-second
+      // startup posts also count when recovered through the history fallback.
+      if (posted !== undefined && posted >= Math.floor(Date.parse(entry.spawnedAt) / 1000) * 1000) {
         this.registry.update(entry, { firstPostAt: new Date(posted).toISOString() });
       } else if (!entry.firstPostAt) { // An event may have arrived during the lookup.
         this.registry.update(entry, { silenceWarned: true });

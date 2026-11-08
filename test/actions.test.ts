@@ -204,7 +204,7 @@ test('activity from a hand updates lastActivity and firstPostAt', async () => {
   const e = registry.findAlive('talker')!;
   assert.equal(e.firstPostAt, undefined);
   assert.ok(actions.isHand(e.botUserId));
-  actions.noteActivity(e.botUserId, 'message');
+  actions.noteActivity(e.botUserId, 'message', Math.floor(Date.now() / 1000));
   assert.ok(registry.findAlive('talker')!.firstPostAt);
   await run('stop talker');
   assert.ok(!existsSync(join(dir, 'pwned')));

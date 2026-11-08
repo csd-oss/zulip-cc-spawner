@@ -39,6 +39,9 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 - **Reaping**: a hand with no public Zulip activity for 24 h (checked against Zulip before acting)
   is stopped; its identity and conversation are kept. A hand that says nothing for 10 minutes
   after starting gets a warning — it may not be connected. Messages during startup count;
+  pre-launch messages do not, even if delivered late. Spawn time is rounded down to
+  Zulip's seconds so same-second startup posts count. Activity uses message time,
+  never moves backwards, and reactions count by receipt time only while alive.
   Zulip is checked before warning, and a failed lookup is logged and retried next sweep
   rather than treated as silence.
 - Commands sent while the spawner was offline are never run; it says so once per topic.

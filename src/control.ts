@@ -146,7 +146,7 @@ export class ZulipControl {
       if (this.state.lastSeenMessageId !== undefined && m.id <= this.state.lastSeenMessageId) return;
       this.state.advance(m.id);
       this.wake?.onMessage(m);
-      if (this.actions.isHand(m.sender_id)) this.actions.noteActivity(m.sender_id, 'message');
+      if (this.actions.isHand(m.sender_id)) this.actions.noteActivity(m.sender_id, 'message', m.timestamp);
       this.intake = this.intake
         .then(() => this.onMessage(m, flags))
         .catch((err) => log(`message ${m.id}: ${(err as Error).stack ?? err}`));

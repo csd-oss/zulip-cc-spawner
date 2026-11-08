@@ -439,11 +439,30 @@ export class SpawnerActions {
   }
 
   /** A hand's own public activity, observed on the spawner's event queue. */
-  noteActivity(botUserId: number, kind: 'message' | 'reaction'): void {
+  noteActivity(botUserId: number, kind: 'message', timestamp: number): void;
+  noteActivity(botUserId: number, kind: 'reaction'): void;
+  noteActivity(botUserId: number, kind: 'message' | 'reaction', timestamp?: number): void {
     const entry = this.d.registry.byBotUserId(botUserId);
     if (!entry) return;
-    const now = new Date().toISOString();
-    this.d.registry.update(entry, kind === 'message' && !entry.firstPostAt ? { lastActivity: now, firstPostAt: now } : { lastActivity: now });
+    let activityAt: number;
+    if (kind === 'message') {
+      // Zulip timestamps have second precision. Floor spawn time so a real
+      // startup post in that same second counts (sub-second order is unknown).
+      // Older launches' delayed posts must neither prove startup nor renew idle.
+      if (timestamp === undefined || !Number.isFinite(timestamp) || timestamp < Math.floor(Date.parse(entry.spawnedAt) / 1000)) return;
+      activityAt = timestamp * 1000;
+    } else {
+      // Reactions have no event timestamp: only credit receipt while alive,
+      // never a provisioning revival that may be seeing old-launch traffic.
+      if (entry.status !== 'alive') return;
+      activityAt = Date.now();
+    }
+    const patch: Partial<BotEntry> = {};
+    // Use event time, not receipt time; delayed/out-of-order posts cannot make
+    // an idle hand look active now or move the activity watermark backwards.
+    if (activityAt > Date.parse(entry.lastActivity)) patch.lastActivity = new Date(activityAt).toISOString();
+    if (kind === 'message' && !entry.firstPostAt) patch.firstPostAt = new Date(activityAt).toISOString();
+    if (Object.keys(patch).length) this.d.registry.update(entry, patch);
   }
 
   /** Is this user id one of our hands (any status)? */
