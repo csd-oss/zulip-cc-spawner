@@ -76,7 +76,7 @@ export class Reaper {
       try {
         await this.check(entry);
       } catch (err) {
-        // tmux/sudo trouble is not evidence the hand is gone — skip this round.
+        // tmux/sudo/Zulip trouble is not evidence of death or silence — retry next round.
         log(`sweep error for ${entry.personaName}: ${(err as Error).message}`);
       }
     }
@@ -92,10 +92,11 @@ export class Reaper {
 
     const sinceSpawn = Date.now() - Date.parse(entry.spawnedAt);
     if (!entry.firstPostAt && !entry.silenceWarned && sinceSpawn > SILENCE_WARN_MS) {
-      const posted = await this.lastPost(entry).catch(() => undefined);
+      // Lookup failure is uncertainty, not silence: sweep logs it and retries.
+      const posted = await this.lastPost(entry);
       if (posted !== undefined && posted >= Date.parse(entry.spawnedAt)) {
         this.registry.update(entry, { firstPostAt: new Date(posted).toISOString() });
-      } else {
+      } else if (!entry.firstPostAt) { // An event may have arrived during the lookup.
         this.registry.update(entry, { silenceWarned: true });
         await this.notifier.postHome(entry, `⚠️ **${entry.personaName}** has not posted anything in ${formatDuration(sinceSpawn)} since it started — it may not be connected to Zulip. \`peek ${entry.suffix}\` shows its terminal.`);
       }

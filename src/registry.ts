@@ -115,8 +115,9 @@ export class Registry {
     );
   }
 
+  /** Current launch, including activity during startup; never stopped history. */
   byBotUserId(userId: number): BotEntry | undefined {
-    return this.alive().find((e) => e.botUserId === userId);
+    return this.entries.find((e) => (e.status === 'alive' || e.status === 'provisioning') && e.botUserId === userId);
   }
 
   /**
