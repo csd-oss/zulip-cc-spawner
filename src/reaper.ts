@@ -12,6 +12,7 @@
  * of a hand that never connected to Zulip.
  */
 import type { SpawnerConfig } from './config.js';
+import { isPlausibleMessageTime } from './activity-time.js';
 import type { Notifier } from './notifier.js';
 import type { BotEntry, Registry } from './registry.js';
 import type { Tmux } from './tmux.js';
@@ -76,7 +77,7 @@ export class Reaper {
       try {
         await this.check(entry);
       } catch (err) {
-        // tmux/sudo trouble is not evidence the hand is gone — skip this round.
+        // tmux/sudo/Zulip trouble is not evidence of death or silence — retry next round.
         log(`sweep error for ${entry.personaName}: ${(err as Error).message}`);
       }
     }
@@ -92,10 +93,13 @@ export class Reaper {
 
     const sinceSpawn = Date.now() - Date.parse(entry.spawnedAt);
     if (!entry.firstPostAt && !entry.silenceWarned && sinceSpawn > SILENCE_WARN_MS) {
-      const posted = await this.lastPost(entry).catch(() => undefined);
-      if (posted !== undefined && posted >= Date.parse(entry.spawnedAt)) {
+      // Lookup failure is uncertainty, not silence: sweep logs it and retries.
+      const posted = await this.lastPost(entry);
+      // Match event intake: floor spawn to Zulip's seconds so same-second
+      // startup posts also count when recovered through the history fallback.
+      if (isPlausibleMessageTime(posted) && posted >= Math.floor(Date.parse(entry.spawnedAt) / 1000) * 1000) {
         this.registry.update(entry, { firstPostAt: new Date(posted).toISOString() });
-      } else {
+      } else if (!entry.firstPostAt) { // An event may have arrived during the lookup.
         this.registry.update(entry, { silenceWarned: true });
         await this.notifier.postHome(entry, `⚠️ **${entry.personaName}** has not posted anything in ${formatDuration(sinceSpawn)} since it started — it may not be connected to Zulip. \`peek ${entry.suffix}\` shows its terminal.`);
       }
@@ -105,7 +109,7 @@ export class Reaper {
     if (Date.now() - last <= this.config.inactivityMs) return;
     // Our own view says idle; ask Zulip before acting on it.
     const posted = await this.lastPost(entry);
-    if (posted !== undefined && posted > last) {
+    if (isPlausibleMessageTime(posted) && posted > last) {
       last = posted;
       this.registry.update(entry, { lastActivity: new Date(posted).toISOString() });
       if (Date.now() - last <= this.config.inactivityMs) return;

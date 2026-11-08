@@ -81,3 +81,54 @@ test('provisioner treats unauthorized subscription as failure', async () => {
   const p = new Provisioner(new ZulipClient(creds, fetch));
   await assert.rejects(p.subscribe(5, 'secret'), /may not subscribe/);
 });
+
+test('lastPostOf: own bot key, sender:me, newest virtual anchor and seconds-to-ms conversion', async () => {
+  const email = 'fuzzer-bot@example.org';
+  const timestamps = [1794000180, 1794000900, 1794000960]; // 21:23, 21:35, 21:36Z
+  const { fetch, calls } = fakeZulip({
+    'GET /bots': () => ({ result: 'success', bots: [{ username: email, api_key: 'fixture-only-key' }] }),
+    'GET /messages': (_body, url) => {
+      assert.deepEqual(JSON.parse(url.searchParams.get('narrow')!), [{ operator: 'sender', operand: 'me' }]);
+      assert.equal(url.searchParams.get('anchor'), 'newest');
+      assert.equal(url.searchParams.get('num_before'), '1');
+      assert.equal(url.searchParams.get('num_after'), '0');
+      assert.equal(url.searchParams.get('include_anchor'), 'true');
+      // 'newest' is a virtual anchor beyond the last message, not a real
+      // included message. One message before it is the newest, not two rows.
+      return { result: 'success', messages: timestamps.slice(-1).map((timestamp) => ({ timestamp })) };
+    },
+  });
+  const provisioner = new Provisioner(new ZulipClient(creds, fetch));
+  const posted = await provisioner.lastPostOf(email.toUpperCase(), (ownCreds) => {
+    assert.deepEqual(ownCreds, { email, key: 'fixture-only-key', site: creds.site });
+    return new ZulipClient(ownCreds, fetch);
+  });
+  assert.equal(posted, Date.parse('2026-11-06T21:36:00Z'));
+  assert.deepEqual(calls, ['GET /bots', 'GET /messages']);
+});
+
+test('lastPostOf: successful empty history is distinct from an owner-list failure', async () => {
+  for (const owned of [true, false]) {
+    const { fetch } = fakeZulip({
+      'GET /bots': () => owned
+        ? { result: 'success', bots: [{ username: 'hand@example.org', api_key: 'fixture-key' }] }
+        : { result: 'error', msg: 'owner lookup failed' },
+      'GET /messages': () => ({ result: 'success', messages: [] }),
+    });
+    const p = new Provisioner(new ZulipClient(creds, fetch));
+    const lookup = p.lastPostOf('hand@example.org', (c) => new ZulipClient(c, fetch));
+    if (owned) assert.equal(await lookup, undefined);
+    else await assert.rejects(lookup, /owner lookup failed/);
+  }
+});
+
+test('lastPostOf: missing owned identity and bot-key query failures propagate', async () => {
+  for (const owned of [true, false]) {
+    const { fetch } = fakeZulip({
+      'GET /bots': () => ({ result: 'success', bots: owned ? [{ username: 'hand@example.org', api_key: 'fixture-key' }] : [] }),
+      'GET /messages': () => ({ result: 'error', msg: 'bot-key query failed' }),
+    });
+    const p = new Provisioner(new ZulipClient(creds, fetch));
+    await assert.rejects(p.lastPostOf('hand@example.org', (c) => new ZulipClient(c, fetch)), owned ? /bot-key query failed/ : /not among the owner's bots/);
+  }
+});
