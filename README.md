@@ -42,6 +42,9 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
   pre-launch messages do not, even if delivered late. Spawn time is rounded down to
   Zulip's seconds so same-second startup posts count. Activity uses message time,
   never moves backwards, and reactions count by receipt time only while alive.
+  Event and history message times may be at most 60 seconds ahead of local receipt
+  time (clock-skew tolerance); non-finite or further-future times are ignored for
+  both startup proof and activity, rather than extending a hand's idle lifetime.
   Zulip is checked before warning, and a failed lookup is logged and retried next sweep
   rather than treated as silence.
 - Commands sent while the spawner was offline are never run; it says so once per topic.

@@ -12,6 +12,7 @@
  * of a hand that never connected to Zulip.
  */
 import type { SpawnerConfig } from './config.js';
+import { isPlausibleMessageTime } from './activity-time.js';
 import type { Notifier } from './notifier.js';
 import type { BotEntry, Registry } from './registry.js';
 import type { Tmux } from './tmux.js';
@@ -96,7 +97,7 @@ export class Reaper {
       const posted = await this.lastPost(entry);
       // Match event intake: floor spawn to Zulip's seconds so same-second
       // startup posts also count when recovered through the history fallback.
-      if (posted !== undefined && posted >= Math.floor(Date.parse(entry.spawnedAt) / 1000) * 1000) {
+      if (isPlausibleMessageTime(posted) && posted >= Math.floor(Date.parse(entry.spawnedAt) / 1000) * 1000) {
         this.registry.update(entry, { firstPostAt: new Date(posted).toISOString() });
       } else if (!entry.firstPostAt) { // An event may have arrived during the lookup.
         this.registry.update(entry, { silenceWarned: true });
@@ -108,7 +109,7 @@ export class Reaper {
     if (Date.now() - last <= this.config.inactivityMs) return;
     // Our own view says idle; ask Zulip before acting on it.
     const posted = await this.lastPost(entry);
-    if (posted !== undefined && posted > last) {
+    if (isPlausibleMessageTime(posted) && posted > last) {
       last = posted;
       this.registry.update(entry, { lastActivity: new Date(posted).toISOString() });
       if (Date.now() - last <= this.config.inactivityMs) return;

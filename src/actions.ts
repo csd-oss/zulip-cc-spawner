@@ -10,6 +10,7 @@
  * exist; the reaper's startup reconcile closes it out.
  */
 import { CodexLauncher, inferEngine } from './codex.js';
+import { isPlausibleMessageTime } from './activity-time.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { prepareWorkDir } from './workdir.js';
@@ -449,8 +450,9 @@ export class SpawnerActions {
       // Zulip timestamps have second precision. Floor spawn time so a real
       // startup post in that same second counts (sub-second order is unknown).
       // Older launches' delayed posts must neither prove startup nor renew idle.
-      if (timestamp === undefined || !Number.isFinite(timestamp) || timestamp < Math.floor(Date.parse(entry.spawnedAt) / 1000)) return;
-      activityAt = timestamp * 1000;
+      const messageAt = timestamp === undefined ? undefined : timestamp * 1000;
+      if (!isPlausibleMessageTime(messageAt) || messageAt < Math.floor(Date.parse(entry.spawnedAt) / 1000) * 1000) return;
+      activityAt = messageAt;
     } else {
       // Reactions have no event timestamp: only credit receipt while alive,
       // never a provisioning revival that may be seeing old-launch traffic.

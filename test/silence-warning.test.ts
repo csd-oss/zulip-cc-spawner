@@ -34,6 +34,102 @@ function setup(lastPost: LastPostLookup = async () => undefined) {
   return { dir, registry, entry, posts, notifier, actions, reaper, kills: () => kills };
 }
 
+/** Exercise the real control intake seam without polling or network access. */
+async function messageEvent(s: ReturnType<typeof setup>, timestamp: number): Promise<void> {
+  const control = new ZulipControl({} as ZulipClient, s.actions, s.notifier, testConfig(s.dir), new ControlState(join(s.dir, 'cursor.json')));
+  const intake = control as unknown as { me: { user_id: number; full_name: string }; onEvent(e: ZulipEvent): void; intake: Promise<void> };
+  intake.me = { user_id: 42, full_name: 'CC Spawner' };
+  intake.onEvent({ id: 1, type: 'message', message: {
+    id: 10, type: 'stream', sender_id: 100, sender_email: s.entry.botEmail, sender_full_name: 'fuzzer',
+    content: 'skewed clock', subject: 'home', stream_id: 7, display_recipient: 'cc-hands', timestamp,
+  } });
+  await intake.intake;
+}
+
+test('silence: future message event cannot prove startup during provisioning', async (t) => {
+  const receivedAt = 1_800_000_000_000;
+  t.mock.method(Date, 'now', () => receivedAt);
+  let lookups = 0;
+  const s = setup(async () => { lookups++; return undefined; });
+  s.registry.update(s.entry, { status: 'provisioning' });
+  const previous = s.entry.lastActivity;
+  await messageEvent(s, (receivedAt + 48 * 3600_000) / 1000);
+  assert.equal(s.entry.firstPostAt, undefined, 'future traffic is not proof of a new launch');
+  assert.equal(s.entry.lastActivity, previous);
+  s.registry.update(s.entry, { status: 'alive' });
+  await s.reaper.sweep();
+  assert.equal(lookups, 1);
+  assert.match(s.posts[0], /has not posted anything/);
+});
+
+test('reaping: future message event cannot bypass authoritative history after 25h', async (t) => {
+  let now = 1_800_000_000_000;
+  t.mock.method(Date, 'now', () => now);
+  let lookups = 0;
+  const s = setup(async () => { lookups++; return undefined; });
+  await messageEvent(s, (now + 48 * 3600_000) / 1000);
+  now += 25 * 3600_000;
+  await s.reaper.sweep();
+  assert.equal(s.entry.status, 'reaped');
+  assert.equal(s.kills(), 1);
+  assert.ok(lookups > 0, 'idle reaping must consult authoritative history');
+});
+
+test('silence: future history cannot prove startup', async (t) => {
+  const now = 1_800_000_000_000;
+  t.mock.method(Date, 'now', () => now);
+  const s = setup(async () => now + 48 * 3600_000);
+  await s.reaper.sweep();
+  assert.equal(s.entry.firstPostAt, undefined);
+  assert.equal(s.entry.silenceWarned, true);
+  assert.match(s.posts[0], /has not posted anything/);
+});
+
+test('reaping: future history cannot renew an idle hand', async (t) => {
+  const now = 1_800_000_000_000;
+  t.mock.method(Date, 'now', () => now);
+  let lookups = 0;
+  const s = setup(async () => { lookups++; return now + 48 * 3600_000; });
+  const previous = new Date(now - 25 * 3600_000).toISOString();
+  s.registry.update(s.entry, { firstPostAt: s.entry.spawnedAt, lastActivity: previous });
+  await s.reaper.sweep();
+  assert.equal(s.entry.status, 'reaped');
+  assert.equal(s.entry.lastActivity, previous);
+  assert.equal(lookups, 1);
+  assert.equal(s.kills(), 1);
+});
+
+for (const source of ['event', 'history'] as const) {
+  for (const skew of [60_000, 60_001]) {
+    test(`silence: ${source} clock skew of ${skew}ms is ${skew === 60_000 ? 'accepted' : 'rejected'}`, async (t) => {
+      const now = 1_800_000_000_000;
+      t.mock.method(Date, 'now', () => now);
+      const posted = now + skew;
+      const s = setup(async () => source === 'history' ? posted : undefined);
+      const previous = s.entry.lastActivity;
+      if (source === 'event') s.actions.noteActivity(100, 'message', posted / 1000);
+      await s.reaper.sweep();
+      assert.equal(s.entry.firstPostAt, skew === 60_000 ? new Date(posted).toISOString() : undefined);
+      assert.equal(s.entry.silenceWarned, skew === 60_000 ? undefined : true);
+      // Startup history proves the post but does not update the idle watermark.
+      assert.equal(s.entry.lastActivity, source === 'event' && skew === 60_000 ? new Date(posted).toISOString() : previous);
+    });
+  }
+}
+
+test('silence: malformed history timestamps never prove startup or block reaping', async (t) => {
+  const now = 1_800_000_000_000;
+  t.mock.method(Date, 'now', () => now);
+  for (const posted of [NaN, Infinity, -Infinity, Number.MAX_VALUE]) {
+    const s = setup(async () => posted);
+    s.registry.update(s.entry, { lastActivity: new Date(now - 25 * 3600_000).toISOString() });
+    await s.reaper.sweep();
+    assert.equal(s.entry.firstPostAt, undefined);
+    assert.equal(s.entry.silenceWarned, true);
+    assert.equal(s.entry.status, 'reaped');
+  }
+});
+
 for (const failure of ['owner bot list failed', '429 Too Many Requests', 'bot-key query failed', 'network unavailable']) {
   test(`silence: ${failure} defers warning and retries next sweep`, async (t) => {
     let calls = 0;
@@ -209,7 +305,7 @@ test('reaping: a delayed current-launch message cannot make an idle hand look ac
 test('silence: malformed message timestamps do not credit receipt time', () => {
   const s = setup();
   const previous = s.entry.lastActivity;
-  for (const timestamp of [NaN, Infinity, -Infinity, undefined]) {
+  for (const timestamp of [NaN, Infinity, -Infinity, Number.MAX_VALUE, undefined]) {
     s.actions.noteActivity(100, 'message', timestamp as number);
   }
   assert.equal(s.entry.lastActivity, previous);
