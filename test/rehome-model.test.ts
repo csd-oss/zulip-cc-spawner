@@ -250,6 +250,84 @@ test('numeric snapshot choices expire or cancel without touching terminal', asyn
   assert.match((await f.run('answer scout esc')).content, /cancelled/); assert.equal(f.e.pendingModelMenu, undefined);
 });
 
+const ASK_AFTER_MODEL = ' ☐ Choice\nPick one?\n❯ 1. Red\n  2. Blue\n  3. Type something.\n  4. Chat about this';
+const PERMISSION_AFTER_MODEL = '──────────────────────────────\n Bash command\n │ destructive-command\n Do you want to proceed?\n ❯ 1. Yes\n 2. No\n Esc to cancel · Tab to amend';
+
+async function closedModelSnapshot() {
+  const f = live();
+  f.state.panes = ['? for shortcuts', 'Select model\n❯ 1. Sonnet 5.5\n 2. Opus 5.5'];
+  assert.match((await f.run('model scout')).content, /menu posted/);
+  assert.ok(f.e.pendingModelMenu);
+  return f;
+}
+
+async function questionAfterModel(pane = ASK_AFTER_MODEL) {
+  const f = await closedModelSnapshot();
+  f.state.escaped = false; f.state.capture = 0; f.state.panes = [pane];
+  await f.run('rescan');
+  assert.ok(f.e.pendingQuestion);
+  return f;
+}
+
+for (const user of [1, 2]) for (const answer of ['answer scout 1', '1']) for (const expired of [false, true]) {
+  test(`real question supersedes ${expired ? 'expired' : 'fresh'} model snapshot: user ${user}, ${answer}`, async () => {
+    const f = await questionAfterModel();
+    if (expired) f.e.pendingModelMenu!.postedAt = '2000-01-01T00:00:00Z';
+    const before = f.keys.length;
+    assert.match((await f.run(answer, home, user)).content, /Answer sent/);
+    assert.deepEqual(f.keys.slice(before), [['1']]);
+    assert.equal(f.e.pendingModelMenu, undefined);
+    assert.equal(f.e.model, 'claude-sonnet-5-5');
+    assert.deepEqual(f.renames, []);
+    assert.deepEqual(f.texts, ['/model']); // never reopen a model menu
+  });
+}
+
+for (const answer of ['answer scout 1', '1']) {
+  test(`model snapshot cannot bypass permission ownership: ${answer}`, async () => {
+    const f = await questionAfterModel(PERMISSION_AFTER_MODEL);
+    const before = f.keys.length;
+    assert.match((await f.run(answer, home, 2)).content, /Only this hand's creator/);
+    assert.equal(f.keys.length, before);
+    assert.equal(f.e.pendingModelMenu, undefined);
+    assert.match((await f.run(answer)).content, /Answer sent/);
+  });
+
+  test(`question after model snapshot still validates current pane: ${answer}`, async () => {
+    const f = await questionAfterModel();
+    f.state.panes = [ASK_AFTER_MODEL.replace('Pick one?', 'A different question?')];
+    const before = f.keys.length;
+    assert.match((await f.run(answer, home, 2)).content, /moved on to a different question/);
+    assert.equal(f.keys.length, before);
+    assert.equal(f.e.pendingModelMenu, undefined);
+  });
+
+  test(`nonowner can expire a model snapshot without terminal writes: ${answer}`, async () => {
+    const f = await closedModelSnapshot();
+    f.e.pendingModelMenu!.postedAt = '2000-01-01T00:00:00Z';
+    const before = f.keys.length;
+    assert.match((await f.run(answer, home, 2)).content, /expired/);
+    assert.equal(f.keys.length, before);
+    assert.equal(f.e.pendingModelMenu, undefined);
+  });
+
+  for (const user of [1, 2, 9]) test(`model-only snapshot remains owner/creator-only: user ${user}, ${answer}`, async () => {
+    const f = await closedModelSnapshot();
+    const before = f.keys.length;
+    if (user === 2) {
+      assert.match((await f.run(answer, home, user)).content, /Only this hand's creator/);
+      assert.equal(f.keys.length, before);
+      assert.ok(f.e.pendingModelMenu);
+    } else {
+      f.state.capture = 0; f.state.panes = ['? for shortcuts', CLAUDE_CONFIRM, CLAUDE_CHANGED];
+      // The confirmation fixture is for Opus, which is model-menu option 2.
+      assert.match((await f.run(answer.replace(/1$/, '2'), home, user)).content, /without stopping/);
+      assert.equal(f.e.model, 'claude-opus-5-5');
+      assert.equal(f.e.pendingModelMenu, undefined);
+    }
+  });
+}
+
 test('subscription failure does not record a successful home move', async t => {
   t.mock.method(console, 'error', () => {});
   const f = fixture(); f.prior(); f.state.failSubscribe = true;

@@ -281,7 +281,11 @@ rename failure is a warning, not a model rollback.
   to the hand's **home topic**. A ↓ is reported as more off-screen entries, not
   treated as a complete inventory. The menu is closed immediately; reply via
   `answer <hand> <number>` or a bare spawner-mentioned number in that home topic.
-  Only creator/owner may answer, snapshots expire after five minutes, and the
+  Only creator/owner may choose a model; any authorized caller can retire an
+  expired snapshot after five minutes. A pending terminal question takes
+  precedence over (and discards) the closed model snapshot when answered;
+  ordinary questions remain collaborative, permission prompts owner/creator-only.
+  The
   menu is reopened and the named choice reverified. `answer <hand> esc` cancels.
 - Unexpected screens/timeouts cause Escape cleanup, an error report, and **no
   registry model/name update**. If a confirmation was sent but success could not

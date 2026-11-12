@@ -436,15 +436,17 @@ export class SpawnerActions {
   }
 
   private async answerModel(inv: Invocation, entry: BotEntry, spec: string): Promise<string> {
-    if (!this.owns(inv, entry)) return this.ownerRefusal(entry);
     const pending = entry.pendingModelMenu!;
-    if (/^(esc|escape|cancel)$/i.test(spec.trim())) {
-      this.d.registry.update(entry, { pendingModelMenu: undefined });
-      return 'Model choice cancelled (terminal menu already closed).';
-    }
+    // Expiry is housekeeping, not privileged terminal control. Any authorized
+    // caller can retire an expired snapshot without touching the terminal.
     if (Date.now() - Date.parse(pending.postedAt) > 5 * 60_000) {
       this.d.registry.update(entry, { pendingModelMenu: undefined });
       return 'Model menu snapshot expired; run `model <hand>` again.';
+    }
+    if (!this.owns(inv, entry)) return this.ownerRefusal(entry);
+    if (/^(esc|escape|cancel)$/i.test(spec.trim())) {
+      this.d.registry.update(entry, { pendingModelMenu: undefined });
+      return 'Model choice cancelled (terminal menu already closed).';
     }
     const option = /^\d+$/.test(spec.trim()) ? pending.options.find(o => o.number === Number(spec.trim())) : undefined;
     if (!option) return 'Answer with one of the posted model numbers, or `esc`.';
@@ -505,8 +507,14 @@ export class SpawnerActions {
   private async answer(inv: Invocation, target: string, spec: string): Promise<string> {
     const entry = this.d.registry.findAlive(target);
     if (!entry) return `No running hand matches \`${target}\` — try \`list\`.`;
-    if (entry.pendingModelMenu) return this.answerModel(inv, entry, spec);
     const pending = entry.pendingQuestion;
+    // A real terminal dialog supersedes the closed model-menu snapshot. Retire
+    // that snapshot so it cannot consume this answer (or a later shortcut).
+    // The normal permission ownership and current-pane checks still apply.
+    if (entry.pendingModelMenu) {
+      if (!pending) return this.answerModel(inv, entry, spec);
+      this.d.registry.update(entry, { pendingModelMenu: undefined });
+    }
     if (!pending) return `**${entry.personaName}** has no pending question I know of — \`rescan\` if you think it's stuck on one.`;
     // Keep the shared AskUserQuestion bridge; tool permission decisions are
     // privileged terminal control, not collaborative question answers.
