@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts",
+    "test": "CC_SPAWNER_INTEGRATION=0 node --import tsx --test test/*.test.ts",
+    "test:integration": "CC_SPAWNER_INTEGRATION=1 node --import tsx --test test/*.test.ts",
     "clean": "rm -rf dist",
     "coverage": "node --import tsx --experimental-test-coverage --test-coverage-include='src/**' --test test/*.test.ts"
   },

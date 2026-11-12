@@ -119,10 +119,12 @@ npm test          # offline unit tests; no real Zulip/tmux/Claude/Codex
 npm run typecheck
 npm run coverage
 # Optional, only where live local tmux is permitted (NOT run for TASK-GJ15G):
-CC_SPAWNER_INTEGRATION=1 npm test # also runs legacy fake-CLI/real-tmux integration tests
+npm run test:integration # CC_SPAWNER_INTEGRATION=1; includes fake-CLI/real-tmux tests
 ```
 
-Default tests do not need tmux. The opt-in integration tests require it on PATH;
+Default `npm test` explicitly disables integration, even if the opt-in environment
+variable is inherited. `npm run test:integration` enables it with
+`CC_SPAWNER_INTEGRATION=1`. The integration tests require tmux on PATH;
 they use isolated sockets and fake CLIs, never a deployed spawner.
 
 ## License
