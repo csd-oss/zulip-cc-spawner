@@ -215,6 +215,11 @@ export class ZulipClient {
     return this.call('POST', '/bots', { full_name: fullName, short_name: shortName, bot_type: 1 });
   }
 
+  /** Change only the display name, never the bot's immutable email. */
+  updateBot(botId: number, fullName: string): Promise<unknown> {
+    return this.call('PATCH', `/bots/${botId}`, { full_name: fullName });
+  }
+
   /** Subscribe `principals` (user ids) to streams by name. NB Zulip CREATES a
    *  stream that doesn't exist — callers check it exists first (streamId). */
   subscribe(streams: string[], principals: number[]): Promise<{ subscribed: Record<string, string[]>; already_subscribed: Record<string, string[]>; unauthorized?: string[] }> {

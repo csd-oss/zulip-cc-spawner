@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { after, test } from 'node:test';
+import { after } from 'node:test';
 import { SpawnerActions, type Invocation } from '../src/actions.js';
 import type { Invoker, Where } from '../src/auth.js';
 import { parseCommand, modelsListing } from '../src/commands.js';
@@ -12,7 +12,7 @@ import type { BotIdentity, Provisioner } from '../src/provision.js';
 import { Registry } from '../src/registry.js';
 import { Tmux } from '../src/tmux.js';
 import { TranscriptWatcher, transcriptPath } from '../src/transcript-watch.js';
-import { testConfig, tmp } from './helpers.js';
+import { integrationTest as test, integrationEnabled, testConfig, tmp } from './helpers.js';
 
 class FakeProvisioner {
   bots = new Map<string, BotIdentity>();
@@ -71,6 +71,7 @@ const actions = new SpawnerActions({
   codexBoundary: async () => 0,
 });
 after(async () => {
+  if (!integrationEnabled) return;
   for (const s of await tmux.listSessions()) await tmux.killSession(s);
 });
 
@@ -87,11 +88,11 @@ test('spawn provisions a bot, writes its files and starts claude', async () => {
   assert.equal(e.botUserId, 100);
   assert.equal(e.streamId, 7);
   assert.deepEqual(provisioner.subscribed, [[100, 'cc-hands']]);
-  assert.ok(await tmux.hasSession('cc-opus-5-5-scout'));
+  assert.ok(await tmux.hasSession('cc-scout'));
 
-  const handDir = join(cfg.handsDir, 'cc-opus-5-5-scout');
+  const handDir = join(cfg.handsDir, 'cc-scout');
   assert.equal(statSync(join(handDir, 'zuliprc')).mode & 0o777, 0o600);
-  assert.match(readFileSync(join(handDir, 'zuliprc'), 'utf8'), /key=key-cc-opus-5-5-scout/);
+  assert.match(readFileSync(join(handDir, 'zuliprc'), 'utf8'), /key=key-cc-scout/);
   const bridge = JSON.parse(readFileSync(join(handDir, 'mcpl-bridge.json'), 'utf8'));
   const z = bridge.servers.zulip;
   assert.deepEqual(z.openChannels, ['zulip:cc-hands']);
@@ -132,19 +133,15 @@ test('list shows the hand; stop kills it and keeps the identity', async () => {
   assert.match((await run('list')).content, /\[cc-opus-5-5\] Scout.*#cc-hands > release/);
   const r = await run('stop scout');
   assert.match(r.content, /Stopped/);
-  assert.equal(await tmux.hasSession('cc-opus-5-5-scout'), false);
+  assert.equal(await tmux.hasSession('cc-scout'), false);
   assert.equal(registry.findAlive('scout'), undefined);
 });
 
-test('revival resumes the same transcript, keeps effort, refuses another stream or model', async () => {
+test('revival resumes the same transcript and keeps effort', async () => {
   const prior = registry.latestFor('[cc-opus-5-5] Scout')!;
   const t = transcriptPath(cfg.agentsHome, prior.workDir!, prior.sessionId);
   mkdirSync(dirname(t), { recursive: true });
   writeFileSync(t, '{"type":"user"}\n');
-
-  const elsewhere: Where = { kind: 'stream', streamName: 'cc-hands-2', streamId: 8, topic: 'x' };
-  assert.match((await run('spawn opus-5-5 name=scout', { ...elsewhere, streamName: 'cc-hands' })).content, /home in #cc-hands/);
-  assert.match((await run('spawn claude-opus-5-5-20261001 name=scout')).content, /ran on `claude-opus-5-5`/);
 
   const r = await run('spawn opus-5-5 name=scout', { ...home, topic: 'new topic' });
   assert.match(r.content, /Revived/);
@@ -156,7 +153,7 @@ test('revival resumes the same transcript, keeps effort, refuses another stream 
   assert.equal(e.transcriptOffset, statSync(t).size, 'history is not replayed by the watcher');
   const launched = JSON.parse(readFileSync(join(dir, `run-${e.sessionId}.json`), 'utf8'));
   assert.ok(launched.argv.includes('--resume'));
-  assert.match(readFileSync(join(cfg.handsDir, 'cc-opus-5-5-scout', 'seed.md'), 'utf8'), /You're back/);
+  assert.match(readFileSync(join(cfg.handsDir, 'cc-scout', 'seed.md'), 'utf8'), /You're back/);
   await run('stop scout');
 });
 
@@ -167,7 +164,7 @@ test('a failed spawn is recorded as failed and leaves no session', async () => {
     assert.match(r.content, /failed: subscription refused.*kept/s);
     const e = registry.all().find((x) => x.suffix === 'broken')!;
     assert.equal(e.status, 'failed');
-    assert.equal(await tmux.hasSession('cc-sonnet-5-5-broken'), false);
+    assert.equal(await tmux.hasSession('cc-broken'), false);
     assert.equal(registry.busy('broken'), undefined, 'a failed name is free for a retry');
   } finally {
     provisioner.failSubscribe = false;

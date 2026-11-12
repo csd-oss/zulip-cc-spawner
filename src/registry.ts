@@ -36,7 +36,7 @@ export interface BotEntry {
   workDir?: string;
   /** Set only after exclusive workspace creation and trust preparation succeed. */
   workDirReady?: boolean;
-  nameScheme?: 'bracket-v1';
+  nameScheme?: 'bracket-v1' | 'stable-v2';
   harness?: string;
   engine?: 'claude' | 'codex';
   model: string;
@@ -64,6 +64,12 @@ export interface BotEntry {
   lastModel?: string;
   /** A dialog the session is blocked on (posted to the home topic). */
   pendingQuestion?: PendingQuestion;
+  /** Snapshot only: no TUI is left open while waiting for a Zulip answer. */
+  pendingModelMenu?: {
+    options: { number: number; label: string; model: string }[];
+    effort?: string;
+    postedAt: string;
+  };
 }
 
 export class Registry {

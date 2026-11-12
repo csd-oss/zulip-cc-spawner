@@ -132,3 +132,19 @@ test('lastPostOf: missing owned identity and bot-key query failures propagate', 
     await assert.rejects(p.lastPostOf('hand@example.org', (c) => new ZulipClient(c, fetch)), owned ? /bot-key query failed/ : /not among the owner's bots/);
   }
 });
+
+test('admin rename PATCHes only full_name to the bot endpoint', async () => {
+  const { fetch, calls } = fakeZulip({
+    'PATCH /bots/42': body => {
+      assert.deepEqual([...body], [['full_name', '[cc-opus-5-5] Scout']]);
+      return { result: 'success' };
+    },
+  });
+  await new Provisioner(new ZulipClient(creds, fetch)).rename(42, '[cc-opus-5-5] Scout');
+  assert.deepEqual(calls, ['PATCH /bots/42']);
+});
+
+test('admin bot rename propagates failure for the actions warning boundary', async () => {
+  const { fetch } = fakeZulip({ 'PATCH /bots/42': () => ({ result: 'error', msg: 'not permitted' }) });
+  await assert.rejects(new Provisioner(new ZulipClient(creds, fetch)).rename(42, 'new'), /not permitted/);
+});

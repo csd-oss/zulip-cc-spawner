@@ -14,7 +14,7 @@ import { isPlausibleMessageTime } from './activity-time.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { prepareWorkDir } from './workdir.js';
-import { handName } from './names.js';
+import { handName, modelDisplayName } from './names.js';
 import { isAllowed, type GroupCheck, type Invoker, type Where } from './auth.js';
 import {
   EFFORT_DEFAULT,
@@ -32,6 +32,7 @@ import type { AgentHost } from './host.js';
 import type { ClaudeLauncher } from './launcher.js';
 import type { Notifier } from './notifier.js';
 import type { Provisioner } from './provision.js';
+import { LiveModelSwitcher } from './model-switch.js';
 import { injectAnswer, parseAnswerSpec } from './question.js';
 import type { BotEntry, Registry } from './registry.js';
 import type { Tmux } from './tmux.js';
@@ -74,6 +75,7 @@ export interface ActionDeps {
   watcher: TranscriptWatcher;
   groupCheck: GroupCheck;
   realm: string;
+  modelSwitcher?: LiveModelSwitcher;
   codexBoundary?: (entry: BotEntry) => Promise<number>;
   codexWake?: { ready(entry: BotEntry): void };
 }
@@ -127,6 +129,8 @@ export class SpawnerActions {
     switch (cmd.kind) {
       case 'spawn':
         return { content: await this.spawn(inv, cmd) };
+      case 'model':
+        return { content: await this.model(inv, cmd) };
       case 'models':
         return { content: modelsListing() };
       case 'list':
@@ -136,7 +140,7 @@ export class SpawnerActions {
       case 'peek':
         return this.peek(cmd.target, cmd.lines);
       case 'answer':
-        return { content: await this.answer(cmd.target, cmd.spec) };
+        return { content: await this.answer(inv, cmd.target, cmd.spec) };
       case 'press':
         return { content: await this.press(cmd.target, cmd.keys) };
       case 'rescan':
@@ -157,7 +161,7 @@ export class SpawnerActions {
     const { streamId, topic } = inv.where;
     const blocked = this.d.registry
       .alive()
-      .filter((e) => e.pendingQuestion && e.streamId === streamId && e.topic.toLowerCase() === topic.toLowerCase());
+      .filter((e) => (e.pendingQuestion || e.pendingModelMenu) && e.streamId === streamId && e.topic.toLowerCase() === topic.toLowerCase());
     return blocked.length === 1 ? buildAnswerCommand(blocked[0].suffix, inv.body) : inv.cmd;
   }
 
@@ -176,13 +180,20 @@ export class SpawnerActions {
     const engine = cmd.engine ?? inferEngine(cmd.model);
     const slug = modelSlug(cmd.model);
     const names = handName(cmd.model, cmd.friendly ?? suffix, engine === 'codex' ? 'cx' : 'cc');
-    // Prefer an existing legacy identity for the same model/suffix. Never
-    // reinterpret an unmarked bracket-name entry as a new-style identity.
+    // Exact pre-v2 identities still win. Otherwise a unique historical hand
+    // with this suffix may change model; never guess between distinct bots.
     const legacy = engine === 'codex' ? undefined : registry.latestFor(`Claude-Code-${slug}-${suffix}`);
-    const modern = registry.latestFor(names.personaName);
-    if (modern && modern.nameScheme !== 'bracket-v1') return 'Name collision with a legacy persona — pick another name.';
-    if (legacy && modern) return 'Ambiguous legacy/new identity — pick another name.';
-    const prior = legacy ?? modern;
+    const bracket = registry.latestFor(names.personaName);
+    if (bracket && !bracket.nameScheme) return 'Name collision with a legacy persona — pick another name.';
+    if (legacy && bracket && legacy.tmuxSession !== bracket.tmuxSession) return 'Ambiguous legacy/new identity — pick another name.';
+    const histories = new Map<string, BotEntry>();
+    for (const e of registry.all()) {
+      if (e.suffix.toLowerCase() === suffix && e.status !== 'provisioning' && e.botUserId > 0) histories.set(e.tmuxSession, e);
+    }
+    const exact = legacy ?? bracket;
+    if (!exact && histories.size > 1) return 'Ambiguous historical name — use a distinct hand name; nothing was changed.';
+    const prior = exact ? histories.get(exact.tmuxSession) ?? exact : [...histories.values()][0];
+    if (prior && /^\[/.test(prior.personaName) && !prior.nameScheme) return 'Name collision with a legacy persona — pick another name.';
     const personaName = prior?.personaName ?? names.personaName;
     const shortName = prior?.tmuxSession ?? names.shortName;
     const workDir = prior ? prior.workDir : resolve(cfg.workRoot ?? resolve(cfg.projectDir, 'hands'), shortName);
@@ -198,12 +209,12 @@ export class SpawnerActions {
       return `tmux session \`${shortName}\` already exists outside my registry — pick another name or clean it up.`;
     }
 
-    if (prior && prior.streamId !== where.streamId) {
-      return `**${personaName}** already exists with its home in #${prior.streamName} — revive it there, or pick another name here.`;
+    const rehome = prior && (prior.streamId !== where.streamId || prior.topic !== where.topic);
+    const modelChange = prior && prior.model !== cmd.model;
+    if (prior && (prior.engine ?? inferEngine(prior.model)) !== engine) {
+      return 'Cannot change engine: Claude and Codex sessions are incompatible. Spawn a new hand with a different name instead.';
     }
-    if (prior && prior.model !== cmd.model) {
-      return `**${personaName}** ran on \`${prior.model}\`, not \`${cmd.model}\` — revive it with that exact model, or pick another name.`;
-    }
+    if (prior && (rehome || modelChange) && !this.owns(inv, prior)) return this.ownerRefusal(prior);
 
     // Effort is not part of the identity: kept from the prior launch unless
     // overridden; `effort=default` clears it.
@@ -238,19 +249,19 @@ export class SpawnerActions {
       botUserId: 0,
       botEmail: '',
       tmuxSession: shortName,
-      streamName: where.streamName,
-      streamId: where.streamId,
-      topic: where.topic,
+      streamName: prior?.streamName ?? where.streamName,
+      streamId: prior?.streamId ?? where.streamId,
+      topic: prior?.topic ?? where.topic,
       handDir: paths.dir,
       workDir,
       workDirReady: prior?.workDirReady,
-      nameScheme: prior ? prior.nameScheme : 'bracket-v1',
+      nameScheme: prior ? prior.nameScheme : 'stable-v2',
       harness: engine === 'codex' ? 'cx' : prior ? prior.harness : 'cc',
       engine,
-      model: cmd.model,
-      effort,
+      model: prior?.model ?? cmd.model,
+      effort: prior?.effort ?? effort,
       sessionId,
-      spawnedBy: { userId: inv.invoker.userId, username: inv.invoker.name },
+      spawnedBy: prior?.spawnedBy ?? { userId: inv.invoker.userId, username: inv.invoker.name },
       spawnedAt: now,
       lastActivity: now,
       status: 'provisioning',
@@ -264,6 +275,7 @@ export class SpawnerActions {
       registry.update(entry, { botUserId: bot.userId, botEmail: bot.email });
       if (!created && !prior) log(`${personaName}: reusing an existing bot ${bot.email} with no registry history`);
       await this.d.provisioner.subscribe(bot.userId, where.streamName);
+      registry.update(entry, { streamName: where.streamName, streamId: where.streamId, topic: where.topic });
       if (workDir) {
         await prepareWorkDir(this.d.host, cfg, workDir, !prior?.workDirReady, engine === 'claude');
         registry.update(entry, { workDirReady: true });
@@ -301,15 +313,22 @@ export class SpawnerActions {
       });
       registry.update(entry, { ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}), status: 'alive', transcriptOffset: startOffset, lastActivity: new Date().toISOString() });
 
+      let modelWarning = '';
+      if (!result.warning) {
+        registry.update(entry, { model: cmd.model, effort });
+        if (modelChange) modelWarning = await this.renameModel(entry);
+      } else if (modelChange) {
+        modelWarning = '\n⚠️ Model switch not confirmed; registry model and bot display name kept. Inspect with `peek`.';
+      }
       this.d.codexWake?.ready(entry);
 
-      const label = modelLabel({ model: cmd.model, effort });
-      const note = result.warning ? `\n⚠️ ${result.warning}` : '';
+      const label = modelLabel(entry);
+      const note = (result.warning ? `\n⚠️ ${result.warning}` : '') + modelWarning;
       if (canResume) {
-        return `Revived **${personaName}** (${label}) in tmux \`${shortName}\` — same identity **and** same conversation; it is catching up on ${home(entry)}.${note}`;
+        return `Revived **${entry.personaName}** (${label}) in tmux \`${shortName}\` — same identity **and** same conversation; it is catching up on ${home(entry)}.${note}`;
       }
       const amnesia = lostContext ? `\n⚠️ Its previous conversation is unavailable, so it starts fresh — same Zulip identity, no memory of before.` : '';
-      return `Spawned @**${personaName}** (${label}) in tmux \`${shortName}\`, home ${home(entry)} — it should introduce itself shortly.${amnesia}${note}`;
+      return `Spawned @**${entry.personaName}** (${label}) in tmux \`${shortName}\`, home ${home(entry)} — it should introduce itself shortly.${amnesia}${note}`;
     } catch (err) {
       console.error(err);
       const message = engine === 'codex' ? (/^Codex (needs login|startup timed out|exited during startup)/.test((err as Error).message) ? (err as Error).message : 'Codex launch failed; ask an operator to inspect the logs.') : (err as Error).message;
@@ -331,6 +350,78 @@ export class SpawnerActions {
       this.d.codexWake?.ready(entry);
       return `Spawn of **${personaName}** failed: ${message}${kept}`;
     }
+  }
+
+  private owns(inv: Invocation, entry: BotEntry): boolean {
+    return inv.invoker.userId === entry.spawnedBy?.userId || inv.invoker.userId === (this.d.config.ownerUserId ?? 9);
+  }
+
+  private ownerRefusal(entry: BotEntry): string {
+    return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or the owner (user ${this.d.config.ownerUserId ?? 9}) may rehome or change its model.`;
+  }
+
+  /** Model truth is committed before the cosmetic rename. A PATCH failure must
+   * never roll back a successful session switch or lose the existing bot. */
+  private async renameModel(entry: BotEntry): Promise<string> {
+    try {
+      const fullName = modelDisplayName(entry, entry.model);
+      await this.d.provisioner.rename(entry.botUserId, fullName);
+      this.d.registry.update(entry, { personaName: fullName });
+      return '';
+    } catch (err) {
+      log(`rename ${entry.tmuxSession}: ${(err as Error).message}`);
+      return '\n⚠️ Model changed, but the bot display-name update failed; its email and session are unchanged.';
+    }
+  }
+
+  private async model(inv: Invocation, cmd: Command & { kind: 'model' }): Promise<string> {
+    const entry = this.d.registry.findAlive(cmd.target);
+    if (!entry) return `No running hand matches \`${cmd.target}\` — try \`list\`.`;
+    if (!this.owns(inv, entry)) return this.ownerRefusal(entry);
+    const engine = entry.engine ?? inferEngine(entry.model);
+    if (cmd.model && inferEngine(cmd.model) !== engine) return 'Cannot change engine: Claude and Codex sessions are incompatible; spawn a new hand instead.';
+    if (entry.pendingQuestion) return 'Answer or dismiss the pending question before changing model.';
+    if (cmd.effort && cmd.model) {
+      const error = effortError(cmd.effort, cmd.model, engine);
+      if (error) return error;
+    }
+    this.d.registry.update(entry, { pendingModelMenu: undefined });
+    try {
+      const result = await (this.d.modelSwitcher ?? new LiveModelSwitcher(this.d.tmux)).run(entry.tmuxSession, engine, cmd.model, cmd.effort);
+      if (result.kind === 'menu') {
+        const options = result.menu.options.filter(o => result.menu.kind === 'models' && !/More|default|custom/i.test(o.label));
+        if (!options.length) return 'No selectable model list found; menu cancelled, old model kept.';
+        this.d.registry.update(entry, { pendingModelMenu: { options, effort: cmd.effort, postedAt: new Date().toISOString() } });
+        await this.d.notifier.postHome(entry, [
+          `Model menu for **${entry.personaName}** (current: \`${entry.model}\`). ${cmd.model ? 'Requested model not on screen. ' : ''}Menu closed while waiting.`,
+          ...options.map(o => `${o.number}. ${o.label}`),
+          result.menu.more ? '↓ More entries exist below the visible list; no off-screen choice was guessed.' : '',
+          `Creator/owner: mention the spawner with \`answer ${entry.suffix} <number>\` (or a bare number here) within 5 minutes. \`esc\` cancels.`,
+        ].filter(Boolean).join('\n'));
+        return `Model menu posted to ${home(entry)}; no switch yet.`;
+      }
+      this.d.registry.update(entry, { model: result.model, effort: engine === 'codex' ? result.effort : entry.effort });
+      const warning = await this.renameModel(entry);
+      return `Changed **${entry.personaName}** to \`${modelLabel(entry)}\` without stopping; same session and workdir.${warning}`;
+    } catch (err) {
+      return `Could not change **${entry.personaName}**'s model: ${(err as Error).message}. No model/name update recorded.`;
+    }
+  }
+
+  private async answerModel(inv: Invocation, entry: BotEntry, spec: string): Promise<string> {
+    if (!this.owns(inv, entry)) return this.ownerRefusal(entry);
+    const pending = entry.pendingModelMenu!;
+    if (/^(esc|escape|cancel)$/i.test(spec.trim())) {
+      this.d.registry.update(entry, { pendingModelMenu: undefined });
+      return 'Model choice cancelled (terminal menu already closed).';
+    }
+    if (Date.now() - Date.parse(pending.postedAt) > 5 * 60_000) {
+      this.d.registry.update(entry, { pendingModelMenu: undefined });
+      return 'Model menu snapshot expired; run `model <hand>` again.';
+    }
+    const option = /^\d+$/.test(spec.trim()) ? pending.options.find(o => o.number === Number(spec.trim())) : undefined;
+    if (!option) return 'Answer with one of the posted model numbers, or `esc`.';
+    return this.model(inv, { kind: 'model', target: entry.suffix, model: option.model, effort: pending.effort });
   }
 
   private list(): string {
@@ -384,9 +475,10 @@ export class SpawnerActions {
 
   /** Deliver an answer into a blocked dialog. Pending state is cleared by the
    *  watcher when the resolution is observed (ground truth). */
-  private async answer(target: string, spec: string): Promise<string> {
+  private async answer(inv: Invocation, target: string, spec: string): Promise<string> {
     const entry = this.d.registry.findAlive(target);
     if (!entry) return `No running hand matches \`${target}\` — try \`list\`.`;
+    if (entry.pendingModelMenu) return this.answerModel(inv, entry, spec);
     const pending = entry.pendingQuestion;
     if (!pending) return `**${entry.personaName}** has no pending question I know of — \`rescan\` if you think it's stuck on one.`;
     const parsed = parseAnswerSpec(spec, pending.questions[0]);

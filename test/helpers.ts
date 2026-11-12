@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { test } from 'node:test';
 import type { SpawnerConfig } from '../src/config.js';
 
 export function tmp(prefix = 'ccsp-'): string {
@@ -70,3 +71,7 @@ export function testConfig(dir: string, overrides: Partial<SpawnerConfig> = {}):
     ...overrides,
   };
 }
+
+/** Real-tmux integration is opt-in. Default npm test must be offline-only. */
+export const integrationEnabled = process.env.CC_SPAWNER_INTEGRATION === '1';
+export const integrationTest: typeof test = integrationEnabled ? test : test.skip;

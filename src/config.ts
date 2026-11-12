@@ -27,6 +27,9 @@ export interface SpawnerConfig {
   allowedStreams: string[];
   /** Zulip user ids allowed unconditionally. */
   allowedUsers: number[];
+  /** Owner allowed to rehome/re-model others’ hands; defaults to Zulip user 9.
+   * Still subject to the ordinary command allow-lists. */
+  ownerUserId?: number;
   /** Zulip user-group ids whose members may drive the spawner (system groups
    *  like role:administrators work too; membership is checked recursively). */
   allowedGroups: number[];
@@ -96,6 +99,7 @@ const DEFAULTS: SpawnerConfig = {
   adminRc: join(STATE_DIR, 'admin.zuliprc'),
   allowedStreams: [],
   allowedUsers: [],
+  ownerUserId: 9,
   allowedGroups: [],
   allowedResidents: [],
   devMode: false,
@@ -130,6 +134,8 @@ export function loadConfig(): SpawnerConfig {
     console.warn(`[config] wrote template config to ${path} — fill in allowedStreams and allowedUsers/allowedGroups (currently deny-all)`);
   }
   const cfg: SpawnerConfig = { ...DEFAULTS, ...fileCfg };
+
+  if (!Number.isSafeInteger(cfg.ownerUserId) || cfg.ownerUserId! <= 0) throw new Error('ownerUserId must be a positive user id');
 
   const envNum = (name: string, current: number): number => {
     const raw = process.env[name];

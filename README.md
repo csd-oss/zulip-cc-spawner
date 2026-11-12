@@ -15,6 +15,7 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 
 ```
 @**CC Spawner** spawn opus-5-5 [name=scout] [effort=high]   # home = this stream + topic
+@**CC Spawner** model scout [opus-5-5] [effort=medium]    # live switch; omit model to list
 @**CC Spawner** models                                     # also: help models
 @**CC Spawner** list
 @**CC Spawner** stop scout                                   # alias: kill
@@ -25,12 +26,19 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 ```
 
 - **Models** are explicit versions (`opus-5-5`, `sonnet-5-5`, `fable-5-1`, `haiku-4-5`, … or a full
-  id). Bare `opus`/`sonnet` are refused: the model is part of the hand's name, so a name must keep
-  meaning one model. **Effort** (`low`…`max`, `ultracode`) is validated per model and kept across
+  id). Bare `opus`/`sonnet` are refused so launches do not silently change meaning after a CLI upgrade. **Effort** (`low`…`max`, `ultracode`) is validated per model and kept across
   revivals; `effort=default` clears it.
-- **Names**: new hand `[cc-<model>] <name>`, bot `cc-<model>-<name>-bot@…`, tmux `cc-<model>-<name>`.
-- **Revival**: `spawn <same model> name=<same>` brings back the same bot **and** the same
-  conversation (`claude --resume`), in the same stream (a new topic is fine).
+- **Names**: new hand `[cc-<model>] <name>`, bot `cc-<name>-bot@…`, tmux `cc-<name>`
+  (Codex uses `cx`). Model changes update only the display name, not email, tmux or workspace.
+- **Revival/rehome**: stop the hand, then `spawn <model> name=<same>` in the desired home stream/topic.
+  It resumes the same conversation with the same bot and workspace. The bot subscribes to the new
+  stream and **keeps the old subscription**; bridge openChannels/filters and the resume prompt use
+  the new home. A missing transcript still has the existing explicit lost-context warning.
+  A same-engine model change is allowed; Claude↔Codex is refused (start a new hand instead).
+  Changing home (including topic) or model requires the original creator (`spawnedBy`) or
+  `ownerUserId` (default **9**); ordinary command allow-lists still apply. Revival never transfers
+  authorship to the reviver. `allowedUsers` is not an ownership list: not everyone allowed to drive
+  the spawner should be allowed to rehome other people's hands.
 - **Blocked hands**: a question dialog or permission prompt is posted in the hand's topic; answer
   with `answer`, or in that topic simply `@**CC Spawner** yes` / `2` / `esc`.
 - **Raw keys**: `press` uses the `space` keyword for spaces; literal text starting with
@@ -104,11 +112,15 @@ State: `~/.cc-spawner/{config.json,registry.json,state.json,spawner.lock}`. Knob
 ## Develop
 
 ```sh
-npm test          # unit + integration (real tmux and shell, a fake `claude`, a fake Zulip)
+npm test          # offline unit tests; no real Zulip/tmux/Claude/Codex
+npm run typecheck
 npm run coverage
+# Optional, only where live local tmux is permitted (NOT run for TASK-GJ15G):
+CC_SPAWNER_INTEGRATION=1 npm test # also runs legacy fake-CLI/real-tmux integration tests
 ```
 
-Requires tmux on PATH for the tests.
+Default tests do not need tmux. The opt-in integration tests require it on PATH;
+they use isolated sockets and fake CLIs, never a deployed spawner.
 
 ## License
 
@@ -117,9 +129,9 @@ MIT — see [LICENSE](LICENSE).
 ## New-hand names and workspaces
 
 New hands display as `[cc-<modelSlug>] <name>` (the supplied name's case is
-preserved, otherwise four random hex characters). `cc` is the harness label;
-this does not add Codex support. Tmux and bot short names remain lowercase
-`cc-<modelSlug>-<name>`. Names are bounded to 49 display characters, 40 short
+preserved, otherwise four random hex characters). `cc` is the Claude harness label
+(`cx` for Codex). Tmux and bot short names are model-independent lowercase
+`cc-<name>` / `cx-<name>`. Names are bounded to 49 display characters, 40 short
 characters and 44 email-local-part characters including `-bot`. These are
 local compatibility budgets; actual Zulip server limits are **GUESS**, not
 verified against a live server. Full bracket names, legacy names, short names,
@@ -241,3 +253,37 @@ No new sandbox is installed. Bubblewrap was not on PATH in this implementation
 environment; host availability must be checked by the operator.
 
 Codex spawn/revive snapshots an inclusive home-topic message-ID boundary: catch-up may answer only still-unanswered mentions at or below it; newer mentions are delivered only by the spawner queue, buffered until startup completes. Earlier conversation requests are not re-admitted from backscroll; Claude catch-up is unchanged.
+
+## Live model switching
+
+`model <hand> [<model>] [effort=...]` works without stopping a live hand, with the
+same creator/owner authorization as rehome. Use an explicit version/id or a
+supported Claude alias. The session, Zulip bot, workspace and persona are kept.
+After a confirmed change the admin client PATCHes `/bots/<id>` with `full_name`;
+rename failure is a warning, not a model rollback.
+
+- Claude: sends `/model <id>`, checks that “Switch model?” names the requested
+  model, confirms Yes, and waits for “Set model to …”. Claude may save the model
+  as the CLI default; the spawner deliberately leaves that alone and still passes
+  `--model` on **every** launch. Live Claude `effort=` changes are refused: use
+  stop/spawn for those; omitting effort preserves the recorded launch setting.
+- Codex: opens `/model`, matches the **visible display name** (case/spaces/dashes
+  normalized, never hard-coded model ordinals), chooses reasoning effort or the
+  menu default, and presses **s** to apply **for this session only**. Explicit
+  efforts must be on screen (max/ultra can use “More reasoning…”); config.toml
+  is not edited. The confirmed reasoning level is recorded for future launches.
+- With no model, or when it is absent from the visible menu, options are posted
+  to the hand's **home topic**. A ↓ is reported as more off-screen entries, not
+  treated as a complete inventory. The menu is closed immediately; reply via
+  `answer <hand> <number>` or a bare spawner-mentioned number in that home topic.
+  Only creator/owner may answer, snapshots expire after five minutes, and the
+  menu is reopened and the named choice reverified. `answer <hand> esc` cancels.
+- Unexpected screens/timeouts cause Escape cleanup, an error report, and **no
+  registry model/name update**. If a confirmation was sent but success could not
+  be observed, inspect `peek`: the terminal may have applied it despite the
+  missing acknowledgement. Do not assume an unconfirmed terminal was rolled back.
+
+Existing `bracket-v1` and `Claude-Code-*` identities keep their old email, tmux,
+handDir and workDir. Exact historical names still resolve; changed models use a
+unique historical suffix. Ambiguous distinct historical identities are refused
+rather than guessed, and unmarked bracket-name collisions stay fail-closed.

@@ -44,12 +44,12 @@ function fixture() {
 }
 
 test('display harness label, ASCII identity and bounded names', () => {
-  assert.deepEqual(handName('claude-opus', 'Syncntn'), { personaName: '[cc-opus] Syncntn', shortName: 'cc-opus-syncntn' });
+  assert.deepEqual(handName('claude-opus', 'Syncntn'), { personaName: '[cc-opus] Syncntn', shortName: 'cc-syncntn' });
   assert.equal(handName('astra-6', 'hand', 'cx').personaName, '[cx-astra-6] hand');
   const n = handName('a'.repeat(80), 'X'.repeat(24));
   assert.ok(n.personaName.length <= 49);
-  assert.equal(n.shortName.length, 40);
-  assert.equal(`${n.shortName}-bot`.length, 44);
+  assert.equal(n.shortName.length, 27);
+  assert.equal(`${n.shortName}-bot`.length, 31);
   assert.match(n.shortName, /^[a-z0-9-]+$/);
   assert.throws(() => handName('opus', '../bad'));
   assert.throws(() => handName('opus', 'x'.repeat(25)));
@@ -114,11 +114,10 @@ test('legacy registry round-trip and revival preserve identity, arbitrary handDi
   assert.equal(c.registry.findAlive(e.personaName), revived);
 });
 
-test('unmarked bracket persona cannot be hijacked and slug model collisions refused', async () => {
+test('unmarked bracket persona cannot be hijacked', async () => {
   const c = fixture();
   await c.run('spawn opus-5-5 name=old'); await c.run('stop old');
   const e = c.registry.all()[0];
-  assert.match((await c.run('spawn claude-opus-5-5-20261001 name=old')).content, /ran on/);
   delete e.nameScheme;
   assert.match((await c.run('spawn opus-5-5 name=old')).content, /collision/);
   assert.equal(c.launches.length, 1);
@@ -167,7 +166,7 @@ test('configurable workRoot and watcher use the recorded cwd', async () => {
 
 test('new identity never adopts an existing workspace or unregistered legacy bot', async () => {
   const c = fixture();
-  const path = join(c.cfg.projectDir, 'hands', 'cc-opus-5-5-old');
+  const path = join(c.cfg.projectDir, 'hands', 'cc-old');
   mkdirSync(path, { recursive: true }); writeFileSync(join(path, 'keep'), 'keep');
   assert.match((await c.run('spawn opus-5-5 name=old')).content, /failed/);
   assert.equal(c.launches.length, 0);
