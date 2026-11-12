@@ -29,7 +29,7 @@ function fixture(overrides: Partial<SpawnerConfig> = {}) {
   const posts: { streamName: string; topic: string; content: string }[] = [];
   const keys: string[][] = [];
   const texts: string[] = [];
-  const state = { running: false, warning: undefined as string | undefined, failLaunch: false, failRename: false, failSubscribe: false,
+  const state = { running: false, warning: undefined as string | undefined, failLaunch: false, failRename: false, failSubscribe: false, existingBot: false,
     panes: ['? for shortcuts'], capture: 0, codexCommand: '', escaped: false };
   const host = new LocalHost();
   const tmux = {
@@ -50,7 +50,7 @@ function fixture(overrides: Partial<SpawnerConfig> = {}) {
     return { warning: state.warning };
   } } as unknown as ClaudeLauncher;
   const provisioner = {
-    async ensure(_full: string, short: string) { return { bot: { userId: 42, email: `${short}-bot@x`, apiKey: 'offline' }, created: false }; },
+    async ensure(_full: string, short: string) { return { bot: { userId: 42, email: `${short}-bot@x`, apiKey: 'offline' }, created: !state.existingBot && registry.all().length === 1 }; },
     async subscribe(id: number, stream: string) { if (state.failSubscribe) throw new Error('subscription refused'); subscriptions.push([id, stream]); },
     async rename(id: number, name: string) { if (state.failRename) throw new Error('rename refused'); renames.push([id, name]); },
     credsFor() { return { email: 'hand-bot@x', key: 'offline', site: 'https://offline.invalid' }; },
@@ -78,7 +78,7 @@ function fixture(overrides: Partial<SpawnerConfig> = {}) {
     registry.add(e);
     return e;
   }
-  return { config, dir, registry, launches, subscriptions, renames, posts, state, keys, texts, prior, run };
+  return { host, actions, config, dir, registry, launches, subscriptions, renames, posts, state, keys, texts, prior, run };
 }
 
 for (const user of [1, 9]) for (const model of ['sonnet-5-5', 'opus-5-5']) test(`user ${user} rehomes and resumes with ${model}, retaining creator, bot, paths, transcript`, async () => {
@@ -89,7 +89,7 @@ for (const user of [1, 9]) for (const model of ['sonnet-5-5', 'opus-5-5']) test(
   assert.match(result.content, /Revived/);
   const e = f.registry.alive()[0];
   assert.equal(e.streamId, 8); assert.equal(e.streamName, 'elsewhere'); assert.equal(e.topic, 'new');
-  assert.equal(e.spawnedBy.userId, 1);
+  assert.equal(e.spawnedBy?.userId, 1);
   for (const field of ['botUserId', 'botEmail', 'tmuxSession', 'workDir', 'handDir', 'sessionId'] as const) assert.equal(e[field], before[field], field);
   assert.deepEqual(f.subscriptions, [[42, 'cc-hands'], [42, 'elsewhere']]);
   assert.equal(f.launches[0].resume, true); assert.equal(f.launches[0].model, `claude-${model}`);
@@ -115,14 +115,14 @@ for (const where of [elsewhere, { ...home, topic: 'changed' }]) for (const model
 test('noncreator may still revive unchanged home/model; creator not transferred', async () => {
   const f = fixture(); f.prior();
   assert.match((await f.run('spawn sonnet-5-5 name=scout', home, 2)).content, /Revived/);
-  assert.equal(f.registry.alive()[0].spawnedBy.userId, 1);
+  assert.equal(f.registry.alive()[0].spawnedBy?.userId, 1);
 });
 
 test('ownerUserId configurable, and allowedUsers does not implicitly grant ownership', async () => {
   const f = fixture({ ownerUserId: 10 }); f.prior();
   assert.match((await f.run('spawn opus-5-5 name=scout', home, 9)).content, /Only this hand's creator/);
   assert.match((await f.run('spawn opus-5-5 name=scout', home, 10)).content, /Revived/);
-  assert.equal(f.registry.alive()[0].spawnedBy.userId, 1);
+  assert.equal(f.registry.alive()[0].spawnedBy?.userId, 1);
 });
 
 for (const engine of ['claude', 'codex'] as const) test(`${engine}: cross-engine revival refused even with same suffix`, async () => {
@@ -262,7 +262,7 @@ test('subscription failure does not record a successful home move', async t => {
 test('owner can live-switch another creator’s hand without transferring ownership', async () => {
   const f = live();
   assert.match((await f.run('model scout opus-5-5', home, 9)).content, /without stopping/);
-  assert.equal(f.e.spawnedBy.userId, 1);
+  assert.equal(f.e.spawnedBy?.userId, 1);
 });
 
 test('no running hand, pending question, and live Claude effort have clear refusals', async () => {
@@ -285,4 +285,105 @@ test('Claude numeric menu fallback closes the list and reopens a verified model 
   assert.match((await f.run('answer scout 2')).content, /without stopping/);
   assert.equal(f.e.model, 'claude-opus-5-5');
   assert.deepEqual(f.texts, ['/model', '/model claude-opus-5-5']);
+});
+
+for (const failed of [false, true]) test(`missing-author revival (failed=${failed}) never claims ownership`, async t => {
+  t.mock.method(console, 'error', () => {});
+  const f = fixture(); f.prior({ spawnedBy: undefined });
+  f.state.failLaunch = failed;
+  await f.run('spawn sonnet-5-5 name=scout', home, 2);
+  assert.equal(f.registry.all().at(-1)!.spawnedBy, undefined);
+  f.state.failLaunch = false;
+  if (failed) await f.run('spawn sonnet-5-5 name=scout', home, 2);
+  assert.match((await f.run('model scout opus-5-5', home, 2)).content, /creator.*unknown/);
+  assert.deepEqual(f.keys, []); assert.deepEqual(f.texts, []);
+  await f.run('stop scout');
+  for (const [model, where] of [['sonnet-5-5', elsewhere], ['opus-5-5', home]] as const) {
+    assert.match((await f.run(`spawn ${model} name=scout`, where, 2)).content, /creator.*unknown/);
+  }
+  assert.match((await f.run('spawn opus-5-5 name=scout', elsewhere, 9)).content, /Revived/);
+  assert.equal(f.registry.alive()[0].spawnedBy, undefined);
+});
+
+for (const where of [home, { kind: 'dm' } as Where]) for (const user of [2, 1, 9]) {
+  test(`press in ${where.kind} by user ${user} enforces creator/owner for all keys`, async () => {
+    const f = live();
+    const result = await f.run('press scout /model enter', where, user);
+    assert.match(result.content, user === 2 ? /Only this hand's creator/ : /Sent/);
+    assert.deepEqual(f.texts, user === 2 ? [] : ['/model']);
+    assert.deepEqual(f.keys, user === 2 ? [] : [['Enter']]);
+  });
+}
+
+for (const stage of ['prepare', 'boundary', 'filters', 'bridge', 'seed', 'launch']) {
+  test(`failed rehome at ${stage} restores authoritative home/files and permits old-home retry`, async t => {
+    t.mock.method(console, 'error', () => {});
+    const f = fixture();
+    const codex = stage === 'boundary';
+    const before = f.prior(codex ? { engine: 'codex', model: 'gpt-6-sol', harness: 'cx', personaName: '[cx-gpt-6-sol] Scout' } : {});
+    const { handPaths, writeHandFiles } = await import('../src/handfiles.js');
+    const paths = handPaths(f.config.handsDir, before.tmuxSession, before.handDir);
+    await writeHandFiles(f.host, f.config, before.tmuxSession, home.streamName,
+      { email: 'hand-bot@x', key: 'offline', site: 'https://offline.invalid' }, 'old seed', before.handDir);
+    const files = [paths.filters, paths.bridgeConfig, paths.seed];
+    const originals = files.map(p => readFileSync(p, 'utf8'));
+    f.subscriptions.push([42, home.streamName]);
+    const undo: (() => void)[] = [];
+    if (stage === 'prepare') {
+      const mock = t.mock.method(f.host, 'exec', async () => { throw new Error('prepare failed'); });
+      undo.push(() => mock.mock.restore());
+    } else if (stage === 'boundary') {
+      // Access dependencies solely to inject a boundary failure and verify staged destination.
+      const deps = (f.actions as unknown as { d: import('../src/actions.js').ActionDeps }).d;
+      deps.codexBoundary = async e => {
+        assert.equal(e.streamId, 8);
+        assert.equal(f.registry.all().at(-1)!.streamId, 7);
+        throw new Error('boundary failed');
+      };
+      undo.push(() => { deps.codexBoundary = async e => { assert.equal(e.streamId, 7); return 100; }; });
+    } else if (['filters', 'bridge', 'seed'].includes(stage)) {
+      const target = stage === 'filters' ? paths.filters : stage === 'bridge' ? paths.bridgeConfig : paths.seed;
+      const write = f.host.writeFile.bind(f.host);
+      let once = true;
+      const mock = t.mock.method(f.host, 'writeFile', async (p, content, mode) => {
+        await write(p, content, mode); // fail after a partial side effect
+        if (p === target && once) { once = false; throw new Error('write failed'); }
+      });
+      undo.push(() => mock.mock.restore());
+    } else f.state.failLaunch = true;
+    const model = codex ? 'gpt-6-sol' : 'sonnet-5-5';
+    assert.match((await f.run(`spawn ${model} name=scout`, elsewhere)).content, /failed/);
+    const failed = f.registry.all().at(-1)!;
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.streamId, 7); assert.equal(failed.topic, 'old');
+    assert.deepEqual(files.map(p => readFileSync(p, 'utf8')), originals);
+    assert.deepEqual(f.subscriptions, [[42, home.streamName], [42, elsewhere.streamName]]);
+    undo.forEach(fn => fn()); f.state.failLaunch = false;
+    if (codex) f.state.panes = ['Ask Codex to do anything'];
+    assert.match((await f.run(`spawn ${model} name=scout`, home, 2)).content, /Revived/);
+    const revived = f.registry.alive()[0];
+    for (const key of ['botUserId', 'botEmail', 'tmuxSession', 'workDir', 'handDir', 'sessionId'] as const) {
+      assert.equal(revived[key], before[key], key);
+    }
+    assert.equal(revived.streamId, 7);
+  });
+}
+
+
+test('new identity records creator, but an orphan pre-existing bot does not grant ownership', async () => {
+  for (const existingBot of [false, true]) {
+    const f = fixture(); f.state.existingBot = existingBot;
+    await f.run('spawn sonnet-5-5 name=scout', home, 2);
+    assert.equal(f.registry.alive()[0].spawnedBy?.userId, existingBot ? undefined : 2);
+  }
+});
+
+test('failed rehome removes staged home files that did not previously exist', async t => {
+  t.mock.method(console, 'error', () => {});
+  const f = fixture(); const before = f.prior(); f.state.failLaunch = true;
+  await f.run('spawn sonnet-5-5 name=scout', elsewhere);
+  for (const file of ['mcpl-bridge.json', 'zulip-state/filters.json', 'seed.md']) {
+    assert.equal(await f.host.exists(join(before.handDir, file)), false);
+  }
+  assert.equal(f.registry.all().at(-1)!.streamId, 7);
 });

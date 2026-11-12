@@ -35,13 +35,16 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
   stream and **keeps the old subscription**; bridge openChannels/filters and the resume prompt use
   the new home. A missing transcript still has the existing explicit lost-context warning.
   A same-engine model change is allowed; Claude↔Codex is refused (start a new hand instead).
+  Missing historical authorship stays unknown on revival (only the owner may rehome/re-model it).
   Changing home (including topic) or model requires the original creator (`spawnedBy`) or
   `ownerUserId` (default **9**); ordinary command allow-lists still apply. Revival never transfers
   authorship to the reviver. `allowedUsers` is not an ownership list: not everyone allowed to drive
   the spawner should be allowed to rehome other people's hands.
 - **Blocked hands**: a question dialog or permission prompt is posted in the hand's topic; answer
   with `answer`, or in that topic simply `@**CC Spawner** yes` / `2` / `esc`.
-- **Raw keys**: `press` uses the `space` keyword for spaces; literal text starting with
+- **Answers**: AskUserQuestion remains collaborative for allowed users. Tool permission
+  prompts require the hand’s creator or owner, as do raw keys and model-menu answers.
+- **Raw keys** (creator/owner only, in streams and DMs): `press` uses the `space` keyword for spaces; literal text starting with
   `-` or `--` works too, e.g. `press scout /codex:review space --base space main enter`.
   Sends are sequential, not atomic; on failure the reply lists the completed keys and recovery options.
 - **Reaping**: a hand with no public Zulip activity for 24 h (checked against Zulip before acting)

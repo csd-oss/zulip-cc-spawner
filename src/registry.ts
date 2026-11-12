@@ -46,7 +46,8 @@ export interface BotEntry {
   sessionId: string;
   /** Inclusive model-owned backscroll boundary; wake owns only newer ids. */
   codexCatchupThrough?: number;
-  spawnedBy: { userId: number; username: string };
+  /** Unknown for some historical hands; revival must never assign a creator. */
+  spawnedBy?: { userId: number; username: string };
   spawnedAt: string;
   /** Last PUBLIC Zulip activity (message/reaction) the spawner observed. */
   lastActivity: string;

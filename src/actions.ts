@@ -142,7 +142,7 @@ export class SpawnerActions {
       case 'answer':
         return { content: await this.answer(inv, cmd.target, cmd.spec) };
       case 'press':
-        return { content: await this.press(cmd.target, cmd.keys) };
+        return { content: await this.press(inv, cmd.target, cmd.keys) };
       case 'rescan':
         return { content: await this.rescan() };
       case 'help':
@@ -261,7 +261,7 @@ export class SpawnerActions {
       model: prior?.model ?? cmd.model,
       effort: prior?.effort ?? effort,
       sessionId,
-      spawnedBy: prior?.spawnedBy ?? { userId: inv.invoker.userId, username: inv.invoker.name },
+      spawnedBy: prior?.spawnedBy,
       spawnedAt: now,
       lastActivity: now,
       status: 'provisioning',
@@ -269,13 +269,21 @@ export class SpawnerActions {
     };
     registry.add(entry);
 
+    // Destination is staged: failed revivals must still resolve at the old home.
+    const destination = { streamName: where.streamName, streamId: where.streamId, topic: where.topic };
+    const savedFiles = new Map<string, Buffer | undefined>();
+    let filesTouched = false;
+    let launchSucceeded = false;
+    let codexCatchupThrough = prior?.codexCatchupThrough;
     let launched = false;
     try {
       const { bot, created } = await this.d.provisioner.ensure(personaName, shortName, !prior);
-      registry.update(entry, { botUserId: bot.userId, botEmail: bot.email });
+      registry.update(entry, {
+        botUserId: bot.userId, botEmail: bot.email,
+        ...(!prior && created ? { spawnedBy: { userId: inv.invoker.userId, username: inv.invoker.name } } : {}),
+      });
       if (!created && !prior) log(`${personaName}: reusing an existing bot ${bot.email} with no registry history`);
       await this.d.provisioner.subscribe(bot.userId, where.streamName);
-      registry.update(entry, { streamName: where.streamName, streamId: where.streamId, topic: where.topic });
       if (workDir) {
         await prepareWorkDir(this.d.host, cfg, workDir, !prior?.workDirReady, engine === 'claude');
         registry.update(entry, { workDirReady: true });
@@ -287,11 +295,17 @@ export class SpawnerActions {
         : buildSeedPrompt(seedCtx);
       if (engine === 'codex') {
         if (!this.d.codexBoundary) throw new Error('Codex catch-up boundary unavailable');
-        const boundary = await this.d.codexBoundary(entry);
+        const boundary = await this.d.codexBoundary({ ...entry, ...destination });
         if (!Number.isSafeInteger(boundary) || boundary < 0) throw new Error('Invalid Codex catch-up boundary');
-        registry.update(entry, { codexCatchupThrough: boundary });
+        codexCatchupThrough = boundary;
         seed = buildCodexPrompt(seedCtx, boundary, canResume);
       }
+      if (prior) {
+        for (const path of [paths.filters, paths.bridgeConfig, paths.seed]) {
+          savedFiles.set(path, await this.d.host.exists(path) ? await this.d.host.readFrom(path, 0) : undefined);
+        }
+      }
+      filesTouched = true;
       await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir);
 
       const startOffset = canResume && engine !== 'codex' ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
@@ -311,7 +325,8 @@ export class SpawnerActions {
         streamName: where.streamName,
         topic: where.topic,
       });
-      registry.update(entry, { ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}), status: 'alive', transcriptOffset: startOffset, lastActivity: new Date().toISOString() });
+      launchSucceeded = true;
+      registry.update(entry, { codexCatchupThrough, ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}), ...destination, status: 'alive', transcriptOffset: startOffset, lastActivity: new Date().toISOString() });
 
       let modelWarning = '';
       if (!result.warning) {
@@ -331,6 +346,18 @@ export class SpawnerActions {
       return `Spawned @**${entry.personaName}** (${label}) in tmux \`${shortName}\`, home ${home(entry)} — it should introduce itself shortly.${amnesia}${note}`;
     } catch (err) {
       console.error(err);
+      let rollbackWarning = '';
+      if (filesTouched && prior && !launchSucceeded) {
+        for (const [path, content] of savedFiles) {
+          try {
+            if (content === undefined) await this.d.host.exec('rm', ['-f', '--', path]);
+            else await this.d.host.writeFile(path, content.toString('utf8'), 0o600);
+          } catch (restoreErr) {
+            log(`restore ${path}: ${(restoreErr as Error).message}`);
+            rollbackWarning = '\n⚠️ Could not restore all home files; ask an operator to inspect before retrying.';
+          }
+        }
+      }
       const message = engine === 'codex' ? (/^Codex (needs login|startup timed out|exited during startup)/.test((err as Error).message) ? (err as Error).message : 'Codex launch failed; ask an operator to inspect the logs.') : (err as Error).message;
       log(`spawn of ${personaName} failed: ${message}`);
       const kept = entry.botUserId ? ` Its Zulip bot (${entry.botEmail}) is kept, so a retry reuses it.` : '';
@@ -343,12 +370,12 @@ export class SpawnerActions {
           log(`cleanup kill ${shortName}: ${(killErr as Error).message}`);
           registry.update(entry, { status: 'cleanup', endReason: `spawn failed: ${message}` });
           this.d.codexWake?.ready(entry);
-          return `Spawn of **${personaName}** failed: ${message}\n⚠️ Its tmux session could not be confirmed stopped; I'll keep retrying. The name stays taken until then.`;
+          return `Spawn of **${personaName}** failed: ${message}\n⚠️ Its tmux session could not be confirmed stopped; I'll keep retrying. The name stays taken until then.${rollbackWarning}`;
         }
       }
       registry.update(entry, { status: 'failed', endReason: `spawn failed: ${message}` });
       this.d.codexWake?.ready(entry);
-      return `Spawn of **${personaName}** failed: ${message}${kept}`;
+      return `Spawn of **${personaName}** failed: ${message}${kept}${rollbackWarning}`;
     }
   }
 
@@ -357,7 +384,7 @@ export class SpawnerActions {
   }
 
   private ownerRefusal(entry: BotEntry): string {
-    return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or the owner (user ${this.d.config.ownerUserId ?? 9}) may rehome or change its model.`;
+    return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or the owner (user ${this.d.config.ownerUserId ?? 9}) may rehome or change its model, send raw keys, or answer permission prompts.`;
   }
 
   /** Model truth is committed before the cosmetic rename. A PATCH failure must
@@ -468,7 +495,7 @@ export class SpawnerActions {
     }
     const header = [
       `**${entry.personaName}** (${modelLabel(entry)}) — tmux \`${entry.tmuxSession}\`, home ${home(entry)}`,
-      `up ${uptime === undefined ? '?' : formatDuration(uptime)} · last public activity ${formatIdle(idleMin)} ago · spawned by ${entry.spawnedBy.username}`,
+      `up ${uptime === undefined ? '?' : formatDuration(uptime)} · last public activity ${formatIdle(idleMin)} ago · spawned by ${entry.spawnedBy?.username ?? 'unknown'}`,
     ].join('\n');
     return { private: true, content: `${header}\n\`\`\`text\n${tail.replace(/```/g, "'''")}\n\`\`\`${note}` };
   }
@@ -481,6 +508,9 @@ export class SpawnerActions {
     if (entry.pendingModelMenu) return this.answerModel(inv, entry, spec);
     const pending = entry.pendingQuestion;
     if (!pending) return `**${entry.personaName}** has no pending question I know of — \`rescan\` if you think it's stuck on one.`;
+    // Keep the shared AskUserQuestion bridge; tool permission decisions are
+    // privileged terminal control, not collaborative question answers.
+    if (pending.questions[0]?.kind === 'permission' && !this.owns(inv, entry)) return this.ownerRefusal(entry);
     const parsed = parseAnswerSpec(spec, pending.questions[0]);
     if (parsed.kind === 'error') return `Can't parse that answer: ${parsed.error}`;
     try {
@@ -498,9 +528,10 @@ export class SpawnerActions {
   }
 
   /** Raw keystrokes — the escape hatch for anything the dialog parser misses. */
-  private async press(target: string, keys: string[]): Promise<string> {
+  private async press(inv: Invocation, target: string, keys: string[]): Promise<string> {
     const entry = this.d.registry.findAlive(target);
     if (!entry) return `No running hand matches \`${target}\` — try \`list\`.`;
+    if (!this.owns(inv, entry)) return this.ownerRefusal(entry);
     const sent: string[] = [];
     for (const raw of keys) {
       const named = KEY_NAMES[raw.toLowerCase()];
