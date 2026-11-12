@@ -5,6 +5,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { handIdentityName } from './names.js';
 import type { PendingQuestion } from './question.js';
 
 /**
@@ -116,7 +117,7 @@ export class Registry {
     return this.alive().find(
       (e) =>
         e.suffix.toLowerCase() === t ||
-        e.personaName.toLowerCase() === t ||
+        handIdentityName(e.personaName) === handIdentityName(t) ||
         e.botEmail.toLowerCase() === t ||
         e.tmuxSession.toLowerCase() === t,
     );
@@ -134,10 +135,10 @@ export class Registry {
    * continuity (the caller checks the transcript exists).
    */
   latestFor(personaName: string): BotEntry | undefined {
-    const name = personaName.toLowerCase();
+    const name = handIdentityName(personaName);
     return [...this.entries]
       .reverse()
-      .find((e) => e.personaName.toLowerCase() === name && e.status !== 'provisioning' && e.botUserId > 0);
+      .find((e) => handIdentityName(e.personaName) === name && e.status !== 'provisioning' && e.botUserId > 0);
   }
 
   /** The entry that owns a hand name right now (alive, mid-spawn or awaiting cleanup). */

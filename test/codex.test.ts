@@ -21,8 +21,8 @@ const id = '12345678-1234-1234-1234-123456789abc';
 test('engine and name inference keep Claude default', () => {
   assert.equal(inferEngine('gpt-5'), 'codex');
   assert.equal(inferEngine('opus-5-5'), 'claude');
-  assert.equal(handName('gpt-5', 'Scout').personaName, '[cx-gpt-5] Scout');
-  assert.equal(handName('opus-5-5', 'Scout').personaName, '[cc-opus-5-5] Scout');
+  assert.equal(handName('gpt-5', 'Scout').personaName, '[cx-gpt-5/d] Scout');
+  assert.equal(handName('opus-5-5', 'Scout').personaName, '[cc-opus-5-5/d] Scout');
 });
 test('Codex argv: MCP env matches Claude transport; dash literals are values', () => {
   const args = codexArgs(cfg, { ...req, model: '-model', effort: 'high' });

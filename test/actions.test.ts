@@ -82,7 +82,7 @@ const run = (text: string, where: Where = home, invoker: Invoker = tester) =>
 
 test('spawn provisions a bot, writes its files and starts claude', async () => {
   const r = await run('spawn opus-5-5 name=Scout effort=high');
-  assert.match(r.content, /Spawned @\*\*\[cc-opus-5-5\] Scout\*\*/);
+  assert.match(r.content, /Spawned @\*\*\[cc-opus-5-5\/h\] Scout\*\*/);
   const e = registry.findAlive('scout')!;
   assert.equal(e.status, 'alive');
   assert.equal(e.botUserId, 100);
@@ -130,7 +130,7 @@ test('unauthorized users and streams are refused', async () => {
 });
 
 test('list shows the hand; stop kills it and keeps the identity', async () => {
-  assert.match((await run('list')).content, /\[cc-opus-5-5\] Scout.*#cc-hands > release/);
+  assert.match((await run('list')).content, /\[cc-opus-5-5\/h\] Scout.*#cc-hands > release/);
   const r = await run('stop scout');
   assert.match(r.content, /Stopped/);
   assert.equal(await tmux.hasSession('cc-scout'), false);

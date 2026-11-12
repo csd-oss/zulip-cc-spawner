@@ -99,7 +99,7 @@ for (const user of [1, 9]) for (const model of ['sonnet-5-5', 'opus-5-5']) test(
   assert.deepEqual(JSON.parse(readFileSync(join(e.handDir, 'mcpl-bridge.json'), 'utf8')).servers.zulip.openChannels, ['zulip:elsewhere']);
   assert.deepEqual(JSON.parse(readFileSync(join(e.handDir, 'zulip-state/filters.json'), 'utf8')), { streams: ['elsewhere'] });
   assert.match(readFileSync(e.seedFile, 'utf8'), /#elsewhere > new/);
-  assert.equal(f.renames.length, model === 'opus-5-5' ? 1 : 0);
+  assert.equal(f.renames.length, 1, 'legacy display gains effort even without a model change');
   assert.equal(e.model, `claude-${model}`);
   const persisted = new Registry(join(f.dir, 'registry.json')); persisted.load();
   assert.equal(persisted.alive()[0].streamId, 8);
@@ -136,7 +136,7 @@ for (const scheme of ['bracket-v1', undefined] as const) test(`legacy ${scheme ?
   const before = f.prior({ nameScheme: scheme, personaName: scheme ? '[cc-sonnet-5-5] Scout' : 'Claude-Code-sonnet-5-5-scout', tmuxSession: 'cc-sonnet-5-5-scout' });
   assert.match((await f.run('spawn opus-5-5 name=scout')).content, /Revived/);
   assert.equal(f.registry.alive()[0].tmuxSession, before.tmuxSession);
-  assert.equal(f.registry.alive()[0].personaName, scheme ? '[cc-opus-5-5] Scout' : 'Claude-Code-opus-5-5-scout');
+  assert.equal(f.registry.alive()[0].personaName, scheme ? '[cc-opus-5-5/h] Scout' : '[cc-opus-5-5/h] scout');
   await f.run('stop scout');
   assert.match((await f.run('spawn sonnet-5-5 name=scout')).content, /Revived/);
   assert.equal(f.registry.alive()[0].sessionId, before.sessionId);
@@ -156,7 +156,7 @@ test('new hand stable names ignore model, model slug, and workdir keeps its iden
   const e = f.registry.alive()[0];
   assert.equal(e.nameScheme, 'stable-v2'); assert.equal(e.tmuxSession, 'cc-scout'); assert.equal(e.botEmail, 'cc-scout-bot@x');
   assert.equal(e.workDir, join(f.config.projectDir, 'hands/cc-scout'));
-  assert.equal(e.personaName, '[cc-opus-5-5] Scout');
+  assert.equal(e.personaName, '[cc-opus-5-5/d] Scout');
 });
 
 for (const failure of ['failLaunch', 'failSubscribe', 'warning', 'failRename'] as const) test(`revival model-change ${failure} preserves model truth and handles rename as cosmetic`, async t => {
@@ -181,7 +181,7 @@ test('Codex stopped model-change resumes id, passes model and effort every time;
   assert.equal(f.registry.alive()[0].effort, 'medium');
   assert.match(f.state.codexCommand, /'resume'.*'--model=gpt-6.1-terra'.*model_reasoning_effort.*medium/);
   assert.ok(f.state.codexCommand.includes(e.sessionId));
-  assert.deepEqual(f.renames, [[42, '[cx-gpt-6-1-terr] Scout']]);
+  assert.deepEqual(f.renames, [[42, '[cx-gpt-6-1-terr/med] Scout']]);
   const args = codexArgs(f.config, { ...f.launches[0], personaName: e.personaName, model: 'gpt-6.1-terra', effort: 'medium', sessionId: e.sessionId,
     resume: true, tmuxSession: e.tmuxSession, bridgeConfig: join(e.handDir, 'mcpl-bridge.json'), seedFile: e.seedFile, streamName: 'elsewhere', topic: 'new', spawnedBy: 'Creator' });
   assert.equal(args[0], 'resume'); assert.ok(args.includes('--model=gpt-6.1-terra')); assert.ok(args.includes(e.sessionId));
@@ -202,7 +202,7 @@ for (const engine of ['claude', 'codex'] as const) test(`${engine} live switch k
   assert.equal(f.e.sessionId, before.sessionId); assert.equal(f.e.workDir, before.workDir); assert.equal(f.e.tmuxSession, before.tmuxSession);
   assert.equal(f.e.model, engine === 'claude' ? 'claude-opus-5-5' : 'gpt-6.1-terra');
   assert.equal(f.e.effort, engine === 'claude' ? 'high' : 'medium');
-  assert.equal(f.renames.length, 1);
+  assert.deepEqual(f.renames, [[42, engine === 'claude' ? '[cc-opus-5-5/h] Scout' : '[cx-gpt-6-1-terr/med] Scout']]);
 });
 
 for (const engine of ['claude', 'codex'] as const) test(`${engine} live cross-engine/unauthorized refusals have no terminal effects`, async () => {
@@ -464,4 +464,56 @@ test('failed rehome removes staged home files that did not previously exist', as
     assert.equal(await f.host.exists(join(before.handDir, file)), false);
   }
   assert.equal(f.registry.all().at(-1)!.streamId, 7);
+});
+
+for (const effort of [undefined, 'medium', 'default']) test(`legacy unsuffixed revival with effort=${effort ?? 'inherited'} preserves identity`, async () => {
+  const f = fixture(); const before = f.prior();
+  assert.equal(f.registry.latestFor('[cc-sonnet-5-5/low] Scout'), before);
+  assert.match((await f.run(`spawn sonnet-5-5 name=scout${effort ? ` effort=${effort}` : ''}`)).content, /Revived/);
+  const e = f.registry.alive()[0];
+  const abbr = effort === 'default' ? 'd' : effort === 'medium' ? 'med' : 'h';
+  assert.deepEqual(f.renames, [[42, `[cc-sonnet-5-5/${abbr}] Scout`]]);
+  assert.equal(e.effort, effort === 'default' ? undefined : effort ?? 'high');
+  for (const field of ['botUserId', 'botEmail', 'tmuxSession', 'workDir', 'handDir', 'sessionId'] as const) assert.equal(e[field], before[field], field);
+  assert.equal(f.registry.latestFor(before.personaName), e);
+  assert.equal(f.registry.latestFor('[cc-sonnet-5-5/low] Scout'), e);
+  assert.equal(f.registry.findAlive('[cc-sonnet-5-5/xh] Scout'), e);
+  assert.match((await f.run('spawn sonnet-5-5 name=scout effort=low')).content, /taken/);
+  await f.run('stop scout');
+  assert.match((await f.run('spawn sonnet-5-5 name=scout effort=low')).content, /Revived/);
+  assert.equal(f.registry.alive()[0].personaName, '[cc-sonnet-5-5/low] Scout');
+  assert.equal(f.registry.alive()[0].tmuxSession, before.tmuxSession);
+});
+
+test('Codex live effort-only change renames without changing model or identity', async () => {
+  const f = live('codex'); const before = { ...f.e };
+  f.state.panes = ['Ask Codex to do anything', CODEX_MODELS,
+    CODEX_REASONING.replace('GPT-6.1 Terra', 'GPT-6-Sol'),
+    CODEX_CHANGED.replace('gpt-6.1-terra', 'gpt-6-sol')];
+  assert.match((await f.run('model scout gpt-6-sol effort=medium')).content, /without stopping/);
+  assert.equal(f.e.model, before.model);
+  assert.equal(f.e.effort, 'medium');
+  assert.deepEqual(f.renames, [[42, '[cx-gpt-6-sol/med] Scout']]);
+  for (const field of ['botUserId', 'botEmail', 'tmuxSession', 'workDir', 'handDir', 'sessionId'] as const) assert.equal(f.e[field], before[field], field);
+});
+
+for (const failRename of [false, true]) test(`effort-only revival rename failure=${failRename} preserves launch truth`, async () => {
+  const f = fixture();
+  const before = f.prior({ personaName: '[cc-sonnet-5-5/h] Scout' });
+  f.state.failRename = failRename;
+  const result = await f.run('spawn sonnet-5-5 name=scout effort=medium');
+  const e = f.registry.alive()[0];
+  assert.equal(e.effort, 'medium');
+  assert.equal(e.personaName, failRename ? before.personaName : '[cc-sonnet-5-5/med] Scout');
+  assert.equal(e.botUserId, before.botUserId);
+  if (failRename) assert.match(result.content, /display-name update failed/);
+});
+
+test('unconfirmed effort-only revival keeps prior default and display name', async () => {
+  const f = fixture(); f.prior({ effort: undefined, personaName: '[cc-sonnet-5-5/d] Scout' });
+  f.state.warning = 'startup not confirmed';
+  assert.match((await f.run('spawn sonnet-5-5 name=scout effort=medium')).content, /not confirmed/);
+  assert.equal(f.registry.alive()[0].effort, undefined);
+  assert.equal(f.registry.alive()[0].personaName, '[cc-sonnet-5-5/d] Scout');
+  assert.deepEqual(f.renames, []);
 });

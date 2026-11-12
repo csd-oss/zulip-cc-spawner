@@ -254,7 +254,7 @@ export function stripMentions(content: string): string {
 
 /** Parse a message body (mentions already stripped). */
 export function parseCommand(body: string): Command {
-  const tokens: string[] = body.match(/@_?\*\*[^*]+\*\*|\[[a-z0-9-]+\]\s+[A-Za-z0-9-]+|\S+/gi) ?? [];
+  const tokens: string[] = body.match(/@_?\*\*[^*]+\*\*|\[[a-z0-9-]+(?:\/[a-z]+)?\]\s+[A-Za-z0-9-]+|\S+/gi) ?? [];
   if (tokens.length === 0) return { kind: 'help' };
   const verb = tokens[0].toLowerCase();
 

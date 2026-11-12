@@ -28,8 +28,8 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 - **Models** are explicit versions (`opus-5-5`, `sonnet-5-5`, `fable-5-1`, `haiku-4-5`, … or a full
   id). Bare `opus`/`sonnet` are refused so launches do not silently change meaning after a CLI upgrade. **Effort** (`low`…`max`, `ultracode`) is validated per model and kept across
   revivals; `effort=default` clears it.
-- **Names**: new hand `[cc-<model>] <name>`, bot `cc-<name>-bot@…`, tmux `cc-<name>`
-  (Codex uses `cx`). Model changes update only the display name, not email, tmux or workspace.
+- **Names**: new hand `[cc-<model>/<effort>] <name>`, bot `cc-<name>-bot@…`, tmux `cc-<name>`
+  (Codex uses `cx`). Model/effort changes update only the display name, not email, tmux or workspace.
 - **Revival/rehome**: stop the hand, then `spawn <model> name=<same>` in the desired home stream/topic.
   It resumes the same conversation with the same bot and workspace. The bot subscribes to the new
   stream and **keeps the old subscription**; bridge openChannels/filters and the resume prompt use
@@ -133,7 +133,9 @@ MIT — see [LICENSE](LICENSE).
 
 ## New-hand names and workspaces
 
-New hands display as `[cc-<modelSlug>] <name>` (the supplied name's case is
+Effort labels are `min`, `low`, `med`, `h`, `xh`, `max`, and `u` (ultra/ultracode); `d` means no explicit effort.
+
+New hands display as `[cc-<modelSlug>/<effort>] <name>` (the supplied name's case is
 preserved, otherwise four random hex characters). `cc` is the Claude harness label
 (`cx` for Codex). Tmux and bot short names are model-independent lowercase
 `cc-<name>` / `cx-<name>`. Names are bounded to 49 display characters, 40 short

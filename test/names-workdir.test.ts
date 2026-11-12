@@ -6,7 +6,7 @@ import { SpawnerActions } from '../src/actions.js';
 import { parseCommand } from '../src/commands.js';
 import { LocalHost } from '../src/host.js';
 import { ClaudeLauncher, type LaunchRequest } from '../src/launcher.js';
-import { handName } from '../src/names.js';
+import { handName, handIdentityName } from '../src/names.js';
 import type { Notifier } from '../src/notifier.js';
 import { Provisioner } from '../src/provision.js';
 import { Registry } from '../src/registry.js';
@@ -36,7 +36,7 @@ function fixture() {
   const watcher = new TranscriptWatcher(registry, host, tmux, notifier, cfg, () => 'spawner');
   const provisioner = {
     ensure: async (_full: string, short: string) => ({ bot: { userId: 100, email: `${short}-bot@x`, apiKey: 'fake' }, created: true }),
-    subscribe: async () => {}, credsFor: () => ({ email: 'fake@x', key: 'fake', site: 'https://x' }),
+    subscribe: async () => {}, rename: async () => {}, credsFor: () => ({ email: 'fake@x', key: 'fake', site: 'https://x' }),
   } as unknown as Provisioner;
   const actions = new SpawnerActions({ config: cfg, registry, host, tmux, launcher, notifier, watcher, provisioner, groupCheck: async () => false, realm: 'x' });
   const run = (body: string) => actions.run({ body, cmd: parseCommand(body), where: { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic: 't' }, invoker: { userId: 1, name: 'Tester', kind: 'user' } });
@@ -44,8 +44,8 @@ function fixture() {
 }
 
 test('display harness label, ASCII identity and bounded names', () => {
-  assert.deepEqual(handName('claude-opus', 'Syncntn'), { personaName: '[cc-opus] Syncntn', shortName: 'cc-syncntn' });
-  assert.equal(handName('astra-6', 'hand', 'cx').personaName, '[cx-astra-6] hand');
+  assert.deepEqual(handName('claude-opus', 'Syncntn'), { personaName: '[cc-opus/d] Syncntn', shortName: 'cc-syncntn' });
+  assert.equal(handName('astra-6', 'hand', 'cx').personaName, '[cx-astra-6/d] hand');
   const n = handName('a'.repeat(80), 'X'.repeat(24));
   assert.ok(n.personaName.length <= 49);
   assert.equal(n.shortName.length, 27);
@@ -102,16 +102,16 @@ test('legacy registry round-trip and revival preserve identity, arbitrary handDi
   assert.deepEqual(loaded.all(), JSON.parse(JSON.stringify(c.registry.all())));
   const path = c.watcher.transcriptPath(e.sessionId);
   mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, '{}\n');
-  assert.match((await c.run('spawn opus-5-5 name=old')).content, /Revived.*Claude-Code/);
+  assert.match((await c.run('spawn opus-5-5 name=old')).content, /Revived.*\[cc-opus-5-5\/d\]/);
   const revived = c.registry.all()[1];
   assert.equal(revived.handDir, e.handDir);
-  assert.equal(revived.personaName, e.personaName);
+  assert.equal(revived.personaName, '[cc-opus-5-5/d] old');
   assert.equal(revived.botEmail, e.botEmail);
   assert.equal(revived.tmuxSession, e.tmuxSession);
   assert.equal(c.cwds[1], c.cfg.projectDir);
   assert.equal(c.launches[1].resume, true);
   assert.equal(c.launches[1].sessionId, e.sessionId);
-  assert.equal(c.registry.findAlive(e.personaName), revived);
+  assert.equal(c.registry.findAlive(revived.personaName), revived);
 });
 
 test('unmarked bracket persona cannot be hijacked', async () => {
@@ -216,4 +216,23 @@ test('first trust failure stays fail-closed after JSON repair; manual empty-dir 
   assert.equal(recovered.workDirReady, true);
   assert.equal(c.launches.length, 1);
   assert.deepEqual(readdirSync(workDir), []);
+});
+
+for (const [effort, abbreviation] of [
+  [undefined, 'd'], ['default', 'd'], ['minimal', 'min'], ['low', 'low'],
+  ['medium', 'med'], ['high', 'h'], ['xhigh', 'xh'], ['max', 'max'],
+  ['ultra', 'u'], ['ultracode', 'u'],
+] as const) test(`display effort ${effort ?? 'implicit default'} is /${abbreviation}, never identity`, () => {
+  const n = handName('opus-5-5', 'Scout', 'cc', effort);
+  assert.equal(n.personaName, `[cc-opus-5-5/${abbreviation}] Scout`);
+  assert.equal(n.shortName, 'cc-scout');
+  assert.equal(handIdentityName(n.personaName), '[cc-opus-5-5] scout');
+  const longest = handName('a'.repeat(80), 'X'.repeat(24), 'cc', effort);
+  assert.ok(longest.personaName.length <= 49);
+  assert.equal(longest.shortName, `cc-${'x'.repeat(24)}`);
+});
+
+test('display length guard still enforces 49 including effort', () => {
+  assert.equal(handName('a'.repeat(12), 'x'.repeat(24), 'label', 'medium').personaName.length, 49);
+  assert.throws(() => handName('a'.repeat(12), 'x'.repeat(24), 'labels', 'medium'), /too long/);
 });

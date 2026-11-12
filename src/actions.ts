@@ -14,7 +14,7 @@ import { isPlausibleMessageTime } from './activity-time.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { prepareWorkDir } from './workdir.js';
-import { handName, modelDisplayName } from './names.js';
+import { handIdentityName, handName, modelDisplayName } from './names.js';
 import { isAllowed, type GroupCheck, type Invoker, type Where } from './auth.js';
 import {
   EFFORT_DEFAULT,
@@ -179,7 +179,7 @@ export class SpawnerActions {
     const suffix = (cmd.friendly ?? (await this.freshSuffix())).toLowerCase();
     const engine = cmd.engine ?? inferEngine(cmd.model);
     const slug = modelSlug(cmd.model);
-    const names = handName(cmd.model, cmd.friendly ?? suffix, engine === 'codex' ? 'cx' : 'cc');
+    const names = handName(cmd.model, cmd.friendly ?? suffix, engine === 'codex' ? 'cx' : 'cc', cmd.effort);
     // Exact pre-v2 identities still win. Otherwise a unique historical hand
     // with this suffix may change model; never guess between distinct bots.
     const legacy = engine === 'codex' ? undefined : registry.latestFor(`Claude-Code-${slug}-${suffix}`);
@@ -197,7 +197,7 @@ export class SpawnerActions {
     const personaName = prior?.personaName ?? names.personaName;
     const shortName = prior?.tmuxSession ?? names.shortName;
     const workDir = prior ? prior.workDir : resolve(cfg.workRoot ?? resolve(cfg.projectDir, 'hands'), shortName);
-    if (!prior && registry.all().some((e) => e.tmuxSession === shortName && e.personaName.toLowerCase() !== personaName.toLowerCase())) {
+    if (!prior && registry.all().some((e) => e.tmuxSession === shortName && handIdentityName(e.personaName) !== handIdentityName(personaName))) {
       return 'Name collision with an existing identity — pick another name.';
     }
 
@@ -259,7 +259,7 @@ export class SpawnerActions {
       harness: engine === 'codex' ? 'cx' : prior ? prior.harness : 'cc',
       engine,
       model: prior?.model ?? cmd.model,
-      effort: prior?.effort ?? effort,
+      effort: prior ? prior.effort : effort,
       sessionId,
       spawnedBy: prior?.spawnedBy,
       spawnedAt: now,
@@ -331,9 +331,9 @@ export class SpawnerActions {
       let modelWarning = '';
       if (!result.warning) {
         registry.update(entry, { model: cmd.model, effort });
-        if (modelChange) modelWarning = await this.renameModel(entry);
-      } else if (modelChange) {
-        modelWarning = '\n⚠️ Model switch not confirmed; registry model and bot display name kept. Inspect with `peek`.';
+        if (prior && modelDisplayName(entry, entry.model) !== entry.personaName) modelWarning = await this.renameModel(entry);
+      } else if (modelChange || prior && prior.effort !== effort) {
+        modelWarning = '\n⚠️ Model/effort switch not confirmed; registry model/effort and bot display name kept. Inspect with `peek`.';
       }
       this.d.codexWake?.ready(entry);
 
@@ -393,11 +393,11 @@ export class SpawnerActions {
     try {
       const fullName = modelDisplayName(entry, entry.model);
       await this.d.provisioner.rename(entry.botUserId, fullName);
-      this.d.registry.update(entry, { personaName: fullName });
+      this.d.registry.update(entry, { personaName: fullName, nameScheme: entry.nameScheme ?? 'bracket-v1' });
       return '';
     } catch (err) {
       log(`rename ${entry.tmuxSession}: ${(err as Error).message}`);
-      return '\n⚠️ Model changed, but the bot display-name update failed; its email and session are unchanged.';
+      return '\n⚠️ Model/effort confirmed, but the bot display-name update failed; its email and session are unchanged.';
     }
   }
 
