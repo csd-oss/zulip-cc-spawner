@@ -21,7 +21,7 @@ const home: Where = { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic
 const elsewhere: Where = { kind: 'stream', streamName: 'elsewhere', streamId: 8, topic: 'new' };
 function fixture(overrides: Partial<SpawnerConfig> = {}) {
   const dir = tmp();
-  const config = testConfig(dir, { allowedUsers: [1, 2, 9, 10], allowedStreams: ['*'], ...overrides });
+  const config = testConfig(dir, { allowedUsers: [1, 2, 9, 10], allowedStreams: ['*'], creatorOnlyControls: true, ownerUserId: 9, ...overrides });
   const registry = new Registry(join(dir, 'registry.json'));
   const launches: LaunchRequest[] = [];
   const subscriptions: [number, string][] = [];
@@ -101,7 +101,7 @@ for (const user of [1, 9]) for (const model of ['sonnet-5-5', 'opus-5-5']) test(
   assert.equal(JSON.parse(readFileSync(join(e.handDir, 'mcpl-bridge.json'), 'utf8')).servers.zulip.transport.env.ZULIP_UPLOAD_ROOTS, `work=${before.workDir}`);
   assert.deepEqual(JSON.parse(readFileSync(join(e.handDir, 'zulip-state/filters.json'), 'utf8')), { streams: ['elsewhere'] });
   assert.match(readFileSync(e.seedFile, 'utf8'), /#elsewhere > new/);
-  assert.equal(f.renames.length, 1, 'legacy display gains effort even without a model change');
+  assert.equal(f.renames.length, model === 'sonnet-5-5' ? 0 : 1, 'unchanged revival must not modernize the display name');
   assert.equal(e.model, `claude-${model}`);
   const persisted = new Registry(join(f.dir, 'registry.json')); persisted.load();
   assert.equal(persisted.alive()[0].streamId, 8);
@@ -475,7 +475,7 @@ for (const effort of [undefined, 'medium', 'default']) test(`legacy unsuffixed r
   assert.match((await f.run(`spawn sonnet-5-5 name=scout${effort ? ` effort=${effort}` : ''}`)).content, /Revived/);
   const e = f.registry.alive()[0];
   const abbr = effort === 'default' ? 'd' : effort === 'medium' ? 'med' : 'h';
-  assert.deepEqual(f.renames, [[42, `[cc-sonnet-5-5/${abbr}] Scout`]]);
+  assert.deepEqual(f.renames, effort ? [[42, `[cc-sonnet-5-5/${abbr}] Scout`]] : []);
   assert.equal(e.effort, effort === 'default' ? undefined : effort ?? 'high');
   for (const field of ['botUserId', 'botEmail', 'tmuxSession', 'workDir', 'handDir', 'sessionId'] as const) assert.equal(e[field], before[field], field);
   assert.equal(f.registry.latestFor(before.personaName), e);
@@ -530,8 +530,8 @@ for (const user of [1, 9]) test(`user ${user} renames a live hand without touchi
   const bridge = readFileSync(bridgePath, 'utf8'); const seed = readFileSync(e.seedFile, 'utf8');
   const launchCount = f.launches.length; const subscriptionCount = f.subscriptions.length;
   const result = await f.run('rename scout Pathfinder', home, user);
-  assert.equal(result.content, 'Renamed **[cc-sonnet-5-5/h] Scout** to **[cc-sonnet-5-5/h] Pathfinder**. Old names remain aliases; same bot, session, workdir and conversation.');
-  assert.deepEqual(f.renames.at(-1), [42, '[cc-sonnet-5-5/h] Pathfinder']);
+  assert.equal(result.content, 'Renamed **[cc-sonnet-5-5] Scout** to **[cc-sonnet-5-5] Pathfinder**. Old names remain aliases; same bot, session, workdir and conversation.');
+  assert.deepEqual(f.renames.at(-1), [42, '[cc-sonnet-5-5] Pathfinder']);
   const { personaName, friendlyName, nameAliases, ...unchanged } = e;
   const { personaName: _oldName, ...original } = before;
   assert.deepEqual(unchanged, original, 'only three display/alias fields change');
@@ -554,7 +554,7 @@ for (const alias of ['Pathfinder', 'scout', 'Scout']) test(`stopped rename and r
   const renamedHistory = structuredClone(e);
   assert.equal(f.state.running, false); assert.equal(f.launches.length, 0);
   const persisted = new Registry(join(f.dir, 'registry.json')); persisted.load();
-  assert.equal(persisted.latestFor('Pathfinder')?.friendlyName, 'Pathfinder');
+  assert.equal(persisted.renamedHands('Pathfinder')[0]?.friendlyName, 'Pathfinder');
   assert.match((await f.run(`spawn opus-5-5 name=${alias} effort=medium`, elsewhere)).content, /Revived/);
   const current = f.registry.alive()[0];
   assert.equal(current.personaName, '[cc-opus-5-5/med] Pathfinder');
@@ -563,7 +563,7 @@ for (const alias of ['Pathfinder', 'scout', 'Scout']) test(`stopped rename and r
   assert.equal(current.topic, 'new'); assert.equal(f.launches[0].resume, true);
   assert.equal(JSON.parse(readFileSync(join(current.handDir, 'mcpl-bridge.json'), 'utf8')).servers.zulip.transport.env.ZULIP_SESSION_ID, before.tmuxSession);
   assert.deepEqual(e, renamedHistory, 'revival appends rather than rewriting old history');
-  assert.equal(f.registry.latestFor(before.personaName), current);
+  assert.equal(f.registry.renamedHands(before.personaName)[0], current);
   assert.equal(f.registry.findAlive('Pathfinder'), current); assert.equal(f.registry.findAlive('scout'), current);
   await f.run('stop Pathfinder');
   assert.match((await f.run('spawn sonnet-5-5 name=Pathfinder', elsewhere)).content, /Revived/);
@@ -611,7 +611,7 @@ for (const status of ['alive', 'reaped', 'failed', 'cleanup', 'provisioning'] as
   const f = live(); const before = structuredClone(f.e);
   f.prior({ suffix: 'other', personaName: '[cc-opus-5-5/h] Taken', friendlyName: 'Taken', nameAliases: ['Reserved'], tmuxSession: 'cc-other', botUserId: 43, status });
   for (const name of ['TAKEN', 'Other', 'reserved', 'cc-other']) {
-    assert.equal((await f.run(`rename scout ${name}`)).content, `Name collision: \`${name}\` is already a name or alias of another hand.`);
+    assert.match((await f.run(`rename scout ${name}`)).content, /Name collision/);
   }
   assert.deepEqual(f.e, before); assert.deepEqual(f.renames, []);
 });
@@ -678,17 +678,191 @@ test('rename via full mention works in a DM, and unknown or ambiguous targets do
   const f = live();
   assert.equal((await f.run('rename missing Guide')).content, 'No hand matches `missing` — try `list`.');
   assert.deepEqual(f.renames, []);
-  const result = await f.run('rename @**[cc-sonnet-5-5] Scout|42** Pathfinder', { kind: 'dm', userIds: [1] });
+  const result = await f.run('rename @**[cc-sonnet-5-5] Scout** Pathfinder', { kind: 'dm', userIds: [1] });
   assert.match(result.content, /Renamed/);
   f.prior({ suffix: 'scout', personaName: '[cc-opus-5-5] Scout', tmuxSession: 'cc-another', botUserId: 43 });
   const count = f.renames.length;
   assert.equal((await f.run('rename scout Guide')).content, 'Ambiguous hand name — use its bot email or tmux session; nothing was changed.');
   assert.equal(f.renames.length, count);
-  assert.match((await f.run('rename cc-scout Guide')).content, /Renamed/);
+  assert.match((await f.run('rename cc-scout Guide')).content, /Name collision/);
 });
 
 for (const alias of ['Pathfinder', 'scout']) test(`renamed rehome/model revival via ${alias} does not bypass ownership`, async () => {
   const f = fixture(); f.prior(); await f.run('rename scout Pathfinder');
   assert.match((await f.run(`spawn opus-5-5 name=${alias}`, elsewhere, 2)).content, /Only this hand's creator/);
   assert.equal(f.launches.length, 0); assert.deepEqual(f.subscriptions, []);
+});
+
+// Reviewer M1 probes: a rename must not change which existing identity a spawn selects.
+test('rename rejects tmux/suffix overlap; cc-scout still revives its exact hand', async () => {
+  const f = fixture(); const a = f.prior();
+  const c = f.prior({ suffix: 'cc-scout', personaName: '[cc-sonnet-5-5] cc-scout', tmuxSession: 'cc-cc-scout',
+    botUserId: 43, botEmail: 'cc-cc-scout-bot@x', sessionId: 'cccccccc-1234-1234-1234-123456789abc', spawnedBy: { userId: 2, username: 'C' } });
+  const before = structuredClone(a);
+  assert.match((await f.run('rename cc-scout Guide', home, 9)).content, /Ambiguous/);
+  assert.match((await f.run(`rename ${a.botEmail} Guide`, home, 9)).content, /Name collision/);
+  assert.deepEqual(a, before); assert.deepEqual(f.renames, []);
+  assert.match((await f.run('spawn sonnet-5-5 name=cc-scout', home, 2)).content, /Revived/);
+  assert.equal(f.launches[0].tmuxSession, c.tmuxSession);
+  assert.equal(f.launches[0].sessionId, c.sessionId);
+});
+
+test('rename rejects shared suffix; opus scout revival still selects the opus hand', async () => {
+  const f = fixture(); const a = f.prior();
+  const b = f.prior({ personaName: '[cc-opus-5-5] Scout', model: 'claude-opus-5-5', tmuxSession: 'cc-opus-scout',
+    botUserId: 43, botEmail: 'opus-scout-bot@x', sessionId: 'bbbbbbbb-1234-1234-1234-123456789abc', spawnedBy: { userId: 2, username: 'B' } });
+  assert.match((await f.run('rename cc-scout Guide')).content, /Name collision/);
+  assert.equal(a.friendlyName, undefined); assert.deepEqual(f.renames, []);
+  assert.match((await f.run('spawn opus-5-5 name=scout', home, 2)).content, /Revived/);
+  assert.equal(f.launches[0].tmuxSession, b.tmuxSession);
+  assert.equal(f.launches[0].sessionId, b.sessionId);
+});
+
+// Imported registries may already contain collisions written by the previous release.
+// These tests kill an alias-first selection mutation even though new renames reject them.
+for (const selection of ['exact', 'legacy', 'history'] as const) test(`${selection} spawn selection wins over a conflicting renamed alias (M5)`, async () => {
+  const f = fixture();
+  f.prior({ suffix: 'other', personaName: '[cc-sonnet-5-5/h] Guide', tmuxSession: 'cc-other', friendlyName: 'Guide', nameAliases: ['scout'],
+    botEmail: 'other-bot@x', spawnedBy: { userId: 1, username: 'A' } });
+  const b = f.prior({ personaName: selection === 'legacy' ? 'Claude-Code-opus-5-5-scout' : `[cc-${selection === 'exact' ? 'opus-5-5' : 'haiku-4-5'}] Scout`,
+    nameScheme: selection === 'legacy' ? undefined : 'bracket-v1', model: selection === 'history' ? 'claude-haiku-4-5' : 'claude-opus-5-5',
+    tmuxSession: 'cc-b-scout', botUserId: 43, botEmail: 'b-bot@x', sessionId: 'bbbbbbbb-1234-1234-1234-123456789abc', spawnedBy: { userId: 2, username: 'B' } });
+  assert.match((await f.run('spawn opus-5-5 name=scout', home, 2)).content, /Revived/);
+  assert.equal(f.launches[0].tmuxSession, b.tmuxSession);
+  assert.equal(f.launches[0].sessionId, b.sessionId);
+});
+
+test('legacy Claude-Code exact revival wins over another model with the same suffix (M4)', async () => {
+  const f = fixture();
+  const legacy = f.prior({ personaName: 'Claude-Code-sonnet-5-5-scout', nameScheme: undefined, tmuxSession: 'cc-sonnet-5-5-scout' });
+  f.prior({ personaName: '[cc-opus-5-5] Scout', model: 'claude-opus-5-5', tmuxSession: 'cc-opus-scout', botUserId: 43, botEmail: 'opus-bot@x',
+    sessionId: 'bbbbbbbb-1234-1234-1234-123456789abc', spawnedBy: { userId: 2, username: 'B' } });
+  assert.match((await f.run('spawn sonnet-5-5 name=scout')).content, /Revived/);
+  assert.equal(f.launches[0].tmuxSession, legacy.tmuxSession);
+  assert.equal(f.launches[0].sessionId, legacy.sessionId);
+  assert.deepEqual(f.renames, []);
+  assert.equal(f.registry.alive()[0].personaName, legacy.personaName);
+});
+
+for (const patch of [
+  { suffix: 'cc-scout' }, { tmuxSession: 'scout' }, { personaName: '[cc-opus-5-5] cc-scout' },
+  { friendlyName: 'cc-scout' }, { nameAliases: ['cc-scout'] },
+] as Partial<BotEntry>[]) test(`rename checks all resulting names against another hand: ${JSON.stringify(patch)}`, async () => {
+  const f = fixture(); const a = f.prior(); const before = structuredClone(a);
+  f.prior({ suffix: 'other', personaName: '[cc-opus-5-5] Other', tmuxSession: 'cc-other', botUserId: 43, botEmail: 'other-bot@x', ...patch });
+  assert.match((await f.run(`rename ${a.botEmail} Guide`)).content, /Name collision/);
+  assert.deepEqual(a, before); assert.deepEqual(f.renames, []);
+});
+
+test('a resulting old alias is also checked for collisions', async () => {
+  const f = fixture(); const a = f.prior({ friendlyName: 'Scout', nameAliases: ['Reserved'] });
+  f.prior({ suffix: 'reserved', personaName: '[cc-opus-5-5] Other', tmuxSession: 'cc-other', botUserId: 43, botEmail: 'other-bot@x' });
+  assert.match((await f.run(`rename ${a.botEmail} Guide`)).content, /Name collision/);
+  assert.deepEqual(f.renames, []);
+});
+
+for (const prefix of ['@**', '@_**']) for (const id of [42, 43]) test(`stop ${prefix}name|${id}** keeps upstream mention handling and cannot stop another ID (M2)`, async () => {
+  const f = live();
+  const other = f.prior({ suffix: 'other', personaName: '[cc-opus-5-5] Other', tmuxSession: 'cc-other', botUserId: 43, status: 'alive' });
+  assert.match((await f.run(`stop ${prefix}${f.e.personaName}|${id}**`)).content, /No running hand matches/);
+  assert.equal(f.e.status, 'alive'); assert.equal(other.status, 'alive'); assert.equal(f.state.running, true);
+});
+
+test('unknown stored effort produces an effort error, not an invalid-name error', async () => {
+  const f = fixture(); const e = f.prior({ effort: 'future-effort' }); const before = structuredClone(e);
+  const result = await f.run('rename scout Guide');
+  assert.match(result.content, /Stored effort `future-effort` is not recognized/);
+  assert.doesNotMatch(result.content, /Invalid hand name/);
+  assert.deepEqual(e, before); assert.deepEqual(f.renames, []);
+});
+
+for (const creatorOnlyControls of [undefined, false, true]) for (const ownerUserId of [undefined, null, 10]) {
+  test(`legacy controls: creatorOnlyControls=${creatorOnlyControls}, owner=${ownerUserId}`, async () => {
+    const f = fixture({ creatorOnlyControls, ownerUserId });
+    const e = f.prior({ status: 'alive' }); f.state.running = true;
+    const restricted = creatorOnlyControls === true;
+    assert.match((await f.run('press scout esc', home, 2)).content, restricted ? /Only this hand's creator/ : /Sent/);
+    f.state.escaped = false; f.state.capture = 0; f.state.panes = [PERMISSION_AFTER_MODEL];
+    await f.run('rescan');
+    const count = f.keys.length;
+    assert.match((await f.run('answer scout 1', home, 2)).content, restricted ? /Only this hand's creator/ : /Answer sent/);
+    assert.equal(f.keys.length - count, restricted ? 0 : 1);
+    await f.run('stop scout');
+    assert.match((await f.run('spawn sonnet-5-5 name=scout', elsewhere, 2)).content, restricted ? /Only this hand's creator/ : /Revived/);
+    assert.equal(f.registry.all().at(-1)!.spawnedBy?.userId, 1);
+    // The new features are never made collaborative by this flag.
+    assert.match((await f.run(`rename ${e.botEmail} Guide`, home, 2)).content, /Only this hand's creator/);
+    if (!restricted) assert.match((await f.run('model scout opus-5-5', home, 2)).content, /Only this hand's creator/);
+    await f.run('stop scout');
+    assert.match((await f.run('spawn opus-5-5 name=scout', home, 2)).content, /Only this hand's creator/);
+  });
+}
+
+for (const ownerUserId of [undefined, null]) test(`no implicit owner 9 when ownerUserId=${ownerUserId}`, async () => {
+  const f = fixture({ ownerUserId, creatorOnlyControls: true }); const e = f.prior({ status: 'alive' }); f.state.running = true;
+  assert.match((await f.run('press scout esc', home, 9)).content, /owner \(not configured\)/);
+  assert.match((await f.run('rename scout Guide', home, 9)).content, /owner \(not configured\)/);
+  assert.match((await f.run('model scout opus-5-5', home, 9)).content, /owner \(not configured\)/);
+  assert.deepEqual(f.keys, []); assert.deepEqual(f.texts, []); assert.deepEqual(f.renames, []);
+  assert.equal(e.personaName, '[cc-sonnet-5-5] Scout');
+});
+
+for (const ownerUserId of [undefined, null]) test(`adopted hand with no creator/owner retains legacy controls even in strict mode (${ownerUserId})`, async () => {
+  const f = fixture({ ownerUserId, creatorOnlyControls: true });
+  f.prior({ status: 'alive', spawnedBy: undefined }); f.state.running = true;
+  assert.match((await f.run('press scout esc', home, 2)).content, /Sent/);
+  f.state.escaped = false; f.state.capture = 0; f.state.panes = [PERMISSION_AFTER_MODEL];
+  await f.run('rescan');
+  assert.match((await f.run('answer scout 1', home, 2)).content, /Answer sent/);
+  await f.run('stop scout');
+  assert.match((await f.run('spawn sonnet-5-5 name=scout', elsewhere, 2)).content, /Revived/);
+  assert.equal(f.registry.alive()[0].spawnedBy, undefined);
+  assert.match((await f.run('rename scout Guide', home, 2)).content, /creator.*unknown.*not configured/);
+  assert.match((await f.run('model scout opus-5-5', home, 2)).content, /creator.*unknown.*not configured/);
+});
+
+for (const personaName of ['Claude-Code-sonnet-5-5-scout', '[cc-sonnet-5-5] Scout', '[cc-sonnet-5-5/h] Scout']) {
+  test(`unchanged revival keeps display name verbatim: ${personaName}`, async () => {
+    const f = fixture(); const e = f.prior({ personaName, nameScheme: personaName.startsWith('[') ? 'bracket-v1' : undefined });
+    assert.match((await f.run('spawn sonnet-5-5 name=scout', elsewhere)).content, /Revived/);
+    assert.equal(f.registry.alive()[0].personaName, e.personaName);
+    assert.deepEqual(f.renames, []);
+  });
+}
+
+for (const command of ['spawn opus-5-5 name=scout', 'spawn sonnet-5-5 name=scout effort=medium', 'model scout opus-5-5']) {
+  test(`${command}: model/effort display rename reserves previous full name without explicit friendly rename`, async () => {
+    const f = fixture(); const e = f.prior({ status: command.startsWith('model') ? 'alive' : 'reaped' });
+    const oldName = e.personaName;
+    if (command.startsWith('model')) { f.state.running = true; f.state.panes = ['? for shortcuts', CLAUDE_CONFIRM, CLAUDE_CHANGED]; }
+    assert.match((await f.run(command)).content, /Revived|without stopping/);
+    const current = f.registry.alive()[0];
+    assert.notEqual(current.personaName, oldName);
+    assert.ok(current.nameAliases?.includes(oldName));
+    assert.equal(f.registry.findAlive(oldName), current);
+    assert.match((await f.run(`stop @**${oldName}**`)).content, /Stopped/);
+    assert.match((await f.run('spawn sonnet-5-5 name=scout')).content, /Revived/);
+    assert.ok(f.registry.alive()[0].nameAliases?.includes(oldName), 'aliases survive every launch');
+  });
+}
+
+test('rename hints use current friendly name for stop, press and questions', async () => {
+  const f = live();
+  assert.match((await f.run('rename scout Guide')).content, /Renamed/);
+  assert.match((await f.run('press Guide esc')).content, /peek Guide/);
+  f.state.escaped = false; f.state.capture = 0; f.state.panes = [PERMISSION_AFTER_MODEL];
+  await f.run('rescan');
+  assert.match(f.posts.at(-1)!.content, /answer Guide 1/);
+  assert.match((await f.run('rescan')).content, /answer Guide/);
+  assert.match((await f.run('stop Guide')).content, /name=Guide/);
+});
+
+test('collaborative legacy controls never open model-menu answers to noncreators', async () => {
+  const f = live('codex'); f.config.creatorOnlyControls = false;
+  f.state.panes = ['Ask Codex to do anything', CODEX_MODELS];
+  assert.match((await f.run('model scout')).content, /menu posted/);
+  const before = f.keys.length;
+  assert.match((await f.run('answer scout 6', home, 2)).content, /Only this hand's creator/);
+  assert.equal(f.keys.length, before); assert.deepEqual(f.renames, []);
+  assert.equal(f.e.model, 'gpt-6-sol');
 });

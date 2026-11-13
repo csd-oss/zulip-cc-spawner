@@ -59,7 +59,7 @@ const tester: Invoker = { userId: 1, name: 'Tester', kind: 'user' };
 
 function setup() {
   const dir = tmp();
-  const cfg = testConfig(dir, { allowedUsers: [1, 9] });
+  const cfg = testConfig(dir, { allowedUsers: [1, 9], creatorOnlyControls: true, ownerUserId: 9 });
   const registry = new Registry(join(dir, 'r.json'));
   const e: BotEntry = {
     suffix: 'scout', personaName: 'Claude-Code-opus-5-5-scout', botUserId: 100, botEmail: 'b@x', tmuxSession: 'cc-opus-5-5-scout',

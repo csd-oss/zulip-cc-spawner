@@ -195,7 +195,7 @@ export function formatQuestionPost(entry: BotEntry, pending: PendingQuestion, sp
       : '';
   const parts: string[] = [
     `❓ **${entry.personaName}** is asking a multiple-choice question — its session is **blocked on a dialog and cannot see Zulip**. 🤖 Answering in natural language will NOT work (that includes other models): answers must go through me, via @-mention:`,
-    `\`@**${spawner}** answer ${entry.suffix} <choice>\` — a number (\`2\`)${q.multiSelect ? ', several (`1,3`)' : ''}, custom text (\`text: …\`), or \`esc\` to dismiss. In this topic, \`@**${spawner}** <choice>\` is enough.`,
+    `\`@**${spawner}** answer ${entry.friendlyName ?? entry.suffix} <choice>\` — a number (\`2\`)${q.multiSelect ? ', several (`1,3`)' : ''}, custom text (\`text: …\`), or \`esc\` to dismiss. In this topic, \`@**${spawner}** <choice>\` is enough.`,
     `**${q.question}**${q.multiSelect ? ' *(pick any)*' : ''}${partsNote}`,
   ];
   for (const [i, opt] of q.options.entries()) parts.push(`> ${i + 1}. **${opt.label}**`);
@@ -212,7 +212,7 @@ function formatPermissionPost(entry: BotEntry, q: PendingQ, spawner: string): st
   const shown = detail.length > DETAIL_BUDGET ? detail.slice(0, DETAIL_BUDGET - 1) + '…' : detail;
   const parts: string[] = [
     `🔐 **${entry.personaName}** is waiting on a permission prompt — its session is **blocked on a dialog and cannot see Zulip**. 🤖 Natural-language replies will NOT reach it (other models included): answer through me via @-mention:`,
-    `\`@**${spawner}** answer ${entry.suffix} 1\` to approve, \`… 2\` to deny (\`yes\`/\`no\` and \`esc\` work too). In this topic, \`@**${spawner}** yes\` is enough.`,
+    `\`@**${spawner}** answer ${entry.friendlyName ?? entry.suffix} 1\` to approve, \`… 2\` to deny (\`yes\`/\`no\` and \`esc\` work too). In this topic, \`@**${spawner}** yes\` is enough.`,
     `**${q.title ?? 'Permission request'}**`,
   ];
   if (shown) parts.push('```\n' + shown.replace(/```/g, "'''") + '\n```');

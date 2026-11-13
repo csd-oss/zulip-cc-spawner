@@ -76,3 +76,29 @@ test('config: template on first run, deny-all warnings, OS split enforced', asyn
     delete process.env.CC_SPAWNER_INACTIVITY_MS;
   }
 });
+
+test('config: collaborative controls default, optional owner, strict boolean validation', async () => {
+  const dir = tmp(); const cfgPath = join(dir, 'config.json');
+  const previous = process.env.CC_SPAWNER_CONFIG;
+  process.env.CC_SPAWNER_CONFIG = cfgPath;
+  const { loadConfig } = await import('../src/config.js');
+  writeFileSync(join(dir, 's.rc'), '[api]\nemail=a\nkey=b\nsite=https://x\n');
+  const base = { spawnerRc: join(dir, 's.rc'), adminRc: join(dir, 's.rc'), devMode: true,
+    allowedStreams: ['cc-hands'], allowedUsers: [1] };
+  const load = (patch: Record<string, unknown> = {}) => {
+    writeFileSync(cfgPath, JSON.stringify({ ...base, ...patch }));
+    return loadConfig();
+  };
+  try {
+    assert.equal(load().creatorOnlyControls, false);
+    assert.equal(load().ownerUserId, undefined, 'no implicit user 9');
+    assert.equal(load({ ownerUserId: null }).ownerUserId, null);
+    assert.equal(load({ ownerUserId: 10, creatorOnlyControls: true }).ownerUserId, 10);
+    assert.equal(load({ creatorOnlyControls: true }).creatorOnlyControls, true);
+    for (const ownerUserId of [0, -1, 1.5, '9', false]) assert.throws(() => load({ ownerUserId }), /ownerUserId/);
+    for (const creatorOnlyControls of [null, 0, 1, 'false', 'true']) assert.throws(() => load({ creatorOnlyControls }), /creatorOnlyControls must be a boolean/);
+  } finally {
+    if (previous === undefined) delete process.env.CC_SPAWNER_CONFIG;
+    else process.env.CC_SPAWNER_CONFIG = previous;
+  }
+});

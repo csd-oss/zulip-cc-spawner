@@ -121,7 +121,11 @@ export class Registry {
   }
 
   private matches(e: BotEntry, target: string): boolean {
-    const t = handIdentityName(target.toLowerCase().replace(/^@_?\*\*|(?:\|\d+)?\*\*$/g, ''));
+    // Keep 0e768759 command mention handling: no silent mentions or ID stripping.
+    // In particular a name carrying another bot's ID must never select this bot.
+    const mentionedId = target.match(/\|(\d+)/)?.[1];
+    if (mentionedId !== undefined && Number(mentionedId) !== e.botUserId) return false;
+    const t = handIdentityName(target.toLowerCase().replace(/^@\*\*|\*\*$/g, ''));
     return [e.suffix, e.personaName, e.botEmail, e.tmuxSession, e.friendlyName, ...(e.nameAliases ?? [])]
       .some((name) => name !== undefined && handIdentityName(name) === t);
   }
@@ -135,17 +139,21 @@ export class Registry {
     return this.currentHands().filter((e) => this.matches(e, target));
   }
 
-  /** Explicit renames opt into alias-aware revival; legacy selection is unchanged. */
+  /** Spawn fallback only: never treat a stable suffix/session/email as a rename. */
   renamedHands(target: string): BotEntry[] {
-    return this.matchingHands(target).filter((e) => e.friendlyName !== undefined);
+    const t = handIdentityName(target);
+    return this.currentHands().filter((e) => [e.friendlyName, ...(e.nameAliases ?? [])]
+      .some((name) => name !== undefined && handIdentityName(name) === t));
   }
 
   /** All historical names remain reserved, including stopped/failed hands. */
-  nameCollision(friendly: string, hand: BotEntry): boolean {
-    const t = friendly.toLowerCase();
-    return this.entries.some((e) => e.tmuxSession !== hand.tmuxSession && (
-      this.matches(e, friendly) || e.personaName.match(/^\[[^\]]+\] (.+)$/)?.[1].toLowerCase() === t
-    ));
+  nameCollision(result: BotEntry): boolean {
+    const names = (e: BotEntry): string[] => [
+      e.suffix, e.tmuxSession, e.personaName, e.botEmail, e.friendlyName,
+      e.personaName.match(/^\[[^\]]+\] (.+)$/)?.[1], ...(e.nameAliases ?? []),
+    ].filter((name): name is string => name !== undefined && name !== '').map(handIdentityName);
+    const resultingNames = new Set(names(result));
+    return this.entries.some((e) => e.tmuxSession !== result.tmuxSession && names(e).some((name) => resultingNames.has(name)));
   }
 
   /** Current launch, including activity during startup; never stopped history. */
@@ -161,8 +169,7 @@ export class Registry {
    */
   latestFor(personaName: string): BotEntry | undefined {
     const name = handIdentityName(personaName);
-    const renamed = this.renamedHands(personaName).find((e) => e.status !== 'provisioning' && e.botUserId > 0);
-    return renamed ?? [...this.entries]
+    return [...this.entries]
       .reverse()
       .find((e) => handIdentityName(e.personaName) === name && e.status !== 'provisioning' && e.botUserId > 0);
   }

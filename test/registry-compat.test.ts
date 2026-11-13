@@ -56,11 +56,36 @@ test('lookup aliases belong only to the renamed stable identity, across launch h
     nameAliases: ['Scout', entries[0].personaName], status: 'alive' as const };
   registry.add(current);
   const other = { ...entries[1], status: 'alive' as const }; registry.add(other);
-  for (const target of ['scout', 'Pathfinder', entries[0].personaName, current.personaName, '@**[cc-opus-5-5/h] Pathfinder|42**', current.botEmail, current.tmuxSession]) {
+  for (const target of ['scout', 'Pathfinder', entries[0].personaName, current.personaName, '@**[cc-opus-5-5/h] Pathfinder**', current.botEmail, current.tmuxSession]) {
     assert.equal(registry.findAlive(target), current, target);
-    if (!target.startsWith('@')) assert.equal(registry.latestFor(target), current, target);
+    if (!target.startsWith('@') && target !== current.botEmail && target !== current.tmuxSession && target !== current.personaName) assert.equal(registry.renamedHands(target)[0], current, target);
   }
   assert.equal(registry.findAlive('legacy'), other);
   assert.equal(registry.findAlive('[cc-opus-5-5/h] Scout'), undefined, 'aliases are exact names, not a global substitution');
   assert.deepEqual(registry.all()[0], history, 'history is never rewritten');
+});
+
+test('spawn renamed fallback matches only the hand’s own friendly name and aliases', () => {
+  const registry = new Registry(join(tmp(), 'registry.json'));
+  const [entry]: BotEntry[] = JSON.parse(readFileSync(new URL('./fixtures/registry-b4bc984f.json', import.meta.url), 'utf8'));
+  const current = { ...entry, friendlyName: 'Guide', nameAliases: ['OldFriendly', '[cc-opus-5-5/h] OldFriendly'] };
+  registry.add(current);
+  for (const target of [current.suffix, current.tmuxSession, current.botEmail, current.personaName]) {
+    assert.deepEqual(registry.renamedHands(target), [], target);
+  }
+  for (const target of ['guide', 'OLDFRIENDLY', '[cc-opus-5-5/d] OldFriendly']) {
+    assert.deepEqual(registry.renamedHands(target), [current], target);
+  }
+});
+
+test('unrenamed command targets retain 0e768759 mention forms', () => {
+  const registry = new Registry(join(tmp(), 'registry.json'));
+  const [entry]: BotEntry[] = JSON.parse(readFileSync(new URL('./fixtures/registry-b4bc984f.json', import.meta.url), 'utf8'));
+  const current = { ...entry, status: 'alive' as const }; registry.add(current);
+  for (const target of [current.suffix, current.botEmail, current.tmuxSession, current.personaName, `@**${current.personaName}**`]) {
+    assert.equal(registry.findAlive(target), current, target);
+  }
+  for (const target of [`@_**${current.personaName}**`, `@**${current.personaName}|${current.botUserId}**`, `@**${current.personaName}|999**`]) {
+    assert.equal(registry.findAlive(target), undefined, target);
+  }
 });

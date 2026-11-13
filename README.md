@@ -36,16 +36,17 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
   stream and **keeps the old subscription**; bridge openChannels/filters and the resume prompt use
   the new home. A missing transcript still has the existing explicit lost-context warning.
   A same-engine model change is allowed; Claude↔Codex is refused (start a new hand instead).
-  Missing historical authorship stays unknown on revival (only the owner may rehome/re-model it).
-  Changing home (including topic) or model requires the original creator (`spawnedBy`) or
-  `ownerUserId` (default **9**); ordinary command allow-lists still apply. Revival never transfers
-  authorship to the reviver. `allowedUsers` is not an ownership list: not everyone allowed to drive
-  the spawner should be allowed to rehome other people's hands.
+  An unchanged model/effort revival leaves the bot's display name untouched, including legacy names.
+  Model/effort display-name changes keep the previous full name as an alias.
+  Changing model requires the original creator (`spawnedBy`) or configured `ownerUserId`.
+  Changing home (including topic) is collaborative unless `creatorOnlyControls` is true.
+  Revival never transfers authorship to the reviver; ordinary command allow-lists still apply.
 - **Blocked hands**: a question dialog or permission prompt is posted in the hand's topic; answer
   with `answer`, or in that topic simply `@**CC Spawner** yes` / `2` / `esc`.
 - **Answers**: AskUserQuestion remains collaborative for allowed users. Tool permission
-  prompts require the hand’s creator or owner, as do raw keys and model-menu answers.
-- **Raw keys** (creator/owner only, in streams and DMs): `press` uses the `space` keyword for spaces; literal text starting with
+  prompts and raw keys are collaborative by default, restricted with `creatorOnlyControls: true`.
+  Model-menu answers always require the hand’s creator or configured owner.
+- **Raw keys** (in streams and DMs; optionally creator/owner-only): `press` uses the `space` keyword for spaces; literal text starting with
   `-` or `--` works too, e.g. `press scout /codex:review space --base space main enter`.
   Sends are sequential, not atomic; on failure the reply lists the completed keys and recovery options.
 - **Reaping**: a hand with no public Zulip activity for 24 h (checked against Zulip before acting)
@@ -155,6 +156,9 @@ names resolve to that same hand for stop/peek/press/model and `spawn … name=�
 (including revival/rehome); `list` shows the new name. Model/effort changes keep
 the custom friendly name. For example, after `rename scout Pathfinder`, either
 `spawn opus-5-5 name=Pathfinder` or `spawn opus-5-5 name=scout` revives it.
+Rename checks every resulting name/alias, including the fixed suffix and tmux
+session, against other hands' reserved names; pre-existing overlaps can therefore
+prevent a rename. Spawn resolves exact/legacy/history identities before rename aliases.
 Registry metadata is additive and optional (`friendlyName`, `nameAliases`);
 old registries load without migration, and history entries are not rewritten.
 Older spawner versions can still load/save the JSON, but do not implement the
@@ -286,10 +290,27 @@ environment; host availability must be checked by the operator.
 
 Codex spawn/revive snapshots an inclusive home-topic message-ID boundary: catch-up may answer only still-unanswered mentions at or below it; newer mentions are delivered only by the spawner queue, buffered until startup completes. Earlier conversation requests are not re-admitted from backscroll; Claude catch-up is unchanged.
 
+## Control configuration and upgrade notes
+
+- `creatorOnlyControls` is a boolean, default **false**: any caller allowed to use the
+  spawner may `press`, answer permission prompts, and revive into another topic/stream,
+  as in upstream b4bc984f. Set **true** to restrict those controls to creator/owner.
+- `ownerUserId` is optional: omitted or `null` means **no owner**, never implicit user 9.
+  Set a positive Zulip user ID explicitly if an operator needs owner powers.
+  Upgrading from the earlier PR #8 build: set `creatorOnlyControls: true` and an explicit
+  `ownerUserId` to retain its restrictive policy; allow-lists still apply to the owner.
+- `rename` and model changes (including model-menu answers and revival with a different
+  model) always require the creator or configured owner, regardless of the flag.
+- Adopted hands without `spawnedBy` never acquire the reviver as creator. With no owner
+  configured, their legacy controls (press, permission answers, same-model rehome) remain
+  collaborative **even in strict mode**, so they are not stranded. Rename/model changes
+  require configuring an owner first. With an owner configured and strict mode enabled,
+  only that owner may use their restricted controls. No registry authorship is fabricated.
+
 ## Live model switching
 
 `model <hand> [<model>] [effort=...]` works without stopping a live hand, with the
-same creator/owner authorization as rehome. Use an explicit version/id or a
+creator/owner authorization regardless of `creatorOnlyControls`. Use an explicit version/id or a
 supported Claude alias. The session, Zulip bot, workspace and persona are kept.
 After a confirmed change the admin client PATCHes `/bots/<id>` with `full_name`;
 rename failure is a warning, not a model rollback.
@@ -311,7 +332,7 @@ rename failure is a warning, not a model rollback.
   Only creator/owner may choose a model; any authorized caller can retire an
   expired snapshot after five minutes. A pending terminal question takes
   precedence over (and discards) the closed model snapshot when answered;
-  ordinary questions remain collaborative, permission prompts owner/creator-only.
+  ordinary questions remain collaborative; permission prompts follow `creatorOnlyControls`.
   The
   menu is reopened and the named choice reverified. `answer <hand> esc` cancels.
 - Unexpected screens/timeouts cause Escape cleanup, an error report, and **no

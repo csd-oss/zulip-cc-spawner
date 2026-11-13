@@ -100,6 +100,25 @@ systemctl enable --now cc-spawner.service
 journalctl -u cc-spawner -f
 ```
 
+## Control policy / upgrading PR #8
+
+`creatorOnlyControls` defaults to `false`: allowed spawner callers can send raw keys,
+answer permission prompts, and revive into a new topic/stream (upstream b4bc984f behavior).
+Set it to `true` to restrict these to the hand's creator or configured owner.
+`ownerUserId` has **no default**: omit it or use `null` for no owner; user 9 has no
+implicit powers. To preserve the earlier PR #8 restrictions, explicitly configure
+both `creatorOnlyControls: true` and the intended positive `ownerUserId`.
+Rename and model switching always require creator/owner regardless of this flag.
+All callers, including the owner, remain subject to command allow-lists.
+
+Adopted hands with no recorded `spawnedBy` keep that unknown authorship. If no owner
+is configured, legacy controls (press, permission answers, same-model rehome) remain
+collaborative even with the flag enabled; configure an owner before renaming or
+changing their model. With a configured owner and strict mode, only that owner has
+those restricted controls. Revival never makes the caller the creator.
+Unchanged model/effort revival no longer modernizes legacy bot names; actual display
+renames preserve the previous full name as an alias.
+
 ## Checks
 
 - Restart the daemon while a hand runs (`systemctl restart cc-spawner`): the hand must survive.
