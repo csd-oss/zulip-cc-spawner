@@ -97,6 +97,7 @@ for (const user of [1, 9]) for (const model of ['sonnet-5-5', 'opus-5-5']) test(
   assert.equal(e.transcriptOffset, 3);
   assert.equal(readFileSync(join(e.workDir!, 'keep.txt'), 'utf8'), 'work');
   assert.deepEqual(JSON.parse(readFileSync(join(e.handDir, 'mcpl-bridge.json'), 'utf8')).servers.zulip.openChannels, ['zulip:elsewhere']);
+  assert.equal(JSON.parse(readFileSync(join(e.handDir, 'mcpl-bridge.json'), 'utf8')).servers.zulip.transport.env.ZULIP_UPLOAD_ROOTS, `work=${before.workDir}`);
   assert.deepEqual(JSON.parse(readFileSync(join(e.handDir, 'zulip-state/filters.json'), 'utf8')), { streams: ['elsewhere'] });
   assert.match(readFileSync(e.seedFile, 'utf8'), /#elsewhere > new/);
   assert.equal(f.renames.length, 1, 'legacy display gains effort even without a model change');
@@ -181,6 +182,7 @@ test('Codex stopped model-change resumes id, passes model and effort every time;
   assert.equal(f.registry.alive()[0].effort, 'medium');
   assert.match(f.state.codexCommand, /'resume'.*'--model=gpt-6.1-terra'.*model_reasoning_effort.*medium/);
   assert.ok(f.state.codexCommand.includes(e.sessionId));
+  assert.ok(f.state.codexCommand.includes(`ZULIP_UPLOAD_ROOTS="work=${e.workDir}"`));
   assert.deepEqual(f.renames, [[42, '[cx-gpt-6-1-terr/med] Scout']]);
   const args = codexArgs(f.config, { ...f.launches[0], personaName: e.personaName, model: 'gpt-6.1-terra', effort: 'medium', sessionId: e.sessionId,
     resume: true, tmuxSession: e.tmuxSession, bridgeConfig: join(e.handDir, 'mcpl-bridge.json'), seedFile: e.seedFile, streamName: 'elsewhere', topic: 'new', spawnedBy: 'Creator' });
@@ -402,7 +404,7 @@ for (const stage of ['prepare', 'boundary', 'filters', 'bridge', 'seed', 'launch
     const { handPaths, writeHandFiles } = await import('../src/handfiles.js');
     const paths = handPaths(f.config.handsDir, before.tmuxSession, before.handDir);
     await writeHandFiles(f.host, f.config, before.tmuxSession, home.streamName,
-      { email: 'hand-bot@x', key: 'offline', site: 'https://offline.invalid' }, 'old seed', before.handDir);
+      { email: 'hand-bot@x', key: 'offline', site: 'https://offline.invalid' }, 'old seed', before.handDir, before.workDir);
     const files = [paths.filters, paths.bridgeConfig, paths.seed];
     const originals = files.map(p => readFileSync(p, 'utf8'));
     f.subscriptions.push([42, home.streamName]);

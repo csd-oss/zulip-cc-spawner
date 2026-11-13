@@ -306,7 +306,7 @@ export class SpawnerActions {
         }
       }
       filesTouched = true;
-      await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir);
+      await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir, workDir);
 
       const startOffset = canResume && engine !== 'codex' ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
       launched = true;

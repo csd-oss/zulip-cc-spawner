@@ -203,6 +203,14 @@ legacy hands need their transcripts. Spawn with the same model and suffix to
 revive them. Optional fields leave the JSON array readable by the old binary,
 but **downgrade is not behaviorally safe**: it ignores new cwd/name metadata.
 
+### Hand attachments
+
+Hands can attach local files as `work/<relative-path>` instead of sending base64.
+Their Zulip MCP server exports only `ZULIP_UPLOAD_ROOTS=work=<absolute workDir>`;
+revival/rehome keeps the recorded workspace. Private `handsDir` files (including
+`zuliprc`) are not exported. Legacy hands with no recorded workspace have no
+upload root; overlapping private/workspace paths are also left unexported.
+
 ## Codex hands
 
 `spawn gpt-5 name=scout effort=high` infers Codex; Claude remains the default

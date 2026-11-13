@@ -12,7 +12,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * f7030a7e, Copyright 2026 antra-tess (MIT; see NOTICE). */
 export function codexArgs(cfg: SpawnerConfig, req: LaunchRequest): string[] {
   const p = handPaths(cfg.handsDir, req.tmuxSession, dirname(req.bridgeConfig));
-  const transport = (renderBridgeConfig(cfg, req.tmuxSession, req.streamName, p) as {
+  const transport = (renderBridgeConfig(cfg, req.tmuxSession, req.streamName, p, req.workDir) as {
     servers: { zulip: { transport: { command: string; args: string[]; env: Record<string, string> } } };
   }).servers.zulip.transport;
   const env = { ...transport.env, HOME: cfg.agentsHome, MCPL_ENABLED: 'false' };

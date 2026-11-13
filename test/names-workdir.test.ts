@@ -1,18 +1,19 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, openSync, readSync, closeSync, rmdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
 import { parseCommand } from '../src/commands.js';
 import { LocalHost } from '../src/host.js';
 import { ClaudeLauncher, type LaunchRequest } from '../src/launcher.js';
 import { handName, handIdentityName } from '../src/names.js';
+import { handPaths } from '../src/handfiles.js';
 import type { Notifier } from '../src/notifier.js';
 import { Provisioner } from '../src/provision.js';
 import { Registry } from '../src/registry.js';
 import type { Tmux } from '../src/tmux.js';
 import { TranscriptWatcher } from '../src/transcript-watch.js';
-import { prepareWorkDir } from '../src/workdir.js';
+import { prepareWorkDir, PREPARE_WORKDIR_JS } from '../src/workdir.js';
 import { testConfig, tmp } from './helpers.js';
 
 function fixture() {
@@ -40,7 +41,7 @@ function fixture() {
   } as unknown as Provisioner;
   const actions = new SpawnerActions({ config: cfg, registry, host, tmux, launcher, notifier, watcher, provisioner, groupCheck: async () => false, realm: 'x' });
   const run = (body: string) => actions.run({ body, cmd: parseCommand(body), where: { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic: 't' }, invoker: { userId: 1, name: 'Tester', kind: 'user' } });
-  return { dir, cfg, host, registry, watcher, run, launches, cwds };
+  return { dir, cfg, host, tmux, registry, watcher, run, launches, cwds };
 }
 
 test('display harness label, ASCII identity and bounded names', () => {
@@ -78,15 +79,70 @@ test('new spawn is empty, private, trusted; revive retains cwd and transcript', 
   assert.deepEqual(readdirSync(e.workDir!), []);
   assert.equal(statSync(e.workDir!).mode & 0o777, 0o700);
   assert.equal(statSync(e.workDir!).uid, process.getuid!());
+  const paths = handPaths(c.cfg.handsDir, e.tmuxSession, e.handDir);
+  const uploadRoot = () => JSON.parse(readFileSync(paths.bridgeConfig, 'utf8')).servers.zulip.transport.env.ZULIP_UPLOAD_ROOTS;
+  assert.equal(uploadRoot(), `work=${e.workDir}`);
+  // The private directory is disjoint, so every descendant (not just zuliprc)
+  // is outside the one exported root. Also check all actual private files.
+  for (const path of [paths.dir, ...readdirSync(paths.dir, { recursive: true }).map(file => join(paths.dir, String(file)))]) {
+    const rel = relative(e.workDir!, path);
+    assert.ok(isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`), path);
+  }
   assert.equal(JSON.parse(readFileSync(join(c.cfg.agentsHome, '.claude.json'), 'utf8')).projects[e.workDir!].hasTrustDialogAccepted, true);
   const transcript = c.watcher.transcriptPath(e.sessionId, e.workDir);
   mkdirSync(dirname(transcript), { recursive: true }); writeFileSync(transcript, '{}\n');
   await c.run('stop scout');
+  c.cfg.workRoot = join(c.dir, 'changed-work-root');
   await c.run('spawn opus-5-5 name=scout');
   assert.equal(c.launches[1].resume, true);
   assert.equal(c.launches[1].sessionId, e.sessionId);
   assert.deepEqual(c.cwds, [e.workDir, e.workDir]);
   assert.deepEqual(readdirSync(e.workDir!), []);
+  assert.equal(uploadRoot(), `work=${e.workDir}`, 'revival exports prior.workDir, not the current workRoot');
+});
+
+test('workspace preparation completes before bridge config is written and used at launch', async t => {
+  const c = fixture();
+  const events: string[] = [];
+  const exec = c.host.exec.bind(c.host);
+  t.mock.method(c.host, 'exec', async (...args: Parameters<LocalHost['exec']>) => {
+    const result = await exec(...args);
+    if (args[1][1] === PREPARE_WORKDIR_JS) events.push('prepared');
+    return result;
+  });
+  const write = c.host.writeFile.bind(c.host);
+  t.mock.method(c.host, 'writeFile', async (...args: Parameters<LocalHost['writeFile']>) => {
+    if (args[0].endsWith('/mcpl-bridge.json')) {
+      const root = JSON.parse(args[1]).servers.zulip.transport.env.ZULIP_UPLOAD_ROOTS;
+      assert.equal(root, `work=${c.registry.all()[0].workDir}`);
+      assert.ok(statSync(root.slice('work='.length)).isDirectory());
+      assert.deepEqual(events, ['prepared']);
+      events.push('bridge');
+    }
+    return write(...args);
+  });
+  const newSession = c.tmux.newSession.bind(c.tmux);
+  t.mock.method(c.tmux, 'newSession', async (...args: Parameters<Tmux['newSession']>) => {
+    assert.deepEqual(events, ['prepared', 'bridge']);
+    assert.ok(statSync(args[1]).isDirectory());
+    const paths = handPaths(c.cfg.handsDir, args[0]);
+    const bridge = JSON.parse(readFileSync(paths.bridgeConfig, 'utf8'));
+    assert.equal(bridge.servers.zulip.transport.env.ZULIP_UPLOAD_ROOTS, `work=${args[1]}`);
+    events.push('launch');
+    return newSession(...args);
+  });
+  assert.match((await c.run('spawn opus-5-5 name=order')).content, /Spawned/);
+  assert.deepEqual(events, ['prepared', 'bridge', 'launch']);
+  assert.equal(c.launches.length, 1);
+  assert.ok(statSync(c.launches[0].workDir!).isDirectory());
+});
+
+test('workDir equal to private HandPaths.dir is still refused before launch', async () => {
+  const c = fixture();
+  c.cfg.workRoot = c.cfg.handsDir;
+  assert.match((await c.run('spawn opus-5-5 name=unsafe')).content, /workRoot must be separate from handsDir/);
+  assert.equal(c.registry.all().length, 0);
+  assert.equal(c.launches.length, 0);
 });
 
 test('legacy registry round-trip and revival preserve identity, arbitrary handDir and old cwd', async () => {
@@ -112,6 +168,8 @@ test('legacy registry round-trip and revival preserve identity, arbitrary handDi
   assert.equal(c.launches[1].resume, true);
   assert.equal(c.launches[1].sessionId, e.sessionId);
   assert.equal(c.registry.findAlive(revived.personaName), revived);
+  const bridge = JSON.parse(readFileSync(join(revived.handDir, 'mcpl-bridge.json'), 'utf8'));
+  assert.equal(Object.hasOwn(bridge.servers.zulip.transport.env, 'ZULIP_UPLOAD_ROOTS'), false);
 });
 
 test('unmarked bracket persona cannot be hijacked', async () => {

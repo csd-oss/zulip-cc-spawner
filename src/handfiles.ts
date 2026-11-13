@@ -10,7 +10,7 @@
  *                                          once and break on commas)
  *   <handDir>/seed.md                      first user turn
  */
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import type { SpawnerConfig } from './config.js';
 import type { AgentHost } from './host.js';
 import { renderZuliprc, type ZulipCreds } from './zulip.js';
@@ -76,7 +76,18 @@ export const HAND_GRANT = [
   'contextHooks.beforeInference.inject.beforeUser',
 ];
 
-export function renderBridgeConfig(cfg: SpawnerConfig, shortName: string, stream: string, p: HandPaths): object {
+/** Never make credential directories (including a legacy handDir) uploadable. */
+function uploadRoots(cfg: SpawnerConfig, p: HandPaths, workDir?: string): Record<string, string> {
+  if (!workDir || !isAbsolute(workDir)) return {};
+  const contains = (root: string, path: string) => {
+    const rel = relative(root, path);
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  };
+  if ([cfg.handsDir, p.dir].some(dir => contains(workDir, dir) || contains(dir, workDir))) return {};
+  return { ZULIP_UPLOAD_ROOTS: `work=${workDir}` };
+}
+
+export function renderBridgeConfig(cfg: SpawnerConfig, shortName: string, stream: string, p: HandPaths, workDir?: string): object {
   return {
     servers: {
       zulip: {
@@ -89,6 +100,7 @@ export function renderBridgeConfig(cfg: SpawnerConfig, shortName: string, stream
             ZULIP_STATE_DIR: p.stateDir,
             ZULIP_FILTERS_FILE: p.filters,
             ZULIP_CATCHUP_LIMIT: String(cfg.catchupLimit),
+            ...uploadRoots(cfg, p, workDir),
           },
         },
         grant: HAND_GRANT,
@@ -145,12 +157,13 @@ export async function writeHandFiles(
   creds: ZulipCreds,
   seedText: string,
   existingDir?: string,
+  workDir?: string,
 ): Promise<HandPaths> {
   const p = handPaths(cfg.handsDir, shortName, existingDir);
   await host.mkdirp(p.stateDir);
   await host.writeFile(p.zuliprc, renderZuliprc(creds), 0o600);
   await host.writeFile(p.filters, JSON.stringify(renderFilters(stream), null, 2) + '\n', 0o600);
-  await host.writeFile(p.bridgeConfig, JSON.stringify(renderBridgeConfig(cfg, shortName, stream, p), null, 2) + '\n', 0o600);
+  await host.writeFile(p.bridgeConfig, JSON.stringify(renderBridgeConfig(cfg, shortName, stream, p, workDir), null, 2) + '\n', 0o600);
   await host.writeFile(p.seed, seedText, 0o600);
   return p;
 }
