@@ -158,10 +158,10 @@ test('legacy registry round-trip and revival preserve identity, arbitrary handDi
   assert.deepEqual(loaded.all(), JSON.parse(JSON.stringify(c.registry.all())));
   const path = c.watcher.transcriptPath(e.sessionId);
   mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, '{}\n');
-  assert.match((await c.run('spawn opus-5-5 name=old')).content, /Revived.*\[cc-opus-5-5\/d\]/);
+  assert.match((await c.run('spawn opus-5-5 name=old')).content, /Revived.*Claude-Code-opus-5-5-old/);
   const revived = c.registry.all()[1];
   assert.equal(revived.handDir, e.handDir);
-  assert.equal(revived.personaName, '[cc-opus-5-5/d] old');
+  assert.equal(revived.personaName, e.personaName, 'same model/effort must not rename a legacy bot');
   assert.equal(revived.botEmail, e.botEmail);
   assert.equal(revived.tmuxSession, e.tmuxSession);
   assert.equal(c.cwds[1], c.cfg.projectDir);
