@@ -866,3 +866,16 @@ test('collaborative legacy controls never open model-menu answers to noncreators
   assert.equal(f.keys.length, before); assert.deepEqual(f.renames, []);
   assert.equal(f.e.model, 'gpt-6-sol');
 });
+
+for (const overlap of ['session', 'alias']) test(`a running renamed hand's ${overlap} cannot block another hand's exact revival`, async t => {
+  const f = fixture();
+  const a = f.prior({ status: 'alive', friendlyName: 'Guide', nameAliases: overlap === 'alias' ? ['cc-scout'] : ['scout'] });
+  const c = f.prior({ suffix: 'cc-scout', personaName: '[cc-sonnet-5-5] cc-scout', tmuxSession: 'cc-cc-scout',
+    botUserId: 43, botEmail: 'cc-cc-scout-bot@x', sessionId: 'cccccccc-1234-1234-1234-123456789abc', spawnedBy: { userId: 2, username: 'C' } });
+  const deps = (f.actions as unknown as { d: import('../src/actions.js').ActionDeps }).d;
+  t.mock.method(deps.tmux, 'hasSession', async (name: string) => name === a.tmuxSession);
+  assert.match((await f.run('spawn sonnet-5-5 name=cc-scout', home, 2)).content, /Revived/);
+  assert.equal(f.launches[0].tmuxSession, c.tmuxSession);
+  assert.equal(f.launches[0].sessionId, c.sessionId);
+  assert.equal(a.status, 'alive');
+});

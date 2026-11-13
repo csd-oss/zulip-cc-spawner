@@ -205,7 +205,7 @@ export class SpawnerActions {
       return 'Name collision with an existing identity — pick another name.';
     }
 
-    const clash = registry.busy(suffix);
+    const clash = registry.busy(suffix, prior?.tmuxSession);
     if (clash) {
       return `\`${suffix}\` is taken by **${clash.personaName}** (${clash.model}) — \`stop ${suffix}\` first, or spawn without a name for a fresh hand.`;
     }

@@ -89,3 +89,14 @@ test('unrenamed command targets retain 0e768759 mention forms', () => {
     assert.equal(registry.findAlive(target), undefined, target);
   }
 });
+
+test('spawn busy guard uses suffix/own names only and cannot override selected exact identity with an alias', () => {
+  const registry = new Registry(join(tmp(), 'registry.json'));
+  const [entry]: BotEntry[] = JSON.parse(readFileSync(new URL('./fixtures/registry-b4bc984f.json', import.meta.url), 'utf8'));
+  const current = { ...entry, status: 'alive' as const, friendlyName: 'Guide', nameAliases: ['OldFriendly'] };
+  registry.add(current);
+  for (const target of [current.tmuxSession, current.botEmail, current.personaName]) assert.equal(registry.busy(target), undefined, target);
+  for (const target of [current.suffix, 'guide', 'oldfriendly']) assert.equal(registry.busy(target), current, target);
+  assert.equal(registry.busy('OldFriendly', 'another-selected-session'), undefined);
+  assert.equal(registry.busy(current.suffix, 'another-selected-session'), current, 'legacy suffix guard unchanged');
+});

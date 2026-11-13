@@ -175,9 +175,13 @@ export class Registry {
   }
 
   /** The entry that owns a hand name right now (alive, mid-spawn or awaiting cleanup). */
-  busy(suffix: string): BotEntry | undefined {
+  busy(suffix: string, selectedSession?: string): BotEntry | undefined {
     const s = suffix.toLowerCase();
-    return this.occupied().find((e) => e.suffix.toLowerCase() === s || e.friendlyName !== undefined && this.matches(e, suffix));
+    // Preserve the legacy suffix guard, but a rename alias may only occupy the
+    // selected identity. Session/email matches must not steal a spawn name.
+    return this.occupied().find((e) => e.suffix.toLowerCase() === s ||
+      (selectedSession === undefined || e.tmuxSession === selectedSession) &&
+      [e.friendlyName, ...(e.nameAliases ?? [])].some((name) => name !== undefined && handIdentityName(name) === handIdentityName(s)));
   }
 
   add(entry: BotEntry): void {
