@@ -146,3 +146,12 @@ test('Codex upstream ceilings are advisory, never validation limits', () => {
     }
   }
 });
+
+test('rename grammar accepts friendly/full/mention targets and strictly rejects malformed commands', () => {
+  for (const target of ['scout', '[cc-opus-5-5/h] Scout', '@**[cc-opus-5-5/h] Scout|42**']) {
+    assert.deepEqual(parseCommand(`rename ${target} Pathfinder`), { kind: 'rename', target, friendly: 'Pathfinder' });
+  }
+  for (const text of ['rename', 'rename scout', 'rename scout Guide extra', 'rename scout bad_name', 'rename scout bad!', `rename scout ${'x'.repeat(25)}`]) {
+    assert.equal(parseCommand(text).kind, 'help', text);
+  }
+});

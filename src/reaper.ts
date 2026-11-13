@@ -87,7 +87,7 @@ export class Reaper {
     if (!(await this.tmux.hasSession(entry.tmuxSession))) {
       log(`${entry.personaName}: session died`);
       this.registry.update(entry, { status: 'reaped', endReason: 'died' });
-      await this.notifier.postHome(entry, `${entry.personaName} exited on its own (tmux session gone). \`spawn ${entry.model} name=${entry.suffix}\` revives the same identity and conversation.`);
+      await this.notifier.postHome(entry, `${entry.personaName} exited on its own (tmux session gone). \`spawn ${entry.model} name=${entry.friendlyName ?? entry.suffix}\` revives the same identity and conversation.`);
       return;
     }
 
@@ -101,7 +101,7 @@ export class Reaper {
         this.registry.update(entry, { firstPostAt: new Date(posted).toISOString() });
       } else if (!entry.firstPostAt) { // An event may have arrived during the lookup.
         this.registry.update(entry, { silenceWarned: true });
-        await this.notifier.postHome(entry, `⚠️ **${entry.personaName}** has not posted anything in ${formatDuration(sinceSpawn)} since it started — it may not be connected to Zulip. \`peek ${entry.suffix}\` shows its terminal.`);
+        await this.notifier.postHome(entry, `⚠️ **${entry.personaName}** has not posted anything in ${formatDuration(sinceSpawn)} since it started — it may not be connected to Zulip. \`peek ${entry.friendlyName ?? entry.suffix}\` shows its terminal.`);
       }
     }
 
@@ -117,7 +117,7 @@ export class Reaper {
 
     const idle = formatDuration(Date.now() - last);
     log(`${entry.personaName}: idle ${idle} — reaping`);
-    await this.notifier.postHome(entry, `Reaping ${entry.personaName} — no public activity for ~${idle}. Its identity and conversation are kept; \`spawn ${entry.model} name=${entry.suffix}\` revives it.`);
+    await this.notifier.postHome(entry, `Reaping ${entry.personaName} — no public activity for ~${idle}. Its identity and conversation are kept; \`spawn ${entry.model} name=${entry.friendlyName ?? entry.suffix}\` revives it.`);
     await this.tmux.killSession(entry.tmuxSession);
     this.registry.update(entry, { status: 'reaped', endReason: 'reaped-idle' });
   }

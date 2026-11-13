@@ -66,6 +66,10 @@ export class Provisioner {
     }
   }
 
+  async rename(botUserId: number, fullName: string): Promise<void> {
+    await this.admin.updateBot(botUserId, fullName);
+  }
+
   async messageAsHand(botEmail: string, id: number, makeClient: (c: ZulipCreds) => ZulipClient) {
     const bot = (await this.admin.ownedBots()).find((b) => b.username.toLowerCase() === botEmail.toLowerCase());
     if (!bot) throw new Error('hand bot not owned');

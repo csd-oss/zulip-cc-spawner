@@ -14,7 +14,7 @@ import { isPlausibleMessageTime } from './activity-time.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { prepareWorkDir } from './workdir.js';
-import { handName } from './names.js';
+import { handIdentityName, handName, modelDisplayName } from './names.js';
 import { isAllowed, type GroupCheck, type Invoker, type Where } from './auth.js';
 import {
   EFFORT_DEFAULT,
@@ -32,6 +32,7 @@ import type { AgentHost } from './host.js';
 import type { ClaudeLauncher } from './launcher.js';
 import type { Notifier } from './notifier.js';
 import type { Provisioner } from './provision.js';
+import { LiveModelSwitcher } from './model-switch.js';
 import { injectAnswer, parseAnswerSpec } from './question.js';
 import type { BotEntry, Registry } from './registry.js';
 import type { Tmux } from './tmux.js';
@@ -74,6 +75,7 @@ export interface ActionDeps {
   watcher: TranscriptWatcher;
   groupCheck: GroupCheck;
   realm: string;
+  modelSwitcher?: LiveModelSwitcher;
   codexBoundary?: (entry: BotEntry) => Promise<number>;
   codexWake?: { ready(entry: BotEntry): void };
 }
@@ -127,6 +129,10 @@ export class SpawnerActions {
     switch (cmd.kind) {
       case 'spawn':
         return { content: await this.spawn(inv, cmd) };
+      case 'model':
+        return { content: await this.model(inv, cmd) };
+      case 'rename':
+        return { content: await this.rename(inv, cmd.target, cmd.friendly) };
       case 'models':
         return { content: modelsListing() };
       case 'list':
@@ -136,9 +142,9 @@ export class SpawnerActions {
       case 'peek':
         return this.peek(cmd.target, cmd.lines);
       case 'answer':
-        return { content: await this.answer(cmd.target, cmd.spec) };
+        return { content: await this.answer(inv, cmd.target, cmd.spec) };
       case 'press':
-        return { content: await this.press(cmd.target, cmd.keys) };
+        return { content: await this.press(inv, cmd.target, cmd.keys) };
       case 'rescan':
         return { content: await this.rescan() };
       case 'help':
@@ -157,7 +163,7 @@ export class SpawnerActions {
     const { streamId, topic } = inv.where;
     const blocked = this.d.registry
       .alive()
-      .filter((e) => e.pendingQuestion && e.streamId === streamId && e.topic.toLowerCase() === topic.toLowerCase());
+      .filter((e) => (e.pendingQuestion || e.pendingModelMenu) && e.streamId === streamId && e.topic.toLowerCase() === topic.toLowerCase());
     return blocked.length === 1 ? buildAnswerCommand(blocked[0].suffix, inv.body) : inv.cmd;
   }
 
@@ -175,22 +181,31 @@ export class SpawnerActions {
     const suffix = (cmd.friendly ?? (await this.freshSuffix())).toLowerCase();
     const engine = cmd.engine ?? inferEngine(cmd.model);
     const slug = modelSlug(cmd.model);
-    const names = handName(cmd.model, cmd.friendly ?? suffix, engine === 'codex' ? 'cx' : 'cc');
-    // Prefer an existing legacy identity for the same model/suffix. Never
-    // reinterpret an unmarked bracket-name entry as a new-style identity.
+    const names = handName(cmd.model, cmd.friendly ?? suffix, engine === 'codex' ? 'cx' : 'cc', cmd.effort);
+    // Exact pre-v2 identities still win. Otherwise a unique historical hand
+    // with this suffix may change model; never guess between distinct bots.
     const legacy = engine === 'codex' ? undefined : registry.latestFor(`Claude-Code-${slug}-${suffix}`);
-    const modern = registry.latestFor(names.personaName);
-    if (modern && modern.nameScheme !== 'bracket-v1') return 'Name collision with a legacy persona — pick another name.';
-    if (legacy && modern) return 'Ambiguous legacy/new identity — pick another name.';
-    const prior = legacy ?? modern;
+    const bracket = registry.latestFor(names.personaName);
+    if (bracket && !bracket.nameScheme) return 'Name collision with a legacy persona — pick another name.';
+    if (legacy && bracket && legacy.tmuxSession !== bracket.tmuxSession) return 'Ambiguous legacy/new identity — pick another name.';
+    const histories = new Map<string, BotEntry>();
+    for (const e of registry.all()) {
+      if (e.suffix.toLowerCase() === suffix && e.status !== 'provisioning' && e.botUserId > 0) histories.set(e.tmuxSession, e);
+    }
+    const exact = legacy ?? bracket;
+    if (!exact && histories.size > 1) return 'Ambiguous historical name — use a distinct hand name; nothing was changed.';
+    const renamed = registry.renamedHands(cmd.friendly ?? suffix);
+    if (!exact && !histories.size && renamed.length > 1) return 'Ambiguous historical name — use a distinct hand name; nothing was changed.';
+    const prior = (exact ? histories.get(exact.tmuxSession) ?? exact : [...histories.values()][0]) ?? renamed[0];
+    if (prior && /^\[/.test(prior.personaName) && !prior.nameScheme) return 'Name collision with a legacy persona — pick another name.';
     const personaName = prior?.personaName ?? names.personaName;
     const shortName = prior?.tmuxSession ?? names.shortName;
     const workDir = prior ? prior.workDir : resolve(cfg.workRoot ?? resolve(cfg.projectDir, 'hands'), shortName);
-    if (!prior && registry.all().some((e) => e.tmuxSession === shortName && e.personaName.toLowerCase() !== personaName.toLowerCase())) {
+    if (!prior && registry.all().some((e) => e.tmuxSession === shortName && handIdentityName(e.personaName) !== handIdentityName(personaName))) {
       return 'Name collision with an existing identity — pick another name.';
     }
 
-    const clash = registry.busy(suffix);
+    const clash = registry.busy(suffix, prior?.tmuxSession);
     if (clash) {
       return `\`${suffix}\` is taken by **${clash.personaName}** (${clash.model}) — \`stop ${suffix}\` first, or spawn without a name for a fresh hand.`;
     }
@@ -198,12 +213,12 @@ export class SpawnerActions {
       return `tmux session \`${shortName}\` already exists outside my registry — pick another name or clean it up.`;
     }
 
-    if (prior && prior.streamId !== where.streamId) {
-      return `**${personaName}** already exists with its home in #${prior.streamName} — revive it there, or pick another name here.`;
+    const rehome = prior && (prior.streamId !== where.streamId || prior.topic !== where.topic);
+    const modelChange = prior && prior.model !== cmd.model;
+    if (prior && (prior.engine ?? inferEngine(prior.model)) !== engine) {
+      return 'Cannot change engine: Claude and Codex sessions are incompatible. Spawn a new hand with a different name instead.';
     }
-    if (prior && prior.model !== cmd.model) {
-      return `**${personaName}** ran on \`${prior.model}\`, not \`${cmd.model}\` — revive it with that exact model, or pick another name.`;
-    }
+    if (prior && (modelChange && !this.owns(inv, prior) || rehome && !this.canControl(inv, prior))) return this.ownerRefusal(prior);
 
     // Effort is not part of the identity: kept from the prior launch unless
     // overridden; `effort=default` clears it.
@@ -233,24 +248,26 @@ export class SpawnerActions {
     if (workDir && resolve(workDir) === resolve(paths.dir)) return 'workRoot must be separate from handsDir — refusing a non-empty working directory.';
     const now = new Date().toISOString();
     const entry: BotEntry = {
-      suffix,
+      suffix: prior?.suffix ?? suffix,
+      ...(prior?.friendlyName !== undefined ? { friendlyName: prior.friendlyName } : {}),
+      ...(prior?.nameAliases ? { nameAliases: [...prior.nameAliases] } : {}),
       personaName,
       botUserId: 0,
       botEmail: '',
       tmuxSession: shortName,
-      streamName: where.streamName,
-      streamId: where.streamId,
-      topic: where.topic,
+      streamName: prior?.streamName ?? where.streamName,
+      streamId: prior?.streamId ?? where.streamId,
+      topic: prior?.topic ?? where.topic,
       handDir: paths.dir,
       workDir,
       workDirReady: prior?.workDirReady,
-      nameScheme: prior ? prior.nameScheme : 'bracket-v1',
+      nameScheme: prior ? prior.nameScheme : 'stable-v2',
       harness: engine === 'codex' ? 'cx' : prior ? prior.harness : 'cc',
       engine,
-      model: cmd.model,
-      effort,
+      model: prior?.model ?? cmd.model,
+      effort: prior ? prior.effort : effort,
       sessionId,
-      spawnedBy: { userId: inv.invoker.userId, username: inv.invoker.name },
+      spawnedBy: prior?.spawnedBy,
       spawnedAt: now,
       lastActivity: now,
       status: 'provisioning',
@@ -258,10 +275,19 @@ export class SpawnerActions {
     };
     registry.add(entry);
 
+    // Destination is staged: failed revivals must still resolve at the old home.
+    const destination = { streamName: where.streamName, streamId: where.streamId, topic: where.topic };
+    const savedFiles = new Map<string, Buffer | undefined>();
+    let filesTouched = false;
+    let launchSucceeded = false;
+    let codexCatchupThrough = prior?.codexCatchupThrough;
     let launched = false;
     try {
       const { bot, created } = await this.d.provisioner.ensure(personaName, shortName, !prior);
-      registry.update(entry, { botUserId: bot.userId, botEmail: bot.email });
+      registry.update(entry, {
+        botUserId: bot.userId, botEmail: bot.email,
+        ...(!prior && created ? { spawnedBy: { userId: inv.invoker.userId, username: inv.invoker.name } } : {}),
+      });
       if (!created && !prior) log(`${personaName}: reusing an existing bot ${bot.email} with no registry history`);
       await this.d.provisioner.subscribe(bot.userId, where.streamName);
       if (workDir) {
@@ -275,12 +301,18 @@ export class SpawnerActions {
         : buildSeedPrompt(seedCtx);
       if (engine === 'codex') {
         if (!this.d.codexBoundary) throw new Error('Codex catch-up boundary unavailable');
-        const boundary = await this.d.codexBoundary(entry);
+        const boundary = await this.d.codexBoundary({ ...entry, ...destination });
         if (!Number.isSafeInteger(boundary) || boundary < 0) throw new Error('Invalid Codex catch-up boundary');
-        registry.update(entry, { codexCatchupThrough: boundary });
+        codexCatchupThrough = boundary;
         seed = buildCodexPrompt(seedCtx, boundary, canResume);
       }
-      await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir);
+      if (prior) {
+        for (const path of [paths.filters, paths.bridgeConfig, paths.seed]) {
+          savedFiles.set(path, await this.d.host.exists(path) ? await this.d.host.readFrom(path, 0) : undefined);
+        }
+      }
+      filesTouched = true;
+      await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir, workDir);
 
       const startOffset = canResume && engine !== 'codex' ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
       launched = true;
@@ -299,19 +331,39 @@ export class SpawnerActions {
         streamName: where.streamName,
         topic: where.topic,
       });
-      registry.update(entry, { ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}), status: 'alive', transcriptOffset: startOffset, lastActivity: new Date().toISOString() });
+      launchSucceeded = true;
+      registry.update(entry, { codexCatchupThrough, ...(result.sessionId !== undefined ? { sessionId: result.sessionId } : {}), ...destination, status: 'alive', transcriptOffset: startOffset, lastActivity: new Date().toISOString() });
 
+      let modelWarning = '';
+      if (!result.warning) {
+        registry.update(entry, { model: cmd.model, effort });
+        if (prior && (modelChange || prior.effort !== effort)) modelWarning = await this.renameModel(entry);
+      } else if (modelChange || prior && prior.effort !== effort) {
+        modelWarning = '\n⚠️ Model/effort switch not confirmed; registry model/effort and bot display name kept. Inspect with `peek`.';
+      }
       this.d.codexWake?.ready(entry);
 
-      const label = modelLabel({ model: cmd.model, effort });
-      const note = result.warning ? `\n⚠️ ${result.warning}` : '';
+      const label = modelLabel(entry);
+      const note = (result.warning ? `\n⚠️ ${result.warning}` : '') + modelWarning;
       if (canResume) {
-        return `Revived **${personaName}** (${label}) in tmux \`${shortName}\` — same identity **and** same conversation; it is catching up on ${home(entry)}.${note}`;
+        return `Revived **${entry.personaName}** (${label}) in tmux \`${shortName}\` — same identity **and** same conversation; it is catching up on ${home(entry)}.${note}`;
       }
       const amnesia = lostContext ? `\n⚠️ Its previous conversation is unavailable, so it starts fresh — same Zulip identity, no memory of before.` : '';
-      return `Spawned @**${personaName}** (${label}) in tmux \`${shortName}\`, home ${home(entry)} — it should introduce itself shortly.${amnesia}${note}`;
+      return `Spawned @**${entry.personaName}** (${label}) in tmux \`${shortName}\`, home ${home(entry)} — it should introduce itself shortly.${amnesia}${note}`;
     } catch (err) {
       console.error(err);
+      let rollbackWarning = '';
+      if (filesTouched && prior && !launchSucceeded) {
+        for (const [path, content] of savedFiles) {
+          try {
+            if (content === undefined) await this.d.host.exec('rm', ['-f', '--', path]);
+            else await this.d.host.writeFile(path, content.toString('utf8'), 0o600);
+          } catch (restoreErr) {
+            log(`restore ${path}: ${(restoreErr as Error).message}`);
+            rollbackWarning = '\n⚠️ Could not restore all home files; ask an operator to inspect before retrying.';
+          }
+        }
+      }
       const message = engine === 'codex' ? (/^Codex (needs login|startup timed out|exited during startup)/.test((err as Error).message) ? (err as Error).message : 'Codex launch failed; ask an operator to inspect the logs.') : (err as Error).message;
       log(`spawn of ${personaName} failed: ${message}`);
       const kept = entry.botUserId ? ` Its Zulip bot (${entry.botEmail}) is kept, so a retry reuses it.` : '';
@@ -324,13 +376,137 @@ export class SpawnerActions {
           log(`cleanup kill ${shortName}: ${(killErr as Error).message}`);
           registry.update(entry, { status: 'cleanup', endReason: `spawn failed: ${message}` });
           this.d.codexWake?.ready(entry);
-          return `Spawn of **${personaName}** failed: ${message}\n⚠️ Its tmux session could not be confirmed stopped; I'll keep retrying. The name stays taken until then.`;
+          return `Spawn of **${personaName}** failed: ${message}\n⚠️ Its tmux session could not be confirmed stopped; I'll keep retrying. The name stays taken until then.${rollbackWarning}`;
         }
       }
       registry.update(entry, { status: 'failed', endReason: `spawn failed: ${message}` });
       this.d.codexWake?.ready(entry);
-      return `Spawn of **${personaName}** failed: ${message}${kept}`;
+      return `Spawn of **${personaName}** failed: ${message}${kept}${rollbackWarning}`;
     }
+  }
+
+  private owns(inv: Invocation, entry: BotEntry): boolean {
+    return inv.invoker.userId === entry.spawnedBy?.userId || inv.invoker.userId === this.d.config.ownerUserId;
+  }
+
+  /** Adopted hands with no creator and no configured owner retain collaborative
+   * legacy controls even in strict mode. This never grants rename/model powers. */
+  private canControl(inv: Invocation, entry: BotEntry): boolean {
+    return !this.d.config.creatorOnlyControls || this.owns(inv, entry) ||
+      (!entry.spawnedBy && this.d.config.ownerUserId == null);
+  }
+
+  private ownerDescription(): string {
+    const owner = this.d.config.ownerUserId;
+    return owner == null ? 'the owner (not configured)' : `the owner (user ${owner})`;
+  }
+
+  private ownerRefusal(entry: BotEntry): string {
+    return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or ${this.ownerDescription()} may rehome or change its model, send raw keys, or answer permission prompts.`;
+  }
+
+  private async rename(inv: Invocation, target: string, friendly: string): Promise<string> {
+    const { registry } = this.d;
+    const matches = registry.matchingHands(target);
+    if (!matches.length) return `No hand matches \`${target}\` — try \`list\`.`;
+    if (matches.length !== 1) return 'Ambiguous hand name — use its bot email or tmux session; nothing was changed.';
+    const entry = matches[0];
+    if (!this.owns(inv, entry)) return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or ${this.ownerDescription()} may rename it.`;
+    if (entry.status === 'provisioning') return 'Cannot rename a hand while it is provisioning — try again after startup.';
+    if (!entry.botUserId) return 'Cannot rename a hand without a provisioned Zulip bot.';
+    let fullName: string;
+    try {
+      // Keep the existing label (including effort); only the friendly part changes.
+      handName(entry.model, friendly, entry.harness ?? (entry.engine === 'codex' ? 'cx' : 'cc'), entry.effort);
+      fullName = entry.personaName.startsWith('[')
+        ? entry.personaName.replace(/^(\[[^\]]+\] ).+$/, `$1${friendly}`)
+        : modelDisplayName({ ...entry, friendlyName: friendly }, entry.model);
+      if (fullName.length > 49) return 'Hand name too long — Zulip persona must be at most 49 characters.';
+    } catch (err) {
+      if ((err as Error).message === 'bad hand effort') return `Stored effort \`${entry.effort}\` is not recognized — correct it before renaming; nothing was changed.`;
+      return 'Invalid hand name — use 1-24 chars of [A-Za-z0-9-]; Zulip persona must be at most 49 characters.';
+    }
+    const oldName = entry.personaName;
+    const oldFriendly = entry.friendlyName ?? oldName.match(/^\[[^\]]+\] (.+)$/)?.[1] ?? entry.suffix;
+    const aliases = [...new Set([...(entry.nameAliases ?? []), entry.suffix, oldFriendly, oldName])];
+    if (registry.nameCollision({ ...entry, personaName: fullName, friendlyName: friendly, nameAliases: aliases })) return `Name collision: the resulting names for \`${friendly}\` overlap another hand's names or aliases.`;
+    try {
+      await this.d.provisioner.rename(entry.botUserId, fullName);
+    } catch (err) {
+      log(`rename ${entry.tmuxSession}: ${(err as Error).message}`);
+      return 'Could not rename the Zulip bot; registry name and aliases unchanged. Try again.';
+    }
+    registry.update(entry, { personaName: fullName, friendlyName: friendly, nameAliases: aliases, nameScheme: entry.nameScheme ?? 'bracket-v1' });
+    return `Renamed **${oldName}** to **${fullName}**. Old names remain aliases; same bot, session, workdir and conversation.`;
+  }
+
+  /** Model truth is committed before the cosmetic rename. A PATCH failure must
+   * never roll back a successful session switch or lose the existing bot. */
+  private async renameModel(entry: BotEntry): Promise<string> {
+    try {
+      const fullName = modelDisplayName(entry, entry.model);
+      await this.d.provisioner.rename(entry.botUserId, fullName);
+      this.d.registry.update(entry, {
+        nameAliases: [...new Set([...(entry.nameAliases ?? []), entry.personaName])],
+        personaName: fullName, nameScheme: entry.nameScheme ?? 'bracket-v1',
+      });
+      return '';
+    } catch (err) {
+      log(`rename ${entry.tmuxSession}: ${(err as Error).message}`);
+      return '\n⚠️ Model/effort confirmed, but the bot display-name update failed; its email and session are unchanged.';
+    }
+  }
+
+  private async model(inv: Invocation, cmd: Command & { kind: 'model' }): Promise<string> {
+    const entry = this.d.registry.findAlive(cmd.target);
+    if (!entry) return `No running hand matches \`${cmd.target}\` — try \`list\`.`;
+    if (!this.owns(inv, entry)) return this.ownerRefusal(entry);
+    const engine = entry.engine ?? inferEngine(entry.model);
+    if (cmd.model && inferEngine(cmd.model) !== engine) return 'Cannot change engine: Claude and Codex sessions are incompatible; spawn a new hand instead.';
+    if (entry.pendingQuestion) return 'Answer or dismiss the pending question before changing model.';
+    if (cmd.effort && cmd.model) {
+      const error = effortError(cmd.effort, cmd.model, engine);
+      if (error) return error;
+    }
+    this.d.registry.update(entry, { pendingModelMenu: undefined });
+    try {
+      const result = await (this.d.modelSwitcher ?? new LiveModelSwitcher(this.d.tmux)).run(entry.tmuxSession, engine, cmd.model, cmd.effort);
+      if (result.kind === 'menu') {
+        const options = result.menu.options.filter(o => result.menu.kind === 'models' && !/More|default|custom/i.test(o.label));
+        if (!options.length) return 'No selectable model list found; menu cancelled, old model kept.';
+        this.d.registry.update(entry, { pendingModelMenu: { options, effort: cmd.effort, postedAt: new Date().toISOString() } });
+        await this.d.notifier.postHome(entry, [
+          `Model menu for **${entry.personaName}** (current: \`${entry.model}\`). ${cmd.model ? 'Requested model not on screen. ' : ''}Menu closed while waiting.`,
+          ...options.map(o => `${o.number}. ${o.label}`),
+          result.menu.more ? '↓ More entries exist below the visible list; no off-screen choice was guessed.' : '',
+          `Creator/owner: mention the spawner with \`answer ${entry.friendlyName ?? entry.suffix} <number>\` (or a bare number here) within 5 minutes. \`esc\` cancels.`,
+        ].filter(Boolean).join('\n'));
+        return `Model menu posted to ${home(entry)}; no switch yet.`;
+      }
+      this.d.registry.update(entry, { model: result.model, effort: engine === 'codex' ? result.effort : entry.effort });
+      const warning = await this.renameModel(entry);
+      return `Changed **${entry.personaName}** to \`${modelLabel(entry)}\` without stopping; same session and workdir.${warning}`;
+    } catch (err) {
+      return `Could not change **${entry.personaName}**'s model: ${(err as Error).message}. No model/name update recorded.`;
+    }
+  }
+
+  private async answerModel(inv: Invocation, entry: BotEntry, spec: string): Promise<string> {
+    const pending = entry.pendingModelMenu!;
+    // Expiry is housekeeping, not privileged terminal control. Any authorized
+    // caller can retire an expired snapshot without touching the terminal.
+    if (Date.now() - Date.parse(pending.postedAt) > 5 * 60_000) {
+      this.d.registry.update(entry, { pendingModelMenu: undefined });
+      return 'Model menu snapshot expired; run `model <hand>` again.';
+    }
+    if (!this.owns(inv, entry)) return this.ownerRefusal(entry);
+    if (/^(esc|escape|cancel)$/i.test(spec.trim())) {
+      this.d.registry.update(entry, { pendingModelMenu: undefined });
+      return 'Model choice cancelled (terminal menu already closed).';
+    }
+    const option = /^\d+$/.test(spec.trim()) ? pending.options.find(o => o.number === Number(spec.trim())) : undefined;
+    if (!option) return 'Answer with one of the posted model numbers, or `esc`.';
+    return this.model(inv, { kind: 'model', target: entry.suffix, model: option.model, effort: pending.effort });
   }
 
   private list(): string {
@@ -353,7 +529,7 @@ export class SpawnerActions {
       return `Could not stop **${entry.personaName}**: ${(err as Error).message} — it is still registered as running.`;
     }
     this.d.registry.update(entry, { status: 'reaped', endReason: `stopped by ${inv.invoker.name} (${inv.invoker.userId})` });
-    return `Stopped **${entry.personaName}**. Identity and conversation kept — \`spawn ${entry.model} name=${entry.suffix}\` revives it.`;
+    return `Stopped **${entry.personaName}**. Identity and conversation kept — \`spawn ${entry.model} name=${entry.friendlyName ?? entry.suffix}\` revives it.`;
   }
 
   /** The terminal tail, always delivered by DM (it may show anything the hand typed). */
@@ -377,18 +553,28 @@ export class SpawnerActions {
     }
     const header = [
       `**${entry.personaName}** (${modelLabel(entry)}) — tmux \`${entry.tmuxSession}\`, home ${home(entry)}`,
-      `up ${uptime === undefined ? '?' : formatDuration(uptime)} · last public activity ${formatIdle(idleMin)} ago · spawned by ${entry.spawnedBy.username}`,
+      `up ${uptime === undefined ? '?' : formatDuration(uptime)} · last public activity ${formatIdle(idleMin)} ago · spawned by ${entry.spawnedBy?.username ?? 'unknown'}`,
     ].join('\n');
     return { private: true, content: `${header}\n\`\`\`text\n${tail.replace(/```/g, "'''")}\n\`\`\`${note}` };
   }
 
   /** Deliver an answer into a blocked dialog. Pending state is cleared by the
    *  watcher when the resolution is observed (ground truth). */
-  private async answer(target: string, spec: string): Promise<string> {
+  private async answer(inv: Invocation, target: string, spec: string): Promise<string> {
     const entry = this.d.registry.findAlive(target);
     if (!entry) return `No running hand matches \`${target}\` — try \`list\`.`;
     const pending = entry.pendingQuestion;
+    // A real terminal dialog supersedes the closed model-menu snapshot. Retire
+    // that snapshot so it cannot consume this answer (or a later shortcut).
+    // The normal permission ownership and current-pane checks still apply.
+    if (entry.pendingModelMenu) {
+      if (!pending) return this.answerModel(inv, entry, spec);
+      this.d.registry.update(entry, { pendingModelMenu: undefined });
+    }
     if (!pending) return `**${entry.personaName}** has no pending question I know of — \`rescan\` if you think it's stuck on one.`;
+    // AskUserQuestion stays collaborative; permission prompts follow the
+    // optional creator-only policy, just like raw terminal keys.
+    if (pending.questions[0]?.kind === 'permission' && !this.canControl(inv, entry)) return this.ownerRefusal(entry);
     const parsed = parseAnswerSpec(spec, pending.questions[0]);
     if (parsed.kind === 'error') return `Can't parse that answer: ${parsed.error}`;
     try {
@@ -406,9 +592,10 @@ export class SpawnerActions {
   }
 
   /** Raw keystrokes — the escape hatch for anything the dialog parser misses. */
-  private async press(target: string, keys: string[]): Promise<string> {
+  private async press(inv: Invocation, target: string, keys: string[]): Promise<string> {
     const entry = this.d.registry.findAlive(target);
     if (!entry) return `No running hand matches \`${target}\` — try \`list\`.`;
+    if (!this.canControl(inv, entry)) return this.ownerRefusal(entry);
     const sent: string[] = [];
     for (const raw of keys) {
       const named = KEY_NAMES[raw.toLowerCase()];
@@ -417,11 +604,11 @@ export class SpawnerActions {
         else if (/^\d$/.test(raw)) await this.d.tmux.sendKeys(entry.tmuxSession, raw);
         else await this.d.tmux.sendText(entry.tmuxSession, raw);
       } catch (err) {
-        log(`press ${entry.suffix} failed at key ${sent.length + 1}: ${(err as Error).stack ?? err}`);
+        log(`press ${entry.friendlyName ?? entry.suffix} failed at key ${sent.length + 1}: ${(err as Error).stack ?? err}`);
         const prefix = sent.length ? sent.map((k) => `\`${k}\``).join(' ') : 'none confirmed';
         return `Could not send \`${raw}\` to **${entry.personaName}**: tmux rejected key ${sent.length + 1}.\n` +
           `Sent before failure: ${prefix}. The input may be half-typed (the failed send may also have reached the terminal). ` +
-          `Inspect with \`peek ${entry.suffix}\`; try \`press ${entry.suffix} ctrl-u\` to clear the line or \`press ${entry.suffix} esc\` to cancel.`;
+          `Inspect with \`peek ${entry.friendlyName ?? entry.suffix}\`; try \`press ${entry.friendlyName ?? entry.suffix} ctrl-u\` to clear the line or \`press ${entry.friendlyName ?? entry.suffix} esc\` to cancel.`;
       }
       sent.push(named ?? raw);
       await new Promise((r) => setTimeout(r, 300));
@@ -429,7 +616,7 @@ export class SpawnerActions {
     if (entry.pendingQuestion) {
       this.d.registry.update(entry, { pendingQuestion: { ...entry.pendingQuestion, answeredWith: `keys ${sent.join(' ')}` } });
     }
-    return `Sent ${sent.map((k) => `\`${k}\``).join(' ')} to **${entry.personaName}** — \`peek ${entry.suffix}\` to see what it did.`;
+    return `Sent ${sent.map((k) => `\`${k}\``).join(' ')} to **${entry.personaName}** — \`peek ${entry.friendlyName ?? entry.suffix}\` to see what it did.`;
   }
 
   private async rescan(): Promise<string> {
@@ -476,7 +663,7 @@ export class SpawnerActions {
     const sessions = await this.d.tmux.listSessions();
     for (let i = 0; i < 16; i++) {
       const s = randomBytes(2).toString('hex');
-      if (!this.d.registry.all().some((e) => e.suffix.toLowerCase() === s) && !sessions.some((n) => n.endsWith(`-${s}`))) return s;
+      if (!this.d.registry.all().some((e) => e.suffix.toLowerCase() === s) && !this.d.registry.renamedHands(s).length && !sessions.some((n) => n.endsWith(`-${s}`))) return s;
     }
     throw new Error('could not find a free suffix');
   }

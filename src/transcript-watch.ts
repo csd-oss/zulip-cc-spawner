@@ -241,7 +241,7 @@ export class TranscriptWatcher {
         const sig = dialogSig(dialog.q);
         const what = dialog.q.kind === 'permission' ? 'permission prompt' : 'question';
         if (entry.pendingQuestion?.sig === sig && entry.pendingQuestion.messageId) {
-          lines.push(`**${entry.personaName}** — ${what} already posted, still waiting (\`answer ${entry.suffix} …\`).`);
+          lines.push(`**${entry.personaName}** — ${what} already posted, still waiting (\`answer ${entry.friendlyName ?? entry.suffix} …\`).`);
         } else {
           if (isPermission(entry)) await this.resolvePermission(entry);
           await this.announceQuestion(entry, dialog);

@@ -1,18 +1,19 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, openSync, readSync, closeSync, rmdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
 import { parseCommand } from '../src/commands.js';
 import { LocalHost } from '../src/host.js';
 import { ClaudeLauncher, type LaunchRequest } from '../src/launcher.js';
-import { handName } from '../src/names.js';
+import { handName, handIdentityName } from '../src/names.js';
+import { handPaths } from '../src/handfiles.js';
 import type { Notifier } from '../src/notifier.js';
 import { Provisioner } from '../src/provision.js';
 import { Registry } from '../src/registry.js';
 import type { Tmux } from '../src/tmux.js';
 import { TranscriptWatcher } from '../src/transcript-watch.js';
-import { prepareWorkDir } from '../src/workdir.js';
+import { prepareWorkDir, PREPARE_WORKDIR_JS } from '../src/workdir.js';
 import { testConfig, tmp } from './helpers.js';
 
 function fixture() {
@@ -36,20 +37,20 @@ function fixture() {
   const watcher = new TranscriptWatcher(registry, host, tmux, notifier, cfg, () => 'spawner');
   const provisioner = {
     ensure: async (_full: string, short: string) => ({ bot: { userId: 100, email: `${short}-bot@x`, apiKey: 'fake' }, created: true }),
-    subscribe: async () => {}, credsFor: () => ({ email: 'fake@x', key: 'fake', site: 'https://x' }),
+    subscribe: async () => {}, rename: async () => {}, credsFor: () => ({ email: 'fake@x', key: 'fake', site: 'https://x' }),
   } as unknown as Provisioner;
   const actions = new SpawnerActions({ config: cfg, registry, host, tmux, launcher, notifier, watcher, provisioner, groupCheck: async () => false, realm: 'x' });
   const run = (body: string) => actions.run({ body, cmd: parseCommand(body), where: { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic: 't' }, invoker: { userId: 1, name: 'Tester', kind: 'user' } });
-  return { dir, cfg, host, registry, watcher, run, launches, cwds };
+  return { dir, cfg, host, tmux, registry, watcher, run, launches, cwds };
 }
 
 test('display harness label, ASCII identity and bounded names', () => {
-  assert.deepEqual(handName('claude-opus', 'Syncntn'), { personaName: '[cc-opus] Syncntn', shortName: 'cc-opus-syncntn' });
-  assert.equal(handName('astra-6', 'hand', 'cx').personaName, '[cx-astra-6] hand');
+  assert.deepEqual(handName('claude-opus', 'Syncntn'), { personaName: '[cc-opus/d] Syncntn', shortName: 'cc-syncntn' });
+  assert.equal(handName('astra-6', 'hand', 'cx').personaName, '[cx-astra-6/d] hand');
   const n = handName('a'.repeat(80), 'X'.repeat(24));
   assert.ok(n.personaName.length <= 49);
-  assert.equal(n.shortName.length, 40);
-  assert.equal(`${n.shortName}-bot`.length, 44);
+  assert.equal(n.shortName.length, 27);
+  assert.equal(`${n.shortName}-bot`.length, 31);
   assert.match(n.shortName, /^[a-z0-9-]+$/);
   assert.throws(() => handName('opus', '../bad'));
   assert.throws(() => handName('opus', 'x'.repeat(25)));
@@ -78,15 +79,70 @@ test('new spawn is empty, private, trusted; revive retains cwd and transcript', 
   assert.deepEqual(readdirSync(e.workDir!), []);
   assert.equal(statSync(e.workDir!).mode & 0o777, 0o700);
   assert.equal(statSync(e.workDir!).uid, process.getuid!());
+  const paths = handPaths(c.cfg.handsDir, e.tmuxSession, e.handDir);
+  const uploadRoot = () => JSON.parse(readFileSync(paths.bridgeConfig, 'utf8')).servers.zulip.transport.env.ZULIP_UPLOAD_ROOTS;
+  assert.equal(uploadRoot(), `work=${e.workDir}`);
+  // The private directory is disjoint, so every descendant (not just zuliprc)
+  // is outside the one exported root. Also check all actual private files.
+  for (const path of [paths.dir, ...readdirSync(paths.dir, { recursive: true }).map(file => join(paths.dir, String(file)))]) {
+    const rel = relative(e.workDir!, path);
+    assert.ok(isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`), path);
+  }
   assert.equal(JSON.parse(readFileSync(join(c.cfg.agentsHome, '.claude.json'), 'utf8')).projects[e.workDir!].hasTrustDialogAccepted, true);
   const transcript = c.watcher.transcriptPath(e.sessionId, e.workDir);
   mkdirSync(dirname(transcript), { recursive: true }); writeFileSync(transcript, '{}\n');
   await c.run('stop scout');
+  c.cfg.workRoot = join(c.dir, 'changed-work-root');
   await c.run('spawn opus-5-5 name=scout');
   assert.equal(c.launches[1].resume, true);
   assert.equal(c.launches[1].sessionId, e.sessionId);
   assert.deepEqual(c.cwds, [e.workDir, e.workDir]);
   assert.deepEqual(readdirSync(e.workDir!), []);
+  assert.equal(uploadRoot(), `work=${e.workDir}`, 'revival exports prior.workDir, not the current workRoot');
+});
+
+test('workspace preparation completes before bridge config is written and used at launch', async t => {
+  const c = fixture();
+  const events: string[] = [];
+  const exec = c.host.exec.bind(c.host);
+  t.mock.method(c.host, 'exec', async (...args: Parameters<LocalHost['exec']>) => {
+    const result = await exec(...args);
+    if (args[1][1] === PREPARE_WORKDIR_JS) events.push('prepared');
+    return result;
+  });
+  const write = c.host.writeFile.bind(c.host);
+  t.mock.method(c.host, 'writeFile', async (...args: Parameters<LocalHost['writeFile']>) => {
+    if (args[0].endsWith('/mcpl-bridge.json')) {
+      const root = JSON.parse(args[1]).servers.zulip.transport.env.ZULIP_UPLOAD_ROOTS;
+      assert.equal(root, `work=${c.registry.all()[0].workDir}`);
+      assert.ok(statSync(root.slice('work='.length)).isDirectory());
+      assert.deepEqual(events, ['prepared']);
+      events.push('bridge');
+    }
+    return write(...args);
+  });
+  const newSession = c.tmux.newSession.bind(c.tmux);
+  t.mock.method(c.tmux, 'newSession', async (...args: Parameters<Tmux['newSession']>) => {
+    assert.deepEqual(events, ['prepared', 'bridge']);
+    assert.ok(statSync(args[1]).isDirectory());
+    const paths = handPaths(c.cfg.handsDir, args[0]);
+    const bridge = JSON.parse(readFileSync(paths.bridgeConfig, 'utf8'));
+    assert.equal(bridge.servers.zulip.transport.env.ZULIP_UPLOAD_ROOTS, `work=${args[1]}`);
+    events.push('launch');
+    return newSession(...args);
+  });
+  assert.match((await c.run('spawn opus-5-5 name=order')).content, /Spawned/);
+  assert.deepEqual(events, ['prepared', 'bridge', 'launch']);
+  assert.equal(c.launches.length, 1);
+  assert.ok(statSync(c.launches[0].workDir!).isDirectory());
+});
+
+test('workDir equal to private HandPaths.dir is still refused before launch', async () => {
+  const c = fixture();
+  c.cfg.workRoot = c.cfg.handsDir;
+  assert.match((await c.run('spawn opus-5-5 name=unsafe')).content, /workRoot must be separate from handsDir/);
+  assert.equal(c.registry.all().length, 0);
+  assert.equal(c.launches.length, 0);
 });
 
 test('legacy registry round-trip and revival preserve identity, arbitrary handDir and old cwd', async () => {
@@ -102,23 +158,24 @@ test('legacy registry round-trip and revival preserve identity, arbitrary handDi
   assert.deepEqual(loaded.all(), JSON.parse(JSON.stringify(c.registry.all())));
   const path = c.watcher.transcriptPath(e.sessionId);
   mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, '{}\n');
-  assert.match((await c.run('spawn opus-5-5 name=old')).content, /Revived.*Claude-Code/);
+  assert.match((await c.run('spawn opus-5-5 name=old')).content, /Revived.*Claude-Code-opus-5-5-old/);
   const revived = c.registry.all()[1];
   assert.equal(revived.handDir, e.handDir);
-  assert.equal(revived.personaName, e.personaName);
+  assert.equal(revived.personaName, e.personaName, 'same model/effort must not rename a legacy bot');
   assert.equal(revived.botEmail, e.botEmail);
   assert.equal(revived.tmuxSession, e.tmuxSession);
   assert.equal(c.cwds[1], c.cfg.projectDir);
   assert.equal(c.launches[1].resume, true);
   assert.equal(c.launches[1].sessionId, e.sessionId);
-  assert.equal(c.registry.findAlive(e.personaName), revived);
+  assert.equal(c.registry.findAlive(revived.personaName), revived);
+  const bridge = JSON.parse(readFileSync(join(revived.handDir, 'mcpl-bridge.json'), 'utf8'));
+  assert.equal(Object.hasOwn(bridge.servers.zulip.transport.env, 'ZULIP_UPLOAD_ROOTS'), false);
 });
 
-test('unmarked bracket persona cannot be hijacked and slug model collisions refused', async () => {
+test('unmarked bracket persona cannot be hijacked', async () => {
   const c = fixture();
   await c.run('spawn opus-5-5 name=old'); await c.run('stop old');
   const e = c.registry.all()[0];
-  assert.match((await c.run('spawn claude-opus-5-5-20261001 name=old')).content, /ran on/);
   delete e.nameScheme;
   assert.match((await c.run('spawn opus-5-5 name=old')).content, /collision/);
   assert.equal(c.launches.length, 1);
@@ -167,7 +224,7 @@ test('configurable workRoot and watcher use the recorded cwd', async () => {
 
 test('new identity never adopts an existing workspace or unregistered legacy bot', async () => {
   const c = fixture();
-  const path = join(c.cfg.projectDir, 'hands', 'cc-opus-5-5-old');
+  const path = join(c.cfg.projectDir, 'hands', 'cc-old');
   mkdirSync(path, { recursive: true }); writeFileSync(join(path, 'keep'), 'keep');
   assert.match((await c.run('spawn opus-5-5 name=old')).content, /failed/);
   assert.equal(c.launches.length, 0);
@@ -217,4 +274,23 @@ test('first trust failure stays fail-closed after JSON repair; manual empty-dir 
   assert.equal(recovered.workDirReady, true);
   assert.equal(c.launches.length, 1);
   assert.deepEqual(readdirSync(workDir), []);
+});
+
+for (const [effort, abbreviation] of [
+  [undefined, 'd'], ['default', 'd'], ['minimal', 'min'], ['low', 'low'],
+  ['medium', 'med'], ['high', 'h'], ['xhigh', 'xh'], ['max', 'max'],
+  ['ultra', 'u'], ['ultracode', 'u'],
+] as const) test(`display effort ${effort ?? 'implicit default'} is /${abbreviation}, never identity`, () => {
+  const n = handName('opus-5-5', 'Scout', 'cc', effort);
+  assert.equal(n.personaName, `[cc-opus-5-5/${abbreviation}] Scout`);
+  assert.equal(n.shortName, 'cc-scout');
+  assert.equal(handIdentityName(n.personaName), '[cc-opus-5-5] scout');
+  const longest = handName('a'.repeat(80), 'X'.repeat(24), 'cc', effort);
+  assert.ok(longest.personaName.length <= 49);
+  assert.equal(longest.shortName, `cc-${'x'.repeat(24)}`);
+});
+
+test('display length guard still enforces 49 including effort', () => {
+  assert.equal(handName('a'.repeat(12), 'x'.repeat(24), 'label', 'medium').personaName.length, 49);
+  assert.throws(() => handName('a'.repeat(12), 'x'.repeat(24), 'labels', 'medium'), /too long/);
 });

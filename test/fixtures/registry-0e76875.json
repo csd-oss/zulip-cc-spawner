@@ -1,0 +1,37 @@
+[
+  {
+    "suffix": "scout",
+    "personaName": "[cc-sonnet-5-5/h] Scout",
+    "botUserId": 42,
+    "botEmail": "cc-scout-bot@example.invalid",
+    "tmuxSession": "cc-scout",
+    "streamName": "cc-hands",
+    "streamId": 7,
+    "topic": "old",
+    "handDir": "/offline/hand-files/cc-scout",
+    "workDir": "/offline/work/cc-scout",
+    "workDirReady": true,
+    "nameScheme": "stable-v2",
+    "harness": "cc",
+    "engine": "claude",
+    "model": "claude-sonnet-5-5",
+    "effort": "high",
+    "sessionId": "12345678-1234-1234-1234-123456789abc",
+    "spawnedAt": "2026-11-01T00:00:00.000Z",
+    "lastActivity": "2026-11-01T00:01:00.000Z",
+    "status": "reaped",
+    "endReason": "stopped by Creator (1)",
+    "seedFile": "/offline/hand-files/cc-scout/seed.md",
+    "transcriptOffset": 3,
+    "pendingModelMenu": {
+      "options": [
+        {
+          "number": 1,
+          "label": "Opus 5.5",
+          "model": "claude-opus-5-5"
+        }
+      ],
+      "postedAt": "2026-11-01T00:00:00.000Z"
+    }
+  }
+]

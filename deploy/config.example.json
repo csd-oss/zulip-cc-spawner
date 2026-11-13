@@ -4,6 +4,8 @@
   "allowedStreams": ["cc-hands"],
   "allowedUsers": [],
   "allowedGroups": [],
+  "creatorOnlyControls": false,
+  "ownerUserId": null,
   "allowedResidents": [],
   "agentsUser": "cc-agents",
   "agentsHome": "/home/cc-agents",

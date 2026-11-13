@@ -21,8 +21,8 @@ const id = '12345678-1234-1234-1234-123456789abc';
 test('engine and name inference keep Claude default', () => {
   assert.equal(inferEngine('gpt-5'), 'codex');
   assert.equal(inferEngine('opus-5-5'), 'claude');
-  assert.equal(handName('gpt-5', 'Scout').personaName, '[cx-gpt-5] Scout');
-  assert.equal(handName('opus-5-5', 'Scout').personaName, '[cc-opus-5-5] Scout');
+  assert.equal(handName('gpt-5', 'Scout').personaName, '[cx-gpt-5/d] Scout');
+  assert.equal(handName('opus-5-5', 'Scout').personaName, '[cc-opus-5-5/d] Scout');
 });
 test('Codex argv: MCP env matches Claude transport; dash literals are values', () => {
   const args = codexArgs(cfg, { ...req, model: '-model', effort: 'high' });
@@ -30,9 +30,16 @@ test('Codex argv: MCP env matches Claude transport; dash literals are values', (
   assert.ok(args.includes('model_reasoning_effort="high"'));
   assert.ok(args.includes('mcp_servers.zulip.command=' + JSON.stringify(cfg.nodeBin)));
   assert.match(args.join(' '), /ZULIP_RC_PATH="\/tmp\/hand\/zuliprc"/);
+  assert.deepEqual(args.join(' ').match(/ZULIP_UPLOAD_ROOTS="([^"]+)"/g), [`ZULIP_UPLOAD_ROOTS="work=${req.workDir}"`]);
   assert.match(args.join(' '), /MCPL_ENABLED="false"/);
   assert.deepEqual(queueArgs('-thread', '-text $(touch nope)'), ['--thread=-thread', '--message=-text $(touch nope)']);
   assert.equal(args.at(-1), '--');
+});
+test('Codex omits upload roots when the recorded workspace is unknown, including resume', () => {
+  for (const resume of [false, true]) {
+    const args = codexArgs(cfg, { ...req, workDir: undefined, resume, sessionId: id });
+    assert.ok(!args.some(arg => arg.includes('ZULIP_UPLOAD_ROOTS')));
+  }
 });
 test('resume with id vs fresh without id', () => {
   assert.equal(codexArgs(cfg, { ...req, resume: true, sessionId: id })[0], 'resume');

@@ -5,6 +5,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { handIdentityName } from './names.js';
 import type { PendingQuestion } from './question.js';
 
 /**
@@ -21,6 +22,10 @@ export interface BotEntry {
   suffix: string;
   /** The hand's Zulip full name, e.g. Claude-Code-opus-5-5-scout. */
   personaName: string;
+  /** Set only by explicit rename; suffix and all session identifiers stay fixed. */
+  friendlyName?: string;
+  /** Previous friendly/full names, reserved to this tmux identity across launches. */
+  nameAliases?: string[];
   /** The hand's Zulip bot. Its API key is never stored here (owner can read it
    *  back). 0/'' while provisioning has not created or found it yet. */
   botUserId: number;
@@ -36,7 +41,7 @@ export interface BotEntry {
   workDir?: string;
   /** Set only after exclusive workspace creation and trust preparation succeed. */
   workDirReady?: boolean;
-  nameScheme?: 'bracket-v1';
+  nameScheme?: 'bracket-v1' | 'stable-v2';
   harness?: string;
   engine?: 'claude' | 'codex';
   model: string;
@@ -46,7 +51,8 @@ export interface BotEntry {
   sessionId: string;
   /** Inclusive model-owned backscroll boundary; wake owns only newer ids. */
   codexCatchupThrough?: number;
-  spawnedBy: { userId: number; username: string };
+  /** Unknown for some historical hands; revival must never assign a creator. */
+  spawnedBy?: { userId: number; username: string };
   spawnedAt: string;
   /** Last PUBLIC Zulip activity (message/reaction) the spawner observed. */
   lastActivity: string;
@@ -64,6 +70,12 @@ export interface BotEntry {
   lastModel?: string;
   /** A dialog the session is blocked on (posted to the home topic). */
   pendingQuestion?: PendingQuestion;
+  /** Snapshot only: no TUI is left open while waiting for a Zulip answer. */
+  pendingModelMenu?: {
+    options: { number: number; label: string; model: string }[];
+    effort?: string;
+    postedAt: string;
+  };
 }
 
 export class Registry {
@@ -105,14 +117,43 @@ export class Registry {
 
   /** An ALIVE entry by suffix, persona name, bot email or tmux session. */
   findAlive(target: string): BotEntry | undefined {
-    const t = target.toLowerCase().replace(/^@\*\*|\*\*$/g, '');
-    return this.alive().find(
-      (e) =>
-        e.suffix.toLowerCase() === t ||
-        e.personaName.toLowerCase() === t ||
-        e.botEmail.toLowerCase() === t ||
-        e.tmuxSession.toLowerCase() === t,
-    );
+    return this.alive().find((e) => this.matches(e, target));
+  }
+
+  private matches(e: BotEntry, target: string): boolean {
+    // Keep 0e768759 command mention handling: no silent mentions or ID stripping.
+    // In particular a name carrying another bot's ID must never select this bot.
+    const mentionedId = target.match(/\|(\d+)/)?.[1];
+    if (mentionedId !== undefined && Number(mentionedId) !== e.botUserId) return false;
+    const t = handIdentityName(target.toLowerCase().replace(/^@\*\*|\*\*$/g, ''));
+    return [e.suffix, e.personaName, e.botEmail, e.tmuxSession, e.friendlyName, ...(e.nameAliases ?? [])]
+      .some((name) => name !== undefined && handIdentityName(name) === t);
+  }
+
+  /** Latest launch per stable identity, without mutating historical records. */
+  private currentHands(): BotEntry[] {
+    return [...new Map(this.entries.map((e) => [e.tmuxSession, e])).values()];
+  }
+
+  matchingHands(target: string): BotEntry[] {
+    return this.currentHands().filter((e) => this.matches(e, target));
+  }
+
+  /** Spawn fallback only: never treat a stable suffix/session/email as a rename. */
+  renamedHands(target: string): BotEntry[] {
+    const t = handIdentityName(target);
+    return this.currentHands().filter((e) => [e.friendlyName, ...(e.nameAliases ?? [])]
+      .some((name) => name !== undefined && handIdentityName(name) === t));
+  }
+
+  /** All historical names remain reserved, including stopped/failed hands. */
+  nameCollision(result: BotEntry): boolean {
+    const names = (e: BotEntry): string[] => [
+      e.suffix, e.tmuxSession, e.personaName, e.botEmail, e.friendlyName,
+      e.personaName.match(/^\[[^\]]+\] (.+)$/)?.[1], ...(e.nameAliases ?? []),
+    ].filter((name): name is string => name !== undefined && name !== '').map(handIdentityName);
+    const resultingNames = new Set(names(result));
+    return this.entries.some((e) => e.tmuxSession !== result.tmuxSession && names(e).some((name) => resultingNames.has(name)));
   }
 
   /** Current launch, including activity during startup; never stopped history. */
@@ -127,16 +168,20 @@ export class Registry {
    * continuity (the caller checks the transcript exists).
    */
   latestFor(personaName: string): BotEntry | undefined {
-    const name = personaName.toLowerCase();
+    const name = handIdentityName(personaName);
     return [...this.entries]
       .reverse()
-      .find((e) => e.personaName.toLowerCase() === name && e.status !== 'provisioning' && e.botUserId > 0);
+      .find((e) => handIdentityName(e.personaName) === name && e.status !== 'provisioning' && e.botUserId > 0);
   }
 
   /** The entry that owns a hand name right now (alive, mid-spawn or awaiting cleanup). */
-  busy(suffix: string): BotEntry | undefined {
+  busy(suffix: string, selectedSession?: string): BotEntry | undefined {
     const s = suffix.toLowerCase();
-    return this.occupied().find((e) => e.suffix.toLowerCase() === s);
+    // Preserve the legacy suffix guard, but a rename alias may only occupy the
+    // selected identity. Session/email matches must not steal a spawn name.
+    return this.occupied().find((e) => e.suffix.toLowerCase() === s ||
+      (selectedSession === undefined || e.tmuxSession === selectedSession) &&
+      [e.friendlyName, ...(e.nameAliases ?? [])].some((name) => name !== undefined && handIdentityName(name) === handIdentityName(s)));
   }
 
   add(entry: BotEntry): void {

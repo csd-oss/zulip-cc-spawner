@@ -5,12 +5,13 @@ import { after, test } from 'node:test';
 import { LocalHost } from '../src/host.js';
 import { ClaudeLauncher, classifyStartup, keysForYes, yesOption } from '../src/launcher.js';
 import { isAbsentError, Tmux } from '../src/tmux.js';
-import { fakeClaude, testConfig, tmp } from './helpers.js';
+import { integrationTest, integrationEnabled, fakeClaude, testConfig, tmp } from './helpers.js';
 
 const dir = tmp();
 const cfg = testConfig(dir);
 const tmux = new Tmux(new LocalHost(), cfg.tmuxSocket);
 after(async () => {
+  if (!integrationEnabled) return;
   for (const s of await tmux.listSessions()) await tmux.killSession(s);
 });
 
@@ -32,7 +33,7 @@ test('startup screens are classified', () => {
   assert.equal(yesOption('   1. No (recommended)\n ❯ 2. Yes'), '2');
 });
 
-test('launch line: env file sourced, headers set, effort env cleared, seed passed verbatim', async () => {
+integrationTest('launch line: env file sourced, headers set, effort env cleared, seed passed verbatim', async () => {
   const seed = join(dir, 'seed.md');
   writeFileSync(seed, `Hi "there" — it's $(touch ${dir}/pwned) and \`backticks\`\n`);
   const launcher = new ClaudeLauncher(cfg, tmux);
@@ -73,7 +74,7 @@ test('launch line: env file sourced, headers set, effort env cleared, seed passe
   );
 });
 
-test('the API-key screen is answered with its Yes option', async () => {
+integrationTest('the API-key screen is answered with its Yes option', async () => {
   const d = tmp();
   const c = testConfig(d, { claudeBin: fakeClaude(d, 'api-key') });
   const t = new Tmux(new LocalHost(), c.tmuxSocket);
@@ -103,7 +104,7 @@ const API_KEY_ARROWS = [
   '  Enter to confirm · Esc to cancel',
 ].join('\n');
 
-test("a launch forgets the bridge's cached connection failure, and only that", async () => {
+integrationTest("a launch forgets the bridge's cached connection failure, and only that", async () => {
   const d = tmp();
   const c = testConfig(d);
   const cfgDir = join(d, 'claude-config');
@@ -123,7 +124,7 @@ test("a launch forgets the bridge's cached connection failure, and only that", a
   }
 });
 
-test('a missing or broken failure cache never stops a launch', async () => {
+integrationTest('a missing or broken failure cache never stops a launch', async () => {
   const d = tmp();
   const c = testConfig(d);
   const cfgDir = join(d, 'claude-config');
@@ -151,7 +152,7 @@ test('Yes on the API-key dialog: digits when numbered, arrows otherwise', () => 
   assert.equal(keysForYes('Do you want to use this API key?\n  ❯ No\n  Maybe', q), undefined);
 });
 
-test('the arrow-style API-key screen is answered Up, Enter', async () => {
+integrationTest('the arrow-style API-key screen is answered Up, Enter', async () => {
   const d = tmp();
   const c = testConfig(d, { claudeBin: fakeClaude(d, 'api-key-arrows') });
   const t = new Tmux(new LocalHost(), c.tmuxSocket);
@@ -167,7 +168,7 @@ test('the arrow-style API-key screen is answered Up, Enter', async () => {
   }
 });
 
-test('first-run consent screens abort with an operator instruction', async () => {
+integrationTest('first-run consent screens abort with an operator instruction', async () => {
   const d = tmp();
   const c = testConfig(d, { claudeBin: fakeClaude(d, 'bypass') });
   const t = new Tmux(new LocalHost(), c.tmuxSocket);
@@ -189,7 +190,7 @@ test('tmux 3.2a: "no current target" (server up, no sessions) means absent', () 
   assert.equal(isAbsentError({ stderr: 'sudo: a password is required\n' }), false);
 });
 
-test('tmux: absent sessions and absent servers are not errors; kill is confirmed', async () => {
+integrationTest('tmux: absent sessions and absent servers are not errors; kill is confirmed', async () => {
   const t = new Tmux(new LocalHost(), join(tmp(), 'no-server.sock'));
   assert.equal(await t.hasSession('nope'), false);
   assert.deepEqual(await t.listSessions(), []);

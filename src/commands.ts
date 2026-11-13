@@ -3,6 +3,8 @@
  *
  * Text grammar, over the message body with leading @-mentions stripped:
  *   spawn <model> [name=<friendly>] [effort=<level>]
+ *   rename <hand> <new-friendly-name>
+ *   model <hand> [<model>] [effort=<level>]
  *   models                (also: help models)
  *   list
  *   stop <name>            (alias: kill)
@@ -14,6 +16,8 @@
  */
 export type Command =
   | { kind: 'spawn'; model: string; friendly?: string; effort?: string; engine?: 'claude' | 'codex' }
+  | { kind: 'model'; target: string; model?: string; effort?: string }
+  | { kind: 'rename'; target: string; friendly: string }
   | { kind: 'models' }
   | { kind: 'list' }
   | { kind: 'stop'; target: string }
@@ -104,11 +108,13 @@ export function effortError(effort: string, model: string, engine?: Engine): str
 export const USAGE = [
   'Usage (mention me):',
   '`spawn <model> [name=<friendly>] [effort=<level>] [engine=codex|claude]` — spawn a hand whose home is this stream + topic (model explicit: fable-5-1, opus-5-5, sonnet-5-5, haiku-4-5, … or a full id; Claude effort: low, medium, high, xhigh, max, ultracode — kept across revivals, `effort=default` clears it)',
-  'Codex: `gpt-*` → `codex` CLI; other ids → `claude`. Override with `engine=codex|claude`. Names: `[cx-<model>] <name>` (Claude: `[cc-<model>] <name>`).',
+  'Codex: `gpt-*` → `codex` CLI; other ids → `claude`. Override with `engine=codex|claude`. Display names: `[cx-<model>] <name>` (Claude: `[cc-<model>] <name>`); new bot emails/tmux/workdirs use only `cx-<name>` / `cc-<name>`.',
   `Codex efforts: ${[...new Set(MODEL_CAPABILITIES.filter((r) => r.engine === 'codex').flatMap((r) => r.efforts))].join(', ')} (passed through; model-dependent).`,
+  '`model <hand> [<model>] [effort=...]` — live same-engine switch (creator/owner only); omit model to list the live menu',
+  '`rename <hand> <new-friendly-name>` — change the visible name only (creator/owner); old names remain aliases, including on revival',
   '`models` (or `help models`) — aliases, full ids, CLIs, allowed efforts and default behaviour',
   '`list` — show running hands',
-  '`stop <name>` — stop a hand (identity and conversation are kept; `spawn` the same model + name revives it)',
+  '`stop <name>` — stop a hand (identity and conversation are kept; `spawn` the same name revives it, optionally with a new home/model)',
   '`peek <name> [lines]` — DM yourself the hand\'s terminal tail (default 20 lines)',
   '`answer <name> <choice>` — answer a hand\'s pending question or permission prompt (`2`, `1,3`, `yes`/`no`, `text: …`, or `esc`)',
   '`press <name> <keys…>` — raw keystrokes into a hand\'s terminal (`press scout 1 enter`; keys: digits, `enter`, `esc`, `tab`, `up`/`down`, `ctrl-c`, or literal text)',
@@ -117,8 +123,7 @@ export const USAGE = [
 
 /**
  * Explicit model names → ids passed to `claude --model`. Bare family aliases
- * are refused: the CLI re-points them on upgrade, and the model token is part
- * of the hand's name — a name must keep meaning one model.
+ * are refused: the CLI re-points them on upgrade; launches must be explicit.
  */
 export const MODEL_ALIASES: Readonly<Record<string, string>> = {
   'fable-5-1': 'claude-fable-5-1',
@@ -252,7 +257,7 @@ export function stripMentions(content: string): string {
 
 /** Parse a message body (mentions already stripped). */
 export function parseCommand(body: string): Command {
-  const tokens: string[] = body.match(/@_?\*\*[^*]+\*\*|\[[a-z0-9-]+\]\s+[A-Za-z0-9-]+|\S+/gi) ?? [];
+  const tokens: string[] = body.match(/@_?\*\*[^*]+\*\*|\[[a-z0-9-]+(?:\/[a-z]+)?\]\s+[A-Za-z0-9-]+|\S+/gi) ?? [];
   if (tokens.length === 0) return { kind: 'help' };
   const verb = tokens[0].toLowerCase();
 
@@ -287,6 +292,31 @@ export function parseCommand(body: string): Command {
       }
       const command = buildSpawnCommand(model, friendly, effort, engine);
       return command.kind === 'spawn' && engine ? { ...command, engine } : command;
+    }
+    case 'model': {
+      if (!tokens[1]) return { kind: 'help', error: 'model needs a hand — `model <hand> [<model>] [effort=...]`' };
+      let model: string | undefined;
+      let effort: string | undefined;
+      for (const token of tokens.slice(2)) {
+        if (token.startsWith('effort=') && effort === undefined) effort = token.slice(7).toLowerCase();
+        else if (!model && MODEL_RE.test(token) && !token.includes('=')) model = token;
+        else return { kind: 'help', error: `unexpected token \`${token}\`` };
+      }
+      if (model) {
+        const validated = buildSpawnCommand(model, undefined, effort);
+        if (validated.kind !== 'spawn') return validated;
+        model = validated.model;
+      } else if (effort !== undefined && ![...EFFORT_LEVELS, ...CODEX_EFFORTS, EFFORT_DEFAULT].includes(effort)) {
+        return { kind: 'help', error: 'unknown effort level' };
+      }
+      return { kind: 'model', target: tokens[1], model, effort };
+    }
+    case 'rename': {
+      if (!tokens[1] || !tokens[2]) return { kind: 'help', error: 'rename needs a hand and a new name — `rename <hand> <new-friendly-name>`' };
+      const trailing = extra(3);
+      if (trailing) return trailing;
+      if (!FRIENDLY_RE.test(tokens[2])) return { kind: 'help', error: `bad name \`${tokens[2]}\` — use 1-24 chars of [A-Za-z0-9-]` };
+      return { kind: 'rename', target: tokens[1], friendly: tokens[2] };
     }
     case 'models':
       return extra(1) ?? { kind: 'models' };

@@ -59,7 +59,7 @@ const tester: Invoker = { userId: 1, name: 'Tester', kind: 'user' };
 
 function setup() {
   const dir = tmp();
-  const cfg = testConfig(dir);
+  const cfg = testConfig(dir, { allowedUsers: [1, 9], creatorOnlyControls: true, ownerUserId: 9 });
   const registry = new Registry(join(dir, 'r.json'));
   const e: BotEntry = {
     suffix: 'scout', personaName: 'Claude-Code-opus-5-5-scout', botUserId: 100, botEmail: 'b@x', tmuxSession: 'cc-opus-5-5-scout',
@@ -75,7 +75,7 @@ function setup() {
     config: cfg, registry, host: new LocalHost(), tmux: tmux as unknown as Tmux, provisioner: {} as Provisioner,
     launcher: {} as ClaudeLauncher, notifier: posts, watcher, groupCheck: async () => false, realm: 'x',
   });
-  const run = (text: string, where: Where = home) => actions.run({ cmd: parseCommand(text), body: text, where, invoker: tester });
+  const run = (text: string, where: Where = home, invoker = tester) => actions.run({ cmd: parseCommand(text), body: text, where, invoker });
   return { registry, tmux, posts, watcher, run, e };
 }
 
@@ -199,4 +199,25 @@ test('press keeps child_process command and private paths out of its reply', asy
   } finally {
     console.log = originalLog;
   }
+});
+
+test('permission answers require creator/owner; shared AskUserQuestion stays collaborative', async () => {
+  const s = setup();
+  for (const pane of [PERMISSION_PANE, ASK_PANE]) {
+    s.tmux.panes.set(s.e.tmuxSession, pane);
+    await s.watcher.sweep();
+    const result = await s.run('answer scout 1', home, { ...tester, userId: 9 });
+    assert.match(result.content, /Answer sent/);
+  }
+  s.tmux.keys = [];
+  s.tmux.panes.set(s.e.tmuxSession, PERMISSION_PANE);
+  await s.watcher.sweep();
+  // Change creator while retaining a generally allowed invoker.
+  s.e.spawnedBy = { userId: 2, username: 'Other' };
+  assert.match((await s.run('yes')).content, /Only this hand's creator/);
+  assert.deepEqual(s.tmux.keys, []);
+  s.tmux.panes.set(s.e.tmuxSession, ASK_PANE);
+  await s.watcher.sweep();
+  assert.match((await s.run('answer scout 1')).content, /Answer sent/);
+  assert.ok(s.tmux.keys.length > 0);
 });

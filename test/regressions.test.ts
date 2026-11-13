@@ -16,7 +16,7 @@ import { Registry, type BotEntry } from '../src/registry.js';
 import { Tmux } from '../src/tmux.js';
 import { TranscriptWatcher } from '../src/transcript-watch.js';
 import type { ZulipClient } from '../src/zulip.js';
-import { testConfig, tmp } from './helpers.js';
+import { integrationTest, testConfig, tmp } from './helpers.js';
 
 const home: Where = { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic: 'release' };
 const tester: Invoker = { userId: 1, name: 'Tester', kind: 'user' };
@@ -125,7 +125,7 @@ test('SudoHost: a refused sudo is an error, never "missing"', async () => {
   }
 });
 
-test('a missing env file stops the launch instead of running claude without it', async () => {
+integrationTest('a missing env file stops the launch instead of running claude without it', async () => {
   const dir = tmp();
   const cfg = testConfig(dir, { agentsEnvFile: join(dir, 'does-not-exist.env') });
   const tmux = new Tmux(new LocalHost(), cfg.tmuxSocket);
@@ -140,7 +140,7 @@ test('a missing env file stops the launch instead of running claude without it',
   );
 });
 
-test('a missing seed file stops the launch', async () => {
+integrationTest('a missing seed file stops the launch', async () => {
   const dir = tmp();
   const cfg = testConfig(dir);
   const tmux = new Tmux(new LocalHost(), cfg.tmuxSocket);
