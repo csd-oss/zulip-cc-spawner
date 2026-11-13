@@ -131,6 +131,8 @@ export class SpawnerActions {
         return { content: await this.spawn(inv, cmd) };
       case 'model':
         return { content: await this.model(inv, cmd) };
+      case 'rename':
+        return { content: await this.rename(inv, cmd.target, cmd.friendly) };
       case 'models':
         return { content: modelsListing() };
       case 'list':
@@ -192,7 +194,9 @@ export class SpawnerActions {
     }
     const exact = legacy ?? bracket;
     if (!exact && histories.size > 1) return 'Ambiguous historical name — use a distinct hand name; nothing was changed.';
-    const prior = exact ? histories.get(exact.tmuxSession) ?? exact : [...histories.values()][0];
+    const renamed = registry.renamedHands(cmd.friendly ?? suffix);
+    if (renamed.length > 1) return 'Ambiguous historical name — use a distinct hand name; nothing was changed.';
+    const prior = renamed[0] ?? (exact ? histories.get(exact.tmuxSession) ?? exact : [...histories.values()][0]);
     if (prior && /^\[/.test(prior.personaName) && !prior.nameScheme) return 'Name collision with a legacy persona — pick another name.';
     const personaName = prior?.personaName ?? names.personaName;
     const shortName = prior?.tmuxSession ?? names.shortName;
@@ -244,7 +248,8 @@ export class SpawnerActions {
     if (workDir && resolve(workDir) === resolve(paths.dir)) return 'workRoot must be separate from handsDir — refusing a non-empty working directory.';
     const now = new Date().toISOString();
     const entry: BotEntry = {
-      suffix,
+      suffix: prior?.friendlyName !== undefined ? prior.suffix : suffix,
+      ...(prior?.friendlyName !== undefined ? { friendlyName: prior.friendlyName, nameAliases: [...(prior.nameAliases ?? [])] } : {}),
       personaName,
       botUserId: 0,
       botEmail: '',
@@ -387,13 +392,50 @@ export class SpawnerActions {
     return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or the owner (user ${this.d.config.ownerUserId ?? 9}) may rehome or change its model, send raw keys, or answer permission prompts.`;
   }
 
+  private async rename(inv: Invocation, target: string, friendly: string): Promise<string> {
+    const { registry } = this.d;
+    const matches = registry.matchingHands(target);
+    if (!matches.length) return `No hand matches \`${target}\` — try \`list\`.`;
+    if (matches.length !== 1) return 'Ambiguous hand name — use its bot email or tmux session; nothing was changed.';
+    const entry = matches[0];
+    if (!this.owns(inv, entry)) return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or the owner (user ${this.d.config.ownerUserId ?? 9}) may rename it.`;
+    if (entry.status === 'provisioning') return 'Cannot rename a hand while it is provisioning — try again after startup.';
+    if (!entry.botUserId) return 'Cannot rename a hand without a provisioned Zulip bot.';
+    let fullName: string;
+    try {
+      // Keep the existing label (including effort); only the friendly part changes.
+      handName(entry.model, friendly, entry.harness ?? (entry.engine === 'codex' ? 'cx' : 'cc'), entry.effort);
+      fullName = entry.personaName.startsWith('[')
+        ? entry.personaName.replace(/^(\[[^\]]+\] ).+$/, `$1${friendly}`)
+        : modelDisplayName({ ...entry, friendlyName: friendly }, entry.model);
+      if (fullName.length > 49) return 'Hand name too long — Zulip persona must be at most 49 characters.';
+    } catch {
+      return 'Invalid hand name — use 1-24 chars of [A-Za-z0-9-]; Zulip persona must be at most 49 characters.';
+    }
+    if (registry.nameCollision(friendly, entry)) return `Name collision: \`${friendly}\` is already a name or alias of another hand.`;
+    const oldName = entry.personaName;
+    const oldFriendly = entry.friendlyName ?? oldName.match(/^\[[^\]]+\] (.+)$/)?.[1] ?? entry.suffix;
+    const aliases = [...new Set([...(entry.nameAliases ?? []), entry.suffix, oldFriendly, oldName])];
+    try {
+      await this.d.provisioner.rename(entry.botUserId, fullName);
+    } catch (err) {
+      log(`rename ${entry.tmuxSession}: ${(err as Error).message}`);
+      return 'Could not rename the Zulip bot; registry name and aliases unchanged. Try again.';
+    }
+    registry.update(entry, { personaName: fullName, friendlyName: friendly, nameAliases: aliases, nameScheme: entry.nameScheme ?? 'bracket-v1' });
+    return `Renamed **${oldName}** to **${fullName}**. Old names remain aliases; same bot, session, workdir and conversation.`;
+  }
+
   /** Model truth is committed before the cosmetic rename. A PATCH failure must
    * never roll back a successful session switch or lose the existing bot. */
   private async renameModel(entry: BotEntry): Promise<string> {
     try {
       const fullName = modelDisplayName(entry, entry.model);
       await this.d.provisioner.rename(entry.botUserId, fullName);
-      this.d.registry.update(entry, { personaName: fullName, nameScheme: entry.nameScheme ?? 'bracket-v1' });
+      this.d.registry.update(entry, {
+        ...(entry.friendlyName !== undefined ? { nameAliases: [...new Set([...(entry.nameAliases ?? []), entry.personaName])] } : {}),
+        personaName: fullName, nameScheme: entry.nameScheme ?? 'bracket-v1',
+      });
       return '';
     } catch (err) {
       log(`rename ${entry.tmuxSession}: ${(err as Error).message}`);
@@ -607,7 +649,7 @@ export class SpawnerActions {
     const sessions = await this.d.tmux.listSessions();
     for (let i = 0; i < 16; i++) {
       const s = randomBytes(2).toString('hex');
-      if (!this.d.registry.all().some((e) => e.suffix.toLowerCase() === s) && !sessions.some((n) => n.endsWith(`-${s}`))) return s;
+      if (!this.d.registry.all().some((e) => e.suffix.toLowerCase() === s) && !this.d.registry.renamedHands(s).length && !sessions.some((n) => n.endsWith(`-${s}`))) return s;
     }
     throw new Error('could not find a free suffix');
   }

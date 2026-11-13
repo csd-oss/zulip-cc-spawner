@@ -28,7 +28,8 @@ export function handName(model: string, friendly: string, harness = inferEngine(
 }
 
 /** Display name only: never derive persistent paths from a changed model. */
-export function modelDisplayName(entry: { personaName: string; suffix: string; harness?: string; engine?: string; effort?: string }, model: string): string {
+export function modelDisplayName(entry: { personaName: string; suffix: string; friendlyName?: string; harness?: string; engine?: string; effort?: string }, model: string): string {
+  if (entry.friendlyName !== undefined) return handName(model, entry.friendlyName, entry.harness ?? (entry.engine === 'codex' ? 'cx' : 'cc'), entry.effort).personaName;
   const bracket = entry.personaName.match(/^\[[^\]]+\] (.+)$/);
   if (bracket) return handName(model, bracket[1], entry.harness ?? (entry.engine === 'codex' ? 'cx' : 'cc'), entry.effort).personaName;
   return handName(model, entry.suffix, entry.harness ?? (entry.engine === 'codex' ? 'cx' : 'cc'), entry.effort).personaName;

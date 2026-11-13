@@ -3,6 +3,7 @@
  *
  * Text grammar, over the message body with leading @-mentions stripped:
  *   spawn <model> [name=<friendly>] [effort=<level>]
+ *   rename <hand> <new-friendly-name>
  *   model <hand> [<model>] [effort=<level>]
  *   models                (also: help models)
  *   list
@@ -16,6 +17,7 @@
 export type Command =
   | { kind: 'spawn'; model: string; friendly?: string; effort?: string; engine?: 'claude' | 'codex' }
   | { kind: 'model'; target: string; model?: string; effort?: string }
+  | { kind: 'rename'; target: string; friendly: string }
   | { kind: 'models' }
   | { kind: 'list' }
   | { kind: 'stop'; target: string }
@@ -109,6 +111,7 @@ export const USAGE = [
   'Codex: `gpt-*` → `codex` CLI; other ids → `claude`. Override with `engine=codex|claude`. Display names: `[cx-<model>] <name>` (Claude: `[cc-<model>] <name>`); new bot emails/tmux/workdirs use only `cx-<name>` / `cc-<name>`.',
   `Codex efforts: ${[...new Set(MODEL_CAPABILITIES.filter((r) => r.engine === 'codex').flatMap((r) => r.efforts))].join(', ')} (passed through; model-dependent).`,
   '`model <hand> [<model>] [effort=...]` — live same-engine switch (creator/owner only); omit model to list the live menu',
+  '`rename <hand> <new-friendly-name>` — change the visible name only (creator/owner); old names remain aliases, including on revival',
   '`models` (or `help models`) — aliases, full ids, CLIs, allowed efforts and default behaviour',
   '`list` — show running hands',
   '`stop <name>` — stop a hand (identity and conversation are kept; `spawn` the same name revives it, optionally with a new home/model)',
@@ -307,6 +310,13 @@ export function parseCommand(body: string): Command {
         return { kind: 'help', error: 'unknown effort level' };
       }
       return { kind: 'model', target: tokens[1], model, effort };
+    }
+    case 'rename': {
+      if (!tokens[1] || !tokens[2]) return { kind: 'help', error: 'rename needs a hand and a new name — `rename <hand> <new-friendly-name>`' };
+      const trailing = extra(3);
+      if (trailing) return trailing;
+      if (!FRIENDLY_RE.test(tokens[2])) return { kind: 'help', error: `bad name \`${tokens[2]}\` — use 1-24 chars of [A-Za-z0-9-]` };
+      return { kind: 'rename', target: tokens[1], friendly: tokens[2] };
     }
     case 'models':
       return extra(1) ?? { kind: 'models' };

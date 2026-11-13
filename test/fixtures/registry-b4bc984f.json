@@ -1,0 +1,55 @@
+[
+  {
+    "suffix": "scout",
+    "personaName": "[cc-sonnet-5-5] Scout",
+    "botUserId": 42,
+    "botEmail": "cc-sonnet-5-5-scout-bot@example.invalid",
+    "tmuxSession": "cc-sonnet-5-5-scout",
+    "streamName": "cc-hands",
+    "streamId": 7,
+    "topic": "old",
+    "handDir": "/offline/hand-files/cc-sonnet-5-5-scout",
+    "workDir": "/offline/work/cc-sonnet-5-5-scout",
+    "workDirReady": true,
+    "nameScheme": "bracket-v1",
+    "harness": "cc",
+    "engine": "claude",
+    "model": "claude-sonnet-5-5",
+    "effort": "high",
+    "sessionId": "12345678-1234-1234-1234-123456789abc",
+    "spawnedBy": {
+      "userId": 1,
+      "username": "Creator"
+    },
+    "spawnedAt": "2026-11-01T00:00:00.000Z",
+    "lastActivity": "2026-11-01T00:01:00.000Z",
+    "status": "reaped",
+    "endReason": "stopped by Creator (1)",
+    "seedFile": "/offline/hand-files/cc-sonnet-5-5-scout/seed.md",
+    "transcriptOffset": 3
+  },
+  {
+    "suffix": "legacy",
+    "personaName": "Claude-Code-opus-5-5-legacy",
+    "botUserId": 43,
+    "botEmail": "cc-sonnet-5-5-scout-bot@example.invalid",
+    "tmuxSession": "cc-opus-5-5-legacy",
+    "streamName": "cc-hands",
+    "streamId": 7,
+    "topic": "old",
+    "handDir": "/offline/hand-files/cc-sonnet-5-5-scout",
+    "model": "claude-sonnet-5-5",
+    "effort": "high",
+    "sessionId": "12345678-1234-1234-1234-123456789abc",
+    "spawnedBy": {
+      "userId": 1,
+      "username": "Creator"
+    },
+    "spawnedAt": "2026-11-01T00:00:00.000Z",
+    "lastActivity": "2026-11-01T00:01:00.000Z",
+    "status": "reaped",
+    "endReason": "stopped by Creator (1)",
+    "seedFile": "/offline/hand-files/cc-sonnet-5-5-scout/seed.md",
+    "transcriptOffset": 3
+  }
+]

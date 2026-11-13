@@ -16,6 +16,7 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 ```
 @**CC Spawner** spawn opus-5-5 [name=scout] [effort=high]   # home = this stream + topic
 @**CC Spawner** model scout [opus-5-5] [effort=medium]    # live switch; omit model to list
+@**CC Spawner** rename scout Pathfinder                      # visible name only; creator/owner
 @**CC Spawner** models                                     # also: help models
 @**CC Spawner** list
 @**CC Spawner** stop scout                                   # alias: kill
@@ -143,6 +144,22 @@ characters and 44 email-local-part characters including `-bot`. These are
 local compatibility budgets; actual Zulip server limits are **GUESS**, not
 verified against a live server. Full bracket names, legacy names, short names,
 and suffixes work with stop/peek/answer.
+
+`rename <hand> <new-friendly-name>` works on running or stopped hands, only for
+its original creator or the configured owner. Names use 1–24 ASCII letters,
+digits or hyphens; the whole persona must fit 49 characters. It PATCHes only
+the Zulip full name: bot email, tmux session, handDir, workDir,
+`ZULIP_SESSION_ID`, and conversation id never change. Provisioning hands and
+names/aliases reserved by another hand are refused. The new name and all old
+names resolve to that same hand for stop/peek/press/model and `spawn … name=…`
+(including revival/rehome); `list` shows the new name. Model/effort changes keep
+the custom friendly name. For example, after `rename scout Pathfinder`, either
+`spawn opus-5-5 name=Pathfinder` or `spawn opus-5-5 name=scout` revives it.
+Registry metadata is additive and optional (`friendlyName`, `nameAliases`);
+old registries load without migration, and history entries are not rewritten.
+Older spawner versions can still load/save the JSON, but do not implement the
+new aliases or rename-aware revival. Read compatibility is not a guarantee that
+an older binary can manage renamed hands.
 
 `workRoot` optionally sets the root for new hands' working directories. Its
 default is `<projectDir>/hands`; each hand uses `<root>/<short-name>`, created

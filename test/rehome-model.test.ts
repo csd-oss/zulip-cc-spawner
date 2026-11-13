@@ -35,6 +35,7 @@ function fixture(overrides: Partial<SpawnerConfig> = {}) {
   const tmux = {
     async hasSession() { return state.running; },
     async listSessions() { return []; },
+    async sessionUptime() { return 60; },
     async killSession() { state.running = false; },
     async newSession(_s: string, _cwd: string, cmd: string) { state.codexCommand = cmd; state.running = true; },
     async capturePane() { return state.escaped ? 'Ask Codex to do anything\n? for shortcuts' : state.panes[Math.min(state.capture++, state.panes.length - 1)]; },
@@ -518,4 +519,176 @@ test('unconfirmed effort-only revival keeps prior default and display name', asy
   assert.equal(f.registry.alive()[0].effort, undefined);
   assert.equal(f.registry.alive()[0].personaName, '[cc-sonnet-5-5/d] Scout');
   assert.deepEqual(f.renames, []);
+});
+
+// Explicit rename is display-only; the stable suffix is intentionally not renamed.
+for (const user of [1, 9]) test(`user ${user} renames a live hand without touching terminal, files or continuity`, async () => {
+  const f = fixture(); const history = f.prior(); const historical = structuredClone(history);
+  await f.run('spawn sonnet-5-5 name=scout');
+  const e = f.registry.alive()[0]; const before = structuredClone(e);
+  const bridgePath = join(e.handDir, 'mcpl-bridge.json');
+  const bridge = readFileSync(bridgePath, 'utf8'); const seed = readFileSync(e.seedFile, 'utf8');
+  const launchCount = f.launches.length; const subscriptionCount = f.subscriptions.length;
+  const result = await f.run('rename scout Pathfinder', home, user);
+  assert.equal(result.content, 'Renamed **[cc-sonnet-5-5/h] Scout** to **[cc-sonnet-5-5/h] Pathfinder**. Old names remain aliases; same bot, session, workdir and conversation.');
+  assert.deepEqual(f.renames.at(-1), [42, '[cc-sonnet-5-5/h] Pathfinder']);
+  const { personaName, friendlyName, nameAliases, ...unchanged } = e;
+  const { personaName: _oldName, ...original } = before;
+  assert.deepEqual(unchanged, original, 'only three display/alias fields change');
+  assert.equal(friendlyName, 'Pathfinder'); assert.ok(nameAliases?.includes('Scout'));
+  assert.equal(f.state.running, true); assert.equal(f.launches.length, launchCount);
+  assert.equal(f.subscriptions.length, subscriptionCount); assert.deepEqual(f.keys, []); assert.deepEqual(f.texts, []);
+  assert.equal(readFileSync(bridgePath, 'utf8'), bridge); assert.equal(readFileSync(e.seedFile, 'utf8'), seed);
+  assert.equal(JSON.parse(bridge).servers.zulip.transport.env.ZULIP_SESSION_ID, before.tmuxSession);
+  assert.deepEqual(history, historical, 'earlier launch entry untouched');
+  for (const target of ['Pathfinder', 'scout', before.personaName]) assert.equal(f.registry.findAlive(target), e);
+  assert.match((await f.run('list')).content, /Pathfinder/);
+  assert.match((await f.run('peek Pathfinder')).content, /Pathfinder/);
+  assert.match((await f.run('press Pathfinder esc')).content, /Sent `Escape`/);
+  assert.match((await f.run('stop Pathfinder')).content, /Stopped/);
+});
+
+for (const alias of ['Pathfinder', 'scout', 'Scout']) test(`stopped rename and revival/rehome via ${alias} retain new name and session`, async () => {
+  const f = fixture(); const e = f.prior(); const before = structuredClone(e);
+  assert.match((await f.run('rename scout Pathfinder')).content, /Renamed/);
+  const renamedHistory = structuredClone(e);
+  assert.equal(f.state.running, false); assert.equal(f.launches.length, 0);
+  const persisted = new Registry(join(f.dir, 'registry.json')); persisted.load();
+  assert.equal(persisted.latestFor('Pathfinder')?.friendlyName, 'Pathfinder');
+  assert.match((await f.run(`spawn opus-5-5 name=${alias} effort=medium`, elsewhere)).content, /Revived/);
+  const current = f.registry.alive()[0];
+  assert.equal(current.personaName, '[cc-opus-5-5/med] Pathfinder');
+  assert.equal(current.suffix, 'scout'); assert.equal(current.friendlyName, 'Pathfinder');
+  for (const key of ['botUserId', 'botEmail', 'tmuxSession', 'handDir', 'workDir', 'sessionId'] as const) assert.equal(current[key], before[key], key);
+  assert.equal(current.topic, 'new'); assert.equal(f.launches[0].resume, true);
+  assert.equal(JSON.parse(readFileSync(join(current.handDir, 'mcpl-bridge.json'), 'utf8')).servers.zulip.transport.env.ZULIP_SESSION_ID, before.tmuxSession);
+  assert.deepEqual(e, renamedHistory, 'revival appends rather than rewriting old history');
+  assert.equal(f.registry.latestFor(before.personaName), current);
+  assert.equal(f.registry.findAlive('Pathfinder'), current); assert.equal(f.registry.findAlive('scout'), current);
+  await f.run('stop Pathfinder');
+  assert.match((await f.run('spawn sonnet-5-5 name=Pathfinder', elsewhere)).content, /Revived/);
+  assert.equal(f.registry.alive()[0].sessionId, before.sessionId);
+});
+
+for (const engine of ['claude', 'codex'] as const) test(`${engine} live model/effort rename keeps custom friendly name and aliases`, async () => {
+  const f = live(engine); const before = structuredClone(f.e);
+  await f.run('rename scout Pathfinder');
+  const customName = f.e.personaName;
+  assert.match((await f.run(`model Pathfinder ${engine === 'claude' ? 'opus-5-5' : 'gpt-6.1-terra effort=medium'}`)).content, /without stopping/);
+  assert.equal(f.e.personaName, engine === 'claude' ? '[cc-opus-5-5/h] Pathfinder' : '[cx-gpt-6-1-terr/med] Pathfinder');
+  for (const target of ['scout', 'Pathfinder', before.personaName, customName]) assert.equal(f.registry.findAlive(target), f.e);
+  assert.equal(f.state.running, true); assert.equal(f.launches.length, 0);
+  for (const key of ['tmuxSession', 'workDir', 'handDir', 'botEmail', 'sessionId'] as const) assert.equal(f.e[key], before[key]);
+});
+
+test('repeated and case-only renames retain every old alias without duplicates', async () => {
+  const f = live();
+  for (const [old, next] of [['scout', 'Pathfinder'], ['Pathfinder', 'Guide'], ['Guide', 'guide'], ['scout', 'Scout']]) {
+    assert.match((await f.run(`rename ${old} ${next}`)).content, /Renamed/);
+  }
+  for (const target of ['scout', 'Pathfinder', 'Guide', 'guide']) assert.equal(f.registry.findAlive(target), f.e);
+  assert.equal(f.e.nameAliases?.length, new Set(f.e.nameAliases).size);
+});
+
+for (const user of [2, 9, 10]) test(`rename respects configured owner and creator (caller ${user})`, async () => {
+  const f = fixture({ ownerUserId: 10 }); const e = f.prior(); const before = structuredClone(e);
+  const result = await f.run('rename scout Pathfinder', home, user);
+  if (user === 10) assert.match(result.content, /Renamed/);
+  else {
+    assert.equal(result.content, "Only this hand's creator (user 1) or the owner (user 10) may rename it.");
+    assert.deepEqual(e, before); assert.deepEqual(f.renames, []);
+  }
+});
+
+test('unknown historical creator does not become the caller; only owner may rename', async () => {
+  const f = fixture(); const e = f.prior({ spawnedBy: undefined });
+  assert.match((await f.run('rename scout Pathfinder')).content, /creator \(user unknown\)/);
+  assert.match((await f.run('rename scout Pathfinder', home, 9)).content, /Renamed/);
+  assert.equal(e.spawnedBy, undefined);
+});
+
+for (const status of ['alive', 'reaped', 'failed', 'cleanup', 'provisioning'] as const) test(`rename rejects another ${status} hand's current name, suffix and aliases`, async () => {
+  const f = live(); const before = structuredClone(f.e);
+  f.prior({ suffix: 'other', personaName: '[cc-opus-5-5/h] Taken', friendlyName: 'Taken', nameAliases: ['Reserved'], tmuxSession: 'cc-other', botUserId: 43, status });
+  for (const name of ['TAKEN', 'Other', 'reserved', 'cc-other']) {
+    assert.equal((await f.run(`rename scout ${name}`)).content, `Name collision: \`${name}\` is already a name or alias of another hand.`);
+  }
+  assert.deepEqual(f.e, before); assert.deepEqual(f.renames, []);
+});
+
+test('unrenamed bracket friendly name is reserved even when different from suffix', async () => {
+  const f = live(); f.prior({ suffix: 'other', personaName: '[cc-opus-5-5] Taken', tmuxSession: 'cc-other', botUserId: 43 });
+  assert.match((await f.run('rename scout Taken')).content, /Name collision/);
+});
+
+test('rename refuses provisioning and missing bot without PATCH or state mutation', async () => {
+  for (const patch of [{ status: 'provisioning' as const }, { botUserId: 0, status: 'failed' as const }]) {
+    const f = fixture(); const e = f.prior(patch); const before = structuredClone(e);
+    assert.match((await f.run('rename scout Pathfinder')).content, /Cannot rename/);
+    assert.deepEqual(e, before); assert.deepEqual(f.renames, []);
+  }
+});
+
+test('rename failure leaves names, aliases and every continuity field unchanged', async () => {
+  const f = live(); const before = structuredClone(f.e); f.state.failRename = true;
+  assert.equal((await f.run('rename scout Pathfinder')).content, 'Could not rename the Zulip bot; registry name and aliases unchanged. Try again.');
+  assert.deepEqual(f.e, before); assert.deepEqual(f.renames, []); assert.deepEqual(f.keys, []);
+  assert.equal(f.registry.findAlive('Pathfinder'), undefined);
+});
+
+test('rename rejects invalid characters/length and enforces the complete 49-character persona budget', async () => {
+  const f = fixture(); const e = f.prior({ personaName: `[${'x'.repeat(27)}] Scout` });
+  for (const bad of ['bad_name', 'bad.name', 'bad!', 'a'.repeat(25), 'дві']) {
+    assert.match((await f.run(`rename scout ${bad}`)).content, /bad name/);
+  }
+  assert.equal((await f.run(`rename scout ${'a'.repeat(20)}`)).content, 'Hand name too long — Zulip persona must be at most 49 characters.');
+  assert.deepEqual(f.renames, []);
+  assert.match((await f.run(`rename scout ${'a'.repeat(19)}`)).content, /Renamed/);
+  assert.equal(e.personaName.length, 49);
+});
+
+test('legacy pre-bracket hand can rename and revive without changing stable paths', async () => {
+  const f = fixture(); const e = f.prior({ personaName: 'Claude-Code-sonnet-5-5-scout', nameScheme: undefined, tmuxSession: 'cc-sonnet-5-5-scout' });
+  assert.match((await f.run('rename scout Pathfinder')).content, /Renamed/);
+  assert.match((await f.run('spawn sonnet-5-5 name=Pathfinder')).content, /Revived/);
+  assert.equal(f.registry.alive()[0].tmuxSession, e.tmuxSession);
+  assert.equal(f.registry.alive()[0].sessionId, e.sessionId);
+});
+
+test('renamed busy hand cannot be respawned under either name, including another model/engine', async () => {
+  const f = live(); await f.run('rename scout Pathfinder');
+  for (const name of ['scout', 'Pathfinder']) for (const model of ['opus-5-5', 'gpt-6-sol']) {
+    assert.match((await f.run(`spawn ${model} name=${name}`)).content, /is taken/);
+  }
+  assert.equal(f.launches.length, 0); assert.equal(f.registry.all().length, 1);
+});
+
+test('effort-only Codex menu flow preserves custom name', async () => {
+  const f = live('codex');
+  await f.run('rename scout Pathfinder');
+  f.state.panes = ['Ask Codex to do anything', CODEX_MODELS]; f.state.capture = 0;
+  assert.match((await f.run('model Pathfinder effort=medium')).content, /menu posted/);
+  f.state.capture = 0; f.state.panes = ['Ask Codex to do anything', CODEX_MODELS, CODEX_REASONING, CODEX_CHANGED];
+  assert.match((await f.run('answer Pathfinder 6')).content, /without stopping/);
+  assert.equal(f.e.friendlyName, 'Pathfinder');
+  assert.equal(f.e.personaName, '[cx-gpt-6-1-terr/med] Pathfinder');
+});
+
+test('rename via full mention works in a DM, and unknown or ambiguous targets do not PATCH', async () => {
+  const f = live();
+  assert.equal((await f.run('rename missing Guide')).content, 'No hand matches `missing` — try `list`.');
+  assert.deepEqual(f.renames, []);
+  const result = await f.run('rename @**[cc-sonnet-5-5] Scout|42** Pathfinder', { kind: 'dm', userIds: [1] });
+  assert.match(result.content, /Renamed/);
+  f.prior({ suffix: 'scout', personaName: '[cc-opus-5-5] Scout', tmuxSession: 'cc-another', botUserId: 43 });
+  const count = f.renames.length;
+  assert.equal((await f.run('rename scout Guide')).content, 'Ambiguous hand name — use its bot email or tmux session; nothing was changed.');
+  assert.equal(f.renames.length, count);
+  assert.match((await f.run('rename cc-scout Guide')).content, /Renamed/);
+});
+
+for (const alias of ['Pathfinder', 'scout']) test(`renamed rehome/model revival via ${alias} does not bypass ownership`, async () => {
+  const f = fixture(); f.prior(); await f.run('rename scout Pathfinder');
+  assert.match((await f.run(`spawn opus-5-5 name=${alias}`, elsewhere, 2)).content, /Only this hand's creator/);
+  assert.equal(f.launches.length, 0); assert.deepEqual(f.subscriptions, []);
 });

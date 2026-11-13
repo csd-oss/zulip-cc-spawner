@@ -22,6 +22,10 @@ export interface BotEntry {
   suffix: string;
   /** The hand's Zulip full name, e.g. Claude-Code-opus-5-5-scout. */
   personaName: string;
+  /** Set only by explicit rename; suffix and all session identifiers stay fixed. */
+  friendlyName?: string;
+  /** Previous friendly/full names, reserved to this tmux identity across launches. */
+  nameAliases?: string[];
   /** The hand's Zulip bot. Its API key is never stored here (owner can read it
    *  back). 0/'' while provisioning has not created or found it yet. */
   botUserId: number;
@@ -113,14 +117,35 @@ export class Registry {
 
   /** An ALIVE entry by suffix, persona name, bot email or tmux session. */
   findAlive(target: string): BotEntry | undefined {
-    const t = target.toLowerCase().replace(/^@\*\*|\*\*$/g, '');
-    return this.alive().find(
-      (e) =>
-        e.suffix.toLowerCase() === t ||
-        handIdentityName(e.personaName) === handIdentityName(t) ||
-        e.botEmail.toLowerCase() === t ||
-        e.tmuxSession.toLowerCase() === t,
-    );
+    return this.alive().find((e) => this.matches(e, target));
+  }
+
+  private matches(e: BotEntry, target: string): boolean {
+    const t = handIdentityName(target.toLowerCase().replace(/^@_?\*\*|(?:\|\d+)?\*\*$/g, ''));
+    return [e.suffix, e.personaName, e.botEmail, e.tmuxSession, e.friendlyName, ...(e.nameAliases ?? [])]
+      .some((name) => name !== undefined && handIdentityName(name) === t);
+  }
+
+  /** Latest launch per stable identity, without mutating historical records. */
+  private currentHands(): BotEntry[] {
+    return [...new Map(this.entries.map((e) => [e.tmuxSession, e])).values()];
+  }
+
+  matchingHands(target: string): BotEntry[] {
+    return this.currentHands().filter((e) => this.matches(e, target));
+  }
+
+  /** Explicit renames opt into alias-aware revival; legacy selection is unchanged. */
+  renamedHands(target: string): BotEntry[] {
+    return this.matchingHands(target).filter((e) => e.friendlyName !== undefined);
+  }
+
+  /** All historical names remain reserved, including stopped/failed hands. */
+  nameCollision(friendly: string, hand: BotEntry): boolean {
+    const t = friendly.toLowerCase();
+    return this.entries.some((e) => e.tmuxSession !== hand.tmuxSession && (
+      this.matches(e, friendly) || e.personaName.match(/^\[[^\]]+\] (.+)$/)?.[1].toLowerCase() === t
+    ));
   }
 
   /** Current launch, including activity during startup; never stopped history. */
@@ -136,7 +161,8 @@ export class Registry {
    */
   latestFor(personaName: string): BotEntry | undefined {
     const name = handIdentityName(personaName);
-    return [...this.entries]
+    const renamed = this.renamedHands(personaName).find((e) => e.status !== 'provisioning' && e.botUserId > 0);
+    return renamed ?? [...this.entries]
       .reverse()
       .find((e) => handIdentityName(e.personaName) === name && e.status !== 'provisioning' && e.botUserId > 0);
   }
@@ -144,7 +170,7 @@ export class Registry {
   /** The entry that owns a hand name right now (alive, mid-spawn or awaiting cleanup). */
   busy(suffix: string): BotEntry | undefined {
     const s = suffix.toLowerCase();
-    return this.occupied().find((e) => e.suffix.toLowerCase() === s);
+    return this.occupied().find((e) => e.suffix.toLowerCase() === s || e.friendlyName !== undefined && this.matches(e, suffix));
   }
 
   add(entry: BotEntry): void {
