@@ -209,11 +209,11 @@ test('registry removal atomic-write failure restores in-memory entries', () => {
   assert.deepEqual(JSON.parse(readFileSync(f.registryFile + '.saved', 'utf8')), [e]);
 });
 
-test('list stopped: latest identity once, creator/name/home/activity; list unchanged and replies here or in invoking DM', async () => {
-  const f = fixture(); f.add(); f.add({ lastActivity: '2026-11-12T01:02:03Z' });
-  f.add({ tmuxSession: 'cc-live', suffix: 'live', personaName: 'Live', status: 'alive' });
+test('list stopped: latest identity once, creator/name/home/activity; running list and replies here or in invoking DM', async () => {
+  const f = fixture(); f.add(); f.add({ lastActivity: new Date(Date.now() - 2 * 86400_000).toISOString() });
+  f.add({ tmuxSession: 'cc-live', suffix: 'live', personaName: 'Live', friendlyName: 'Live', status: 'alive' });
   let result = await f.run('list stopped');
-  assert.match(result.content, /1 stopped hand/); assert.match(result.content, /\[cc-opus-5-5\] Pathfinder.*Pathfinder.*Creator.*#cc-hands > home topic.*2026-11-12T01:02:03Z/);
+  assert.match(result.content, /1 stopped hand/); assert.match(result.content, /\*\*Pathfinder\*\*.*#\*\*cc-hands>home topic\*\*.*\d+ d ago.*Creator/);
   assert.equal(result.content.includes('Live'), false); assert.equal(result.private, undefined);
   result = await f.run('list'); assert.match(result.content, /Live/); assert.equal(result.content.includes('Pathfinder'), false);
   result = await f.run('list stopped', 1, { kind: 'dm', userIds: [1] }); assert.equal(result.private, undefined); assert.match(result.content, /1 stopped hand/);
@@ -222,10 +222,10 @@ test('list stopped: latest identity once, creator/name/home/activity; list uncha
 test('list stopped: absent creator/activity, id fallback, no stopped hands and failed liveness', async () => {
   const f = fixture(); assert.equal((await f.run('list stopped')).content, 'No stopped hands.');
   f.add({ spawnedBy: undefined, lastActivity: undefined as unknown as string });
-  assert.match((await f.run('list stopped')).content, /creator: unknown, home/);
+  assert.match((await f.run('list stopped')).content, /activity unknown \| unknown \|/);
   assert.equal((await f.run('list stopped')).content.includes('last activity'), false);
   f.registry.update(f.registry.all()[0], { spawnedBy: { userId: 123, username: '' } });
-  assert.match((await f.run('list stopped')).content, /creator: 123/);
+  assert.match((await f.run('list stopped')).content, /\| 123 \|/);
   f.state.process = true; assert.equal((await f.run('list stopped')).content, 'No stopped hands.');
   f.state.process = false; f.state.failProcess = true; assert.match((await f.run('list stopped')).content, /Could not verify stopped/);
 });
@@ -387,11 +387,12 @@ test('delete: legacy launched hand has no deletion authority from status or read
 
 test('list stopped: failed hand names and check stages do not hide verified stopped hands', async () => {
   const f = fixture(); f.add();
-  const other = f.add({ suffix: 'other', personaName: 'Other', tmuxSession: 'cc-other',
+  const other = f.add({ suffix: 'other', friendlyName: 'Other', personaName: 'Other', tmuxSession: 'cc-other',
     handDir: join(f.config.handsDir, 'cc-other'), workDir: join(f.dir, 'hands', 'cc-other') });
   f.tmux.hasSession = async s => { if (s === other.tmuxSession) throw Error('private diagnostic'); return false; };
   let result = await f.run('list stopped');
   assert.match(result.content, /1 stopped hand/);
+  assert.match(result.content, /\|\n\n\* Could not verify stopped hand/);
   assert.match(result.content, /Could not verify stopped hand \*\*Other\*\*.*tmux liveness check failed/);
   assert.doesNotMatch(result.content, /private diagnostic/);
   f.state.failProcess = true;
@@ -795,7 +796,7 @@ function legacy(f: ReturnType<typeof fixture>, patch: Partial<BotEntry> = {}) {
 async function forcePreview(f: ReturnType<typeof fixture>) {
   const reply = (await f.run('delete scout confirm force-legacy', 9)).content;
   assert.match(reply, /Force-legacy preview/);
-  const command = reply.match(/delete cc-scout confirm force-legacy [a-f0-9]+/)![0];
+  const command = reply.match(/delete [^` ]+ confirm force-legacy [a-f0-9]+/)![0];
   return { reply, command };
 }
 
@@ -856,7 +857,7 @@ test('list stopped size sort and creator filters combine; unknown does not mean 
   const other = legacy(f, { suffix: 'other', friendlyName: 'Other', personaName: 'Other', tmuxSession: 'cc-other', handDir: join(f.config.handsDir, 'cc-other'), workDir: join(f.config.projectDir, 'other-work'), spawnedBy: undefined });
   writeFileSync(join(other.workDir!, 'big'), Buffer.alloc(1000));
   const sorted = (await f.run('list stopped by size')).content;
-  assert.ok(sorted.indexOf('**Other**') < sorted.indexOf('**[cc-opus')); assert.match(sorted, /0 MB/);
+  assert.ok(sorted.indexOf('**Other**') < sorted.indexOf('**Pathfinder**')); assert.match(sorted, /0 MB/);
   assert.doesNotMatch((await f.run('list stopped mine by size')).content, /\*\*Other\*\*/);
   assert.doesNotMatch((await f.run('list stopped by size by=unknown')).content, /Pathfinder/);
   assert.match((await f.run('list stopped by=1')).content, /Pathfinder/);
@@ -918,7 +919,7 @@ test('explicit admins work without an owner and cannot use ordinary owner-only d
   const reply = (await f.run('delete scout force-legacy', 2)).content;
   assert.match(reply, /Force-legacy preview/);
   assert.ok(existsSync(e.handDir)); assert.deepEqual(f.deactivated, []);
-  const command = reply.match(/delete cc-scout confirm force-legacy [a-f0-9]+/)![0];
+  const command = reply.match(/delete [^` ]+ confirm force-legacy [a-f0-9]+/)![0];
   assert.match((await f.run(command, 1)).content, /configured force-legacy admins/);
   assert.match((await f.run(command, 9)).content, /Force-legacy preview/);
   assert.match((await f.run(command, 2)).content, /Deleted/);
@@ -952,4 +953,117 @@ test('no owner and omitted admin list disables force-legacy', async () => {
   const f = fixture({ ownerUserId: null }); const e = legacy(f);
   assert.match((await f.run('delete scout force-legacy', 9)).content, /disabled/);
   assert.ok(existsSync(e.handDir)); assert.deepEqual(f.deactivated, []);
+});
+
+test('compact lists: dozens of hands, safe topics, relative activity and no repeated tmux names', async () => {
+  const f = fixture();
+  for (let i = 0; i < 36; i++) f.add({
+    suffix: `hand-${i}`, friendlyName: `Hand ${i}`, tmuxSession: `cc-hand-${i}`,
+    botEmail: `hand-${i}@offline`, botUserId: 100 + i,
+    topic: i === 0 ? 'a > **b** [[msg:123]]' : `topic ${i}`,
+    lastActivity: new Date(Date.now() - 10 * 86400_000).toISOString(),
+  });
+  for (const command of ['list stopped', 'list']) {
+    if (command === 'list') for (const e of f.registry.all()) f.registry.update(e, { status: 'alive' });
+    const result = await f.run(command);
+    assert.equal(result.content.split('\n').length, 42);
+    assert.match(result.content, /:\n\n\| Hand \| Model \| Home \| (Size \| )?Activity \| Creator \|\n/);
+    assert.ok(result.content.endsWith('\n\n'));
+    const rows = result.content.split('\n').filter(line => line.startsWith('| **'));
+    assert.equal(rows.length, 36);
+    // Cells carry no escaped pipes at all: Zulip has no backslash escapes.
+    for (const row of rows) assert.equal(row.split('|').length, command === 'list stopped' ? 8 : 7, row);
+    assert.equal(result.content.match(/\| 10 d ago \(\d{4}-\d\d-\d\d \d\d:\d\d UTC\) \|/g)?.length, 36);
+    assert.match(result.content, /#narrow\/stream\/7\/topic\//);
+    assert.match(result.content, /#\*\*cc-hands>topic 35\*\*/);
+    assert.doesNotMatch(result.content, /\[\[msg:|tmux|\d\dT\d\d:|\\/);
+  }
+});
+
+test('legacy same-suffix rows expose usable targets, even with hidden collisions', async () => {
+  const f = fixture();
+  const a = f.add({ friendlyName: undefined, nameAliases: [], tmuxSession: 'cc-opus-5-5-scout', personaName: 'Claude-Code-opus-5-5-scout' });
+  const b = f.add({ handDir: join(f.config.handsDir, 'cc-sonnet-5-5-scout'), workDir: join(f.config.projectDir, 'hands', 'cc-sonnet-5-5-scout'), friendlyName: undefined, nameAliases: [], tmuxSession: 'cc-sonnet-5-5-scout', personaName: 'Claude-Code-sonnet-5-5-scout', botEmail: 'second@offline', botUserId: 43, spawnedBy: { userId: 2, username: 'Other' } });
+  const stopped = (await f.run('list stopped')).content;
+  for (const e of [a, b]) assert.ok(stopped.includes(`**scout** (\`${e.tmuxSession}\`)`));
+  const filtered = (await f.run('list stopped mine')).content;
+  assert.ok(filtered.includes(`**scout** (\`${a.tmuxSession}\`)`));
+  assert.ok(!filtered.includes(b.tmuxSession));
+  assert.match((await f.run('delete scout confirm')).content, /Ambiguous/);
+  assert.match((await f.run(`delete ${a.tmuxSession}`)).content, /confirm/);
+  f.registry.update(a, { status: 'alive' });
+  f.registry.update(b, { status: 'alive' });
+  const running = (await f.run('list')).content;
+  for (const e of [a, b]) assert.ok(running.includes(`**scout** (\`${e.tmuxSession}\`)`));
+  const before = readFileSync(f.registryFile, 'utf8');
+  for (const command of ['stop scout', 'peek scout', 'press scout esc', 'answer scout 1', 'model scout', 'rename scout Unique']) {
+    assert.match((await f.run(command)).content, /Ambiguous/, command);
+    assert.equal(readFileSync(f.registryFile, 'utf8'), before, command);
+  }
+  assert.equal(f.registry.findAlive('scout'), undefined);
+  assert.equal(f.registry.findAlive(a.tmuxSession), a);
+  const killed: string[] = [];
+  f.tmux.killSession = async session => { killed.push(session); };
+  assert.match((await f.run(`stop ${b.tmuxSession}`)).content, /Stopped/);
+  assert.deepEqual(killed, [b.tmuxSession]);
+  // A stopped namesake still makes a bare running target ambiguous.
+  assert.equal(f.registry.findAlive('scout'), undefined);
+  assert.match((await f.run('stop scout')).content, /Ambiguous/);
+});
+
+test('alias collisions also disambiguate list rows', async () => {
+  const f = fixture();
+  const a = f.add();
+  f.add({ suffix: 'other', friendlyName: 'Other', nameAliases: ['Pathfinder'], tmuxSession: 'cc-other', botEmail: 'other@offline' });
+  assert.ok((await f.run('list stopped')).content.includes(`**Pathfinder** (\`${a.tmuxSession}\`)`));
+  assert.match((await f.run('delete Pathfinder confirm')).content, /Ambiguous/);
+});
+
+test('list uses reserved target when another suffix also matches the tmux target', async () => {
+  const f = fixture(); const a = f.add({ friendlyName: undefined });
+  f.add({ suffix: 'cc-scout', friendlyName: 'Other', nameAliases: ['scout'], tmuxSession: 'cc-other', botEmail: 'other@offline' });
+  assert.ok((await f.run('list stopped')).content.includes(`**scout** (\`hand:${a.tmuxSession}\`)`));
+  assert.deepEqual(f.registry.matchingHands(a.botEmail), [a]);
+});
+
+test('tables keep model in both lists, escape cells, preserve unknowns and separate warnings', async () => {
+  const f = fixture();
+  const a = f.add({ topic: 'road | map', lastActivity: 'invalid', spawnedBy: { userId: 1, username: 'A | B\n**C**' } });
+  let result = (await f.run('list stopped')).content;
+  assert.match(result, /\n\n\| Hand \| Model \| Home \| Size \| Activity \| Creator \|\n/);
+  assert.match(result, /\| \*\*Pathfinder\*\* \| claude-opus-5-5 \|/);
+  assert.match(result, /activity unknown \| A &#124; B &#42;&#42;C&#42;&#42; \|\n\n$/);
+  const rows = result.split('\n').filter(line => line.startsWith('| **'));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].split('|').length, 8);
+  assert.ok(!result.includes('\\'), 'Zulip would show any backslash escape literally');
+  f.registry.update(a, { status: 'alive', streamName: '', streamId: 0, topic: '', spawnedBy: undefined });
+  result = (await f.run('list')).content;
+  assert.match(result, /\n\n\| Hand \| Model \| Home \| Activity \| Creator \|\n/);
+  assert.match(result, /\| \*\*Pathfinder\*\* \| claude-opus-5-5 \| home unknown \| activity unknown \| unknown \|\n\n$/);
+});
+
+test('upper-case HAND: is the reserved namespace, not an imported alias', async () => {
+  const f = fixture(); const a = f.add({ friendlyName: undefined });
+  const other = f.add({ tmuxSession: 'cc-other', suffix: 'cc-scout', friendlyName: 'Other', nameAliases: ['scout', 'HAND:cc-other', 'hand:CC-SCOUT'],
+    botEmail: 'other@offline', botUserId: 43, handDir: join(f.config.handsDir, 'cc-other'), workDir: join(f.config.projectDir, 'hands', 'cc-other') });
+  assert.deepEqual(f.registry.matchingHands('HAND:cc-other'), [other]);
+  assert.deepEqual(f.registry.matchingHands('HAND:CC-SCOUT'), [], 'payload stays exact; the alias spelling is not consulted');
+  const preview = (await f.run('delete HAND:cc-scout')).content;
+  assert.match(preview, new RegExp(`^Dry-run for \\*\\*${a.personaName.replace(/[[\]]/g, '\\$&')}\\*\\*`));
+  assert.equal(preview.match(/`(delete [^`]+ confirm)`/)![1], 'delete hand:cc-scout confirm');
+  assert.match((await f.run('delete Hand:CC-SCOUT')).content, /not found/);
+  assert.equal(f.registry.currentHands().length, 2);
+});
+
+test('delete confirmation hint selects its exact hand despite colliding suffix and tmux', async () => {
+  const f = fixture(); const a = f.add({ friendlyName: undefined });
+  f.add({ tmuxSession: 'cc-other', suffix: 'cc-scout', friendlyName: 'Other', nameAliases: ['scout'],
+    botEmail: 'other@offline', botUserId: 43, handDir: join(f.config.handsDir, 'cc-other'), workDir: join(f.config.projectDir, 'hands', 'cc-other') });
+  const preview = (await f.run('delete hand:cc-scout')).content;
+  const command = preview.match(/`(delete [^`]+ confirm)`/)![1];
+  assert.equal(command, 'delete hand:cc-scout confirm');
+  assert.match((await f.run(command)).content, /Deleted/);
+  assert.equal(f.registry.currentHands().length, 1);
+  assert.notEqual(f.registry.currentHands()[0].tmuxSession, a.tmuxSession);
 });

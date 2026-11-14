@@ -130,7 +130,7 @@ test('unauthorized users and streams are refused', async () => {
 });
 
 test('list shows the hand; stop kills it and keeps the identity', async () => {
-  assert.match((await run('list')).content, /\[cc-opus-5-5\/h\] Scout.*#cc-hands > release/);
+  assert.match((await run('list')).content, /\*\*Scout\*\*.*claude-opus-5-5.*#\*\*cc-hands>release\*\*/);
   const r = await run('stop scout');
   assert.match(r.content, /Stopped/);
   assert.equal(await tmux.hasSession('cc-scout'), false);

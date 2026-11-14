@@ -34,3 +34,16 @@ export function modelDisplayName(entry: { personaName: string; suffix: string; f
   if (bracket) return handName(model, bracket[1], entry.harness ?? (entry.engine === 'codex' ? 'cx' : 'cc'), entry.effort).personaName;
   return handName(model, entry.suffix, entry.harness ?? (entry.engine === 'codex' ? 'cx' : 'cc'), entry.effort).personaName;
 }
+
+/** The reserved `hand:` prefix is case-insensitive; the encoded tmux name is exact. */
+const HAND_TARGET_PREFIX = /^hand:/i;
+
+export function isHandTarget(target: string): boolean {
+  return HAND_TARGET_PREFIX.test(target);
+}
+
+/** Reserved, parser-safe address for imported identities with colliding aliases. */
+export function canonicalHandTarget(entry: { tmuxSession: string }): string {
+  return 'hand:' + encodeURIComponent(entry.tmuxSession)
+    .replace(/[!'()*_.~]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
