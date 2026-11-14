@@ -218,7 +218,7 @@ export class TranscriptWatcher {
       parts: dialog.parts,
     };
     log(`${entry.personaName}: ${dialog.q.kind ?? 'question'} dialog on screen — ${JSON.stringify((dialog.q.title ?? dialog.q.question).slice(0, 80))}`);
-    const id = await this.notifier.postHome(entry, formatQuestionPost(entry, pending, this.spawnerName()));
+    const id = await this.notifier.postHome(entry, formatQuestionPost(entry, pending, this.spawnerName(), this.registry.commandTarget(entry)));
     if (id !== undefined) pending.messageId = String(id);
     this.registry.update(entry, { pendingQuestion: pending });
   }
@@ -241,7 +241,7 @@ export class TranscriptWatcher {
         const sig = dialogSig(dialog.q);
         const what = dialog.q.kind === 'permission' ? 'permission prompt' : 'question';
         if (entry.pendingQuestion?.sig === sig && entry.pendingQuestion.messageId) {
-          lines.push(`**${entry.personaName}** — ${what} already posted, still waiting (\`answer ${entry.friendlyName ?? entry.suffix} …\`).`);
+          lines.push(`**${entry.personaName}** — ${what} already posted, still waiting (\`answer ${this.registry.commandTarget(entry)} …\`).`);
         } else {
           if (isPermission(entry)) await this.resolvePermission(entry);
           await this.announceQuestion(entry, dialog);

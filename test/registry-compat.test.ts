@@ -57,7 +57,7 @@ test('lookup aliases belong only to the renamed stable identity, across launch h
   registry.add(current);
   const other = { ...entries[1], status: 'alive' as const }; registry.add(other);
   for (const target of ['scout', 'Pathfinder', entries[0].personaName, current.personaName, '@**[cc-opus-5-5/h] Pathfinder**', current.botEmail, current.tmuxSession]) {
-    assert.equal(registry.findAlive(target), current, target);
+    assert.equal(registry.findAlive(target), target === current.botEmail ? undefined : current, target);
     if (!target.startsWith('@') && target !== current.botEmail && target !== current.tmuxSession && target !== current.personaName) assert.equal(registry.renamedHands(target)[0], current, target);
   }
   assert.equal(registry.findAlive('legacy'), other);

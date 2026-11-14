@@ -53,7 +53,10 @@ function fixture(overrides: Partial<SpawnerConfig> = {}) {
     return { warning: state.warning };
   } } as unknown as ClaudeLauncher;
   const provisioner = {
-    async ensure(_full: string, short: string) { return { bot: { userId: 42, email: `${short}-bot@x`, apiKey: 'offline' }, created: !state.existingBot && registry.all().length === 1 }; },
+    async ensure(_full: string, short: string) {
+      const previous = registry.all().find(e => e.tmuxSession === short && e.botUserId > 0);
+      return { bot: { userId: previous?.botUserId ?? 42, email: previous?.botEmail ?? `${short}-bot@x`, apiKey: 'offline' }, created: !state.existingBot && registry.all().length === 1 };
+    },
     async subscribe(id: number, stream: string) { if (state.failSubscribe) throw new Error('subscription refused'); subscriptions.push([id, stream]); },
     async rename(id: number, name: string) { if (state.failRename) throw new Error('rename refused'); renames.push([id, name]); },
     credsFor() { return { email: 'hand-bot@x', key: 'offline', site: 'https://offline.invalid' }; },
@@ -692,7 +695,7 @@ test('rename via full mention works in a DM, and unknown or ambiguous targets do
   assert.match(result.content, /Renamed/);
   f.prior({ suffix: 'scout', personaName: '[cc-opus-5-5] Scout', tmuxSession: 'cc-another', botUserId: 43 });
   const count = f.renames.length;
-  assert.equal((await f.run('rename scout Guide')).content, 'Ambiguous hand name — use its bot email or tmux session; nothing was changed.');
+  assert.equal((await f.run('rename scout Guide')).content, 'Ambiguous hand name — use a target shown by `list` or `list stopped`; nothing was changed.');
   assert.equal(f.renames.length, count);
   assert.match((await f.run('rename cc-scout Guide')).content, /Name collision/);
 });
@@ -703,8 +706,8 @@ for (const alias of ['Pathfinder', 'scout']) test(`renamed rehome/model revival 
   assert.equal(f.launches.length, 0); assert.deepEqual(f.subscriptions, []);
 });
 
-// Reviewer M1 probes: a rename must not change which existing identity a spawn selects.
-test('rename rejects tmux/suffix overlap; cc-scout still revives its exact hand', async () => {
+// Exact model-qualified revival remains available despite imported alias collisions.
+test('rename rejects tmux/suffix overlap; exact cc-scout revival preserves C', async () => {
   const f = fixture(); const a = f.prior();
   const c = f.prior({ suffix: 'cc-scout', personaName: '[cc-sonnet-5-5] cc-scout', tmuxSession: 'cc-cc-scout',
     botUserId: 43, botEmail: 'cc-cc-scout-bot@x', sessionId: 'cccccccc-1234-1234-1234-123456789abc', spawnedBy: { userId: 2, username: 'C' } });
@@ -713,45 +716,51 @@ test('rename rejects tmux/suffix overlap; cc-scout still revives its exact hand'
   assert.match((await f.run(`rename ${a.botEmail} Guide`, home, 9)).content, /Name collision/);
   assert.deepEqual(a, before); assert.deepEqual(f.renames, []);
   assert.match((await f.run('spawn sonnet-5-5 name=cc-scout', home, 2)).content, /Revived/);
-  assert.equal(f.launches[0].tmuxSession, c.tmuxSession);
   assert.equal(f.launches[0].sessionId, c.sessionId);
+  assert.equal(f.launches[0].tmuxSession, c.tmuxSession);
 });
 
-test('rename rejects shared suffix; opus scout revival still selects the opus hand', async () => {
+test('rename rejects shared suffix; exact opus scout revival preserves B', async () => {
   const f = fixture(); const a = f.prior();
   const b = f.prior({ personaName: '[cc-opus-5-5] Scout', model: 'claude-opus-5-5', tmuxSession: 'cc-opus-scout',
     botUserId: 43, botEmail: 'opus-scout-bot@x', sessionId: 'bbbbbbbb-1234-1234-1234-123456789abc', spawnedBy: { userId: 2, username: 'B' } });
   assert.match((await f.run('rename cc-scout Guide')).content, /Name collision/);
   assert.equal(a.friendlyName, undefined); assert.deepEqual(f.renames, []);
   assert.match((await f.run('spawn opus-5-5 name=scout', home, 2)).content, /Revived/);
-  assert.equal(f.launches[0].tmuxSession, b.tmuxSession);
   assert.equal(f.launches[0].sessionId, b.sessionId);
+  assert.equal(f.launches[0].tmuxSession, b.tmuxSession);
 });
 
 // Imported registries may already contain collisions written by the previous release.
 // These tests kill an alias-first selection mutation even though new renames reject them.
-for (const selection of ['exact', 'legacy', 'history'] as const) test(`${selection} spawn selection wins over a conflicting renamed alias (M5)`, async () => {
+for (const selection of ['exact', 'legacy', 'history'] as const) test(`${selection} spawn selection: exact identities win, unqualified ties refuse`, async () => {
   const f = fixture();
   f.prior({ suffix: 'other', personaName: '[cc-sonnet-5-5/h] Guide', tmuxSession: 'cc-other', friendlyName: 'Guide', nameAliases: ['scout'],
     botEmail: 'other-bot@x', spawnedBy: { userId: 1, username: 'A' } });
   const b = f.prior({ personaName: selection === 'legacy' ? 'Claude-Code-opus-5-5-scout' : `[cc-${selection === 'exact' ? 'opus-5-5' : 'haiku-4-5'}] Scout`,
     nameScheme: selection === 'legacy' ? undefined : 'bracket-v1', model: selection === 'history' ? 'claude-haiku-4-5' : 'claude-opus-5-5',
     tmuxSession: 'cc-b-scout', botUserId: 43, botEmail: 'b-bot@x', sessionId: 'bbbbbbbb-1234-1234-1234-123456789abc', spawnedBy: { userId: 2, username: 'B' } });
-  assert.match((await f.run('spawn opus-5-5 name=scout', home, 2)).content, /Revived/);
-  assert.equal(f.launches[0].tmuxSession, b.tmuxSession);
-  assert.equal(f.launches[0].sessionId, b.sessionId);
+  const result = await f.run('spawn opus-5-5 name=scout', home, 2);
+  if (selection === 'history') {
+    assert.match(result.content, /Ambiguous/);
+    assert.deepEqual(f.launches, []);
+  } else {
+    assert.match(result.content, /Revived/);
+    assert.equal(f.launches[0].sessionId, b.sessionId);
+    assert.equal(f.launches[0].tmuxSession, b.tmuxSession);
+  }
 });
 
-test('legacy Claude-Code exact revival wins over another model with the same suffix (M4)', async () => {
+test('exact legacy Claude-Code revival ignores another model with the same suffix', async () => {
   const f = fixture();
   const legacy = f.prior({ personaName: 'Claude-Code-sonnet-5-5-scout', nameScheme: undefined, tmuxSession: 'cc-sonnet-5-5-scout' });
   f.prior({ personaName: '[cc-opus-5-5] Scout', model: 'claude-opus-5-5', tmuxSession: 'cc-opus-scout', botUserId: 43, botEmail: 'opus-bot@x',
     sessionId: 'bbbbbbbb-1234-1234-1234-123456789abc', spawnedBy: { userId: 2, username: 'B' } });
   assert.match((await f.run('spawn sonnet-5-5 name=scout')).content, /Revived/);
-  assert.equal(f.launches[0].tmuxSession, legacy.tmuxSession);
   assert.equal(f.launches[0].sessionId, legacy.sessionId);
+  assert.equal(f.launches[0].tmuxSession, legacy.tmuxSession);
   assert.deepEqual(f.renames, []);
-  assert.equal(f.registry.alive()[0].personaName, legacy.personaName);
+  assert.equal(f.registry.alive().length, 1);
 });
 
 for (const patch of [
@@ -881,7 +890,7 @@ test('collaborative controls open model-menu answers to allowed noncreators', as
   assert.equal(f.e.spawnedBy?.userId, 1);
 });
 
-for (const overlap of ['session', 'alias']) test(`a running renamed hand's ${overlap} cannot block another hand's exact revival`, async t => {
+for (const overlap of ['session', 'alias']) test(`a running renamed hand's ${overlap} does not steal an exact revival`, async t => {
   const f = fixture();
   const a = f.prior({ status: 'alive', friendlyName: 'Guide', nameAliases: overlap === 'alias' ? ['cc-scout'] : ['scout'] });
   const c = f.prior({ suffix: 'cc-scout', personaName: '[cc-sonnet-5-5] cc-scout', tmuxSession: 'cc-cc-scout',
@@ -889,8 +898,8 @@ for (const overlap of ['session', 'alias']) test(`a running renamed hand's ${ove
   const deps = (f.actions as unknown as { d: import('../src/actions.js').ActionDeps }).d;
   t.mock.method(deps.tmux, 'hasSession', async (name: string) => name === a.tmuxSession);
   assert.match((await f.run('spawn sonnet-5-5 name=cc-scout', home, 2)).content, /Revived/);
-  assert.equal(f.launches[0].tmuxSession, c.tmuxSession);
   assert.equal(f.launches[0].sessionId, c.sessionId);
+  assert.equal(f.launches[0].tmuxSession, c.tmuxSession);
   assert.equal(a.status, 'alive');
 });
 
@@ -1057,4 +1066,177 @@ for (const existingBot of [false, true]) test(`bot creation provenance persists 
   assert.match((await f.run('spawn sonnet-5-5 name=scout')).content, /Revived/);
   const latest = f.registry.alive()[0]; assert.equal(latest.botCreatedBySpawner, !existingBot);
   assert.equal(latest.spawnedBy?.userId, first.spawnedBy?.userId);
+});
+
+
+// Round 3 regressions: execute real parsed commands, with real workspace and
+// transcript files. Only the external Zulip/terminal boundary is simulated.
+for (const source of ['exact', 'list', 'stop hint'] as const) for (const rehome of [false, true]) {
+  test(`legacy same-suffix pair: ${source} revives ${rehome ? 'in a new home' : 'at home'} without losing identity or memory`, async () => {
+    const f = fixture();
+    const a = f.prior({ personaName: 'Claude-Code-opus-5-5-scout', model: 'claude-opus-5-5',
+      nameScheme: undefined, tmuxSession: 'cc-opus-5-5-scout', botEmail: 'opus@offline' });
+    const b = f.prior({ personaName: 'Claude-Code-sonnet-5-5-scout', nameScheme: undefined,
+      tmuxSession: 'cc-sonnet-5-5-scout', botUserId: 43, botEmail: 'sonnet@offline',
+      sessionId: 'bbbbbbbb-1234-1234-1234-123456789abc' });
+    const untouched = structuredClone(b);
+    let command = 'spawn opus-5-5 name=scout';
+    if (source === 'list') {
+      const listing = (await f.run('list stopped')).content;
+      const target = listing.match(/\*\*scout\*\* \(`([^`]+)`\)/)![1];
+      assert.equal(target, a.tmuxSession);
+      command = `spawn opus-5-5 name=${target}`;
+    } else if (source === 'stop hint') {
+      f.registry.update(a, { status: 'alive' }); f.state.running = true;
+      command = (await f.run(`stop ${a.tmuxSession}`)).content.match(/`(spawn [^`]+)`/)![1];
+    }
+    assert.match((await f.run(command, rehome ? elsewhere : home)).content, /Revived/);
+    const revived = f.registry.alive()[0];
+    for (const field of ['tmuxSession', 'botUserId', 'botEmail', 'sessionId', 'handDir', 'workDir'] as const) assert.equal(revived[field], a[field], field);
+    assert.equal(revived.topic, rehome ? elsewhere.topic : home.topic);
+    assert.equal(f.launches[0].resume, true);
+    assert.equal(f.registry.currentHands().length, 2);
+    assert.deepEqual(b, untouched);
+  });
+}
+
+test('normal spawn cannot create the tmux/suffix collision from review case B', async () => {
+  const f = fixture();
+  assert.match((await f.run('spawn opus-5-5 name=scout')).content, /Spawned/);
+  const before = structuredClone(f.registry.all());
+  assert.match((await f.run('spawn sonnet-5-5 name=cc-scout')).content, /taken/);
+  assert.deepEqual(f.registry.all(), before);
+  assert.equal(f.launches.length, 1); assert.equal(f.subscriptions.length, 1);
+  assert.equal(existsSync(join(f.config.handsDir, 'cc-cc-scout')), false);
+});
+
+for (const field of ['suffix', 'nameAliases', 'botEmail', 'personaName'] as const) {
+  test(`fresh generated tmux must not collide with another hand's ${field}`, async () => {
+    const f = fixture();
+    const a = f.prior({ [field]: field === 'nameAliases' ? ['cc-fresh'] : 'cc-fresh' });
+    const before = structuredClone(a);
+    assert.match((await f.run('spawn opus-5-5 name=fresh')).content, /Name collision/);
+    assert.equal(f.registry.all().length, 1); assert.deepEqual(a, before);
+    assert.deepEqual(f.launches, []); assert.deepEqual(f.subscriptions, []);
+  });
+}
+
+test('a tie between exact personas refuses; explicit listed targets still revive', async () => {
+  const f = fixture(); const a = f.prior();
+  f.prior({ tmuxSession: 'cc-second', botUserId: 43, botEmail: 'second@offline' });
+  const before = structuredClone(f.registry.all());
+  assert.match((await f.run('spawn sonnet-5-5 name=scout')).content, /Ambiguous/);
+  assert.deepEqual(f.registry.all(), before); assert.deepEqual(f.launches, []);
+  assert.match((await f.run(`spawn sonnet-5-5 name=${f.registry.commandTarget(a)}`, elsewhere)).content, /Revived/);
+  assert.equal(f.launches[0].tmuxSession, a.tmuxSession);
+});
+
+for (const selected of ['a', 'c']) test(`imported case B: ${selected} remains revivable/rehomeable via its listed target and stop hint`, async () => {
+  const f = fixture(); const a = f.prior();
+  const c = f.prior({ suffix: 'cc-scout', personaName: '[cc-sonnet-5-5] cc-scout', tmuxSession: 'cc-cc-scout',
+    nameAliases: ['scout'], botUserId: 43, botEmail: 'other@offline', sessionId: 'cccccccc-1234-1234-1234-123456789abc' });
+  const e = selected === 'a' ? a : c;
+  const target = f.registry.commandTarget(e);
+  assert.ok((await f.run('list stopped')).content.includes(`(\`${target}\`)`));
+  assert.match((await f.run(`spawn sonnet-5-5 name=${target}`, elsewhere)).content, /Revived/);
+  const hint = (await f.run(`stop ${target}`)).content.match(/`(spawn [^`]+)`/)![1];
+  assert.match((await f.run(hint, home)).content, /Revived/);
+  for (const launch of f.launches) {
+    assert.equal(launch.resume, true); assert.equal(launch.sessionId, e.sessionId); assert.equal(launch.tmuxSession, e.tmuxSession);
+  }
+  assert.equal(f.registry.currentHands().length, 2);
+});
+
+for (const answer of ['answer scout 2', 'answer cc-scout-bot@x 2', '2']) {
+  test(`model menu continuation with colliding tmux: ${answer}`, async t => {
+    const f = live();
+    // The shortcut also has to survive BOTH ordinary names being ambiguous.
+    f.prior({ suffix: 'cc-scout', personaName: '[cc-sonnet-5-5] cc-scout', tmuxSession: 'cc-cc-scout',
+      nameAliases: answer === '2' ? ['scout'] : [], botEmail: 'other@offline', botUserId: 43 });
+    const sessions: string[] = [];
+    const sendText = f.tmux.sendText.bind(f.tmux);
+    t.mock.method(f.tmux, 'sendText', async (session, text) => { sessions.push(session); await sendText(session, text); });
+    f.state.panes = ['? for shortcuts', 'Select model\n❯ 1. Sonnet 5.5\n  2. Opus 5.5'];
+    assert.match((await f.run(`model ${f.e.botEmail}`)).content, /menu posted/);
+    const hint = f.posts[0].content.match(/`answer ([^ ]+) <number>`/)![1];
+    assert.deepEqual(f.registry.matchingHands(hint), [f.e]);
+    f.state.panes = ['? for shortcuts', CLAUDE_CONFIRM, CLAUDE_CHANGED]; f.state.capture = 0;
+    assert.match((await f.run(answer)).content, /without stopping/);
+    assert.equal(f.e.model, 'claude-opus-5-5');
+    assert.deepEqual(sessions, [f.e.tmuxSession, f.e.tmuxSession]);
+    assert.equal(f.e.pendingModelMenu, undefined);
+  });
+}
+
+test('missing reserved target and overlong fresh name cannot provision anything', async () => {
+  const f = fixture();
+  for (const name of ['hand:cc-missing', 'hand:%FF', 'x'.repeat(25)]) {
+    assert.match((await f.run(`spawn sonnet-5-5 name=${name}`)).content, /not found|Invalid hand name/);
+  }
+  assert.deepEqual(f.registry.all(), []); assert.deepEqual(f.launches, []); assert.deepEqual(f.subscriptions, []);
+});
+
+for (const pane of [ASK_AFTER_MODEL, PERMISSION_AFTER_MODEL]) test('dialog, rescan and press hints use an unambiguous reserved target', async () => {
+  const f = live();
+  f.prior({ tmuxSession: 'cc-other', suffix: 'cc-scout', nameAliases: ['scout'], botEmail: 'other@offline', botUserId: 43 });
+  f.state.panes = [pane];
+  await f.run('rescan');
+  assert.match(f.posts.at(-1)!.content, /answer hand:cc-scout /);
+  assert.match((await f.run('rescan')).content, /answer hand:cc-scout /);
+  assert.match((await f.run('answer hand:cc-scout 1')).content, /Answer sent/);
+  assert.match((await f.run('press hand:cc-scout esc')).content, /peek hand:cc-scout/);
+});
+
+test('reserved target is exact, safe in Markdown and cannot be hijacked by an alias', async () => {
+  const f = fixture();
+  const a = f.prior({ tmuxSession: 'legacy_hand.one', suffix: 'same', friendlyName: 'same' });
+  f.prior({ tmuxSession: 'other', suffix: 'same', friendlyName: 'same', nameAliases: ['hand:legacy%5Fhand%2Eone'] });
+  const target = f.registry.commandTarget(a);
+  assert.equal(target, 'hand:legacy%5Fhand%2Eone');
+  assert.deepEqual(f.registry.matchingHands(target), [a]);
+  assert.ok((await f.run('list stopped')).content.includes('(`hand:legacy%5Fhand%2Eone`)'));
+  assert.match((await f.run(`spawn sonnet-5-5 name=${target}`, elsewhere)).content, /Revived/);
+  assert.equal(f.launches[0].tmuxSession, a.tmuxSession);
+});
+
+test('reserved hand: prefix is case-insensitive and never falls back to alias matching', async () => {
+  const f = fixture();
+  const y = f.prior();
+  const x = f.prior({ tmuxSession: 'cc-ranger', suffix: 'ranger', friendlyName: 'ranger', personaName: '[cc-sonnet-5-5] ranger',
+    botEmail: 'ranger-bot@x', botUserId: 43, workDir: join(f.dir, 'ranger-work'), nameAliases: ['hand:cc-scout', 'HAND:cc-scout', 'Hand:CC-SCOUT'] });
+  for (const target of ['hand:cc-scout', 'HAND:cc-scout', 'Hand:cc-scout', 'hAnD:cc%2Dscout']) {
+    assert.deepEqual(f.registry.matchingHands(target), [y], target);
+  }
+  // Only the prefix folds case: the encoded tmux name stays exact, so X's
+  // literal imported alias `Hand:CC-SCOUT` selects nothing.
+  for (const target of ['HAND:CC-SCOUT', 'Hand:CC-SCOUT', 'HAND:', 'HAND:%FF']) assert.deepEqual(f.registry.matchingHands(target), [], target);
+  assert.deepEqual(f.registry.matchingHands('HAND:cc-ranger'), [x]);
+  for (const name of ['HAND:cc-missing', 'Hand:CC-SCOUT']) {
+    assert.match((await f.run(`spawn sonnet-5-5 name=${name}`, elsewhere)).content, /Hand target not found/);
+  }
+  assert.deepEqual(f.launches, []); assert.equal(f.registry.all().length, 2);
+  assert.match((await f.run('spawn sonnet-5-5 name=HAND:cc-scout', elsewhere)).content, /Revived/);
+  assert.equal(f.launches[0].tmuxSession, y.tmuxSession);
+  assert.equal(f.registry.all().length, 3);
+});
+
+test('retry before first bot provisioning still requires strict identity checks and records its creator', async t => {
+  const f = fixture(); f.prior({ botUserId: 0, botEmail: '', status: 'failed', spawnedBy: undefined });
+  const deps = (f.actions as unknown as { d: import('../src/actions.js').ActionDeps }).d;
+  t.mock.method(deps.provisioner, 'ensure', async (_name, _short, strict) => {
+    assert.equal(strict, true);
+    return { created: true, bot: { userId: 42, email: 'new@offline', apiKey: 'offline' } };
+  });
+  await f.run('spawn sonnet-5-5 name=scout');
+  assert.equal(f.registry.alive()[0].spawnedBy?.userId, 1);
+});
+
+
+for (const field of ['botEmail', 'nameAliases'] as const) test(`fresh spawn reserves its future bot email against ${field}`, async () => {
+  const f = fixture();
+  f.prior({ [field]: field === 'nameAliases' ? ['cc-fresh-bot@offline'] : 'cc-fresh-bot@offline' });
+  const before = structuredClone(f.registry.all());
+  assert.match((await f.run('spawn opus-5-5 name=fresh')).content, /Name collision/);
+  assert.deepEqual(f.registry.all(), before);
+  assert.deepEqual(f.launches, []); assert.deepEqual(f.subscriptions, []);
 });

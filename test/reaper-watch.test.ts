@@ -154,3 +154,41 @@ test('watcher: transcript events and dialogs are posted to the home topic', asyn
   assert.match(posts.out.at(-1)!, /permission prompt .* is resolved — answered in the terminal/);
   assert.equal(registry.all()[0].pendingQuestion, undefined);
 });
+
+test('reaper: died, idle and silence hints use a unique command target for legacy same-suffix pairs', async () => {
+  const opus = entry({ botUserId: 100 });
+  const sonnet = entry({ personaName: 'Claude-Code-sonnet-5-5-scout', tmuxSession: 'cc-sonnet-5-5-scout', botUserId: 101, botEmail: 'c@x', model: 'claude-sonnet-5-5' });
+  const run = async (patch: Partial<BotEntry>, prepare: (s: ReturnType<typeof reaperSetup>) => void = () => {}) => {
+    const s = reaperSetup({ ...opus, ...patch }, undefined);
+    s.registry.add({ ...sonnet });
+    s.t.sessions.add(sonnet.tmuxSession);
+    prepare(s);
+    await s.reaper.sweep();
+    assert.equal(s.posts.out.length, 1);
+    return { s, post: s.posts.out[0] };
+  };
+  const unique = (s: ReturnType<typeof reaperSetup>, target: string) => {
+    const matches = s.registry.matchingHands(target);
+    assert.deepEqual(matches.map(e => e.tmuxSession), ['cc-opus-5-5-scout'], `${target} must select only the reaped hand`);
+  };
+
+  const died = await run({}, s => s.t.sessions.delete(opus.tmuxSession));
+  assert.match(died.post, /`spawn claude-opus-5-5 name=cc-opus-5-5-scout` revives/);
+  assert.equal(died.s.registry.matchingHands('scout').length, 2, 'the bare suffix is really ambiguous here');
+  unique(died.s, 'cc-opus-5-5-scout');
+
+  const idle = await run({ lastActivity: ago(2 * 3600_000) });
+  assert.match(idle.post, /^Reaping .*`spawn claude-opus-5-5 name=cc-opus-5-5-scout` revives it\.$/);
+  unique(idle.s, 'cc-opus-5-5-scout');
+
+  const silent = await run({ firstPostAt: undefined, spawnedAt: ago(SILENCE_WARN_MS + 60_000) });
+  assert.match(silent.post, /`peek cc-opus-5-5-scout` shows its terminal/);
+  assert.doesNotMatch(silent.post, /`peek scout`/);
+  unique(silent.s, 'cc-opus-5-5-scout');
+});
+
+test('reaper: an unambiguous hand keeps its short name in hints', async () => {
+  const s = reaperSetup(entry({ friendlyName: 'scout', lastActivity: ago(2 * 3600_000) }), undefined);
+  await s.reaper.sweep();
+  assert.match(s.posts.out[0], /`spawn claude-opus-5-5 name=scout` revives it/);
+});

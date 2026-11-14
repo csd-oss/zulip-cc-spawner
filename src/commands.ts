@@ -109,7 +109,7 @@ export function effortError(effort: string, model: string, engine?: Engine): str
 
 export const USAGE = [
   'Usage (mention me):',
-  '`spawn <model> [name=<friendly>] [effort=<level>] [engine=codex|claude]` — spawn a hand whose home is this stream + topic (model explicit: fable-5-1, opus-5-5, sonnet-5-5, haiku-4-5, … or a full id; Claude effort: low, medium, high, xhigh, max, ultracode — kept across revivals, `effort=default` clears it)',
+  '`spawn <model> [name=<friendly-or-listed-target>] [effort=<level>] [engine=codex|claude]` — spawn a hand whose home is this stream + topic (model explicit: fable-5-1, opus-5-5, sonnet-5-5, haiku-4-5, … or a full id; Claude effort: low, medium, high, xhigh, max, ultracode — kept across revivals, `effort=default` clears it)',
   'Codex: `gpt-*` → `codex` CLI; other ids → `claude`. Override with `engine=codex|claude`. Display names: `[cx-<model>] <name>` (Claude: `[cc-<model>] <name>`); new bot emails/tmux/workdirs use only `cx-<name>` / `cc-<name>`.',
   `Codex efforts: ${[...new Set(MODEL_CAPABILITIES.filter((r) => r.engine === 'codex').flatMap((r) => r.efforts))].join(', ')} (passed through; model-dependent).`,
   '`model <hand> [<model>] [effort=...]` — live same-engine switch (follows creatorOnlyControls; open by default); omit model to list the live menu',
@@ -117,7 +117,7 @@ export const USAGE = [
   'Rename/model, model-menu answers and model-changing revival follow `creatorOnlyControls`: any allowed caller by default; creator/owner in strict mode (adopted hands with neither creator nor configured owner stay collaborative).',
   '`models` (or `help models`) — aliases, full ids, CLIs, allowed efforts and default behaviour',
   '`list` — show running hands',
-  '`list stopped` — stopped hands with display/short name, creator, home and last recorded activity',
+  '`list stopped` — stopped hands with short name, creator, linked home and relative last activity',
   '`delete <hand> force-legacy` — configured admins only: preview legacy paths/bot IDs, then use the separate expiring confirmation token shown. No creation attestation is fabricated.',
   '`list stopped [mine|by=<user-id>|by=unknown] [by size]` — filter by recorded creator; show bounded apparent work-dir sizes in MB (GB at 1,000 MB), largest measured first with by size; partial/unknown sizes are labelled.',
   '`delete <hand> [confirm]` — creator/owner only, regardless of creatorOnlyControls; stopped hands only. Without confirm, preview registry entries, hand dir, workDir and bot deactivation; confirm permanently removes them (only proven spawner-created bots are deactivated). Replies here.',
@@ -195,8 +195,10 @@ export function modelSlug(model: string): string {
 }
 
 export function buildSpawnCommand(model: string | undefined, friendly?: string, effort?: string, engine?: 'claude' | 'codex'): Command {
-  if (friendly !== undefined && !FRIENDLY_RE.test(friendly)) {
-    return { kind: 'help', error: `bad name \`${friendly}\` — use 1-24 chars of [A-Za-z0-9-]` };
+  // Existing/listed targets may be longer than a new friendly name. Actions
+  // enforce the 24-character limit only after resolving revival candidates.
+  if (friendly !== undefined && !/^(?:[A-Za-z0-9-]+|hand:[A-Za-z0-9%_.~-]+)$/i.test(friendly)) {
+    return { kind: 'help', error: `bad name \`${friendly}\` — use 1-24 chars of [A-Za-z0-9-], or a listed hand target` };
   }
   if (!model) return { kind: 'help', error: 'model is required — e.g. `spawn opus-5-5`, `spawn sonnet-5-5 name=scout`' };
   if (!MODEL_RE.test(model)) return { kind: 'help', error: `bad model \`${model}\`` };

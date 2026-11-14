@@ -28,10 +28,31 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 @**CC Spawner** rescan
 ```
 
-`list stopped` shows each stopped hand once, with display/short name, creator
+`list` and `list stopped` use Markdown tables with columns **hand / model / home /
+activity / creator**; stopped hands also have **size** between home and activity.
+Homes are clickable Zulip links, activity is relative (minutes, hours or days;
+past the first hour the absolute UTC minute follows, e.g. `10 d ago (2026-11-04
+09:30 UTC)`; unknown activity is explicit), and each hand occupies one row.
+Registry text in cells (names, models, topics, creators) is written with numeric
+character references for Markdown-significant characters, because Zulip has no
+backslash escapes: pipes, `$$`, `~~`, mentions and links show as plain text. Blank lines before
+and after each table let Zulip render it correctly. Redundant generated names
+are omitted; ambiguous short names get a copyable command target in parentheses.
+`list stopped` shows each stopped hand once, with short command name, creator
 (username or user id; unknown for old records), home topic and last activity when
 recorded. A failed liveness check is reported per hand (tmux or process check);
 other verified stopped hands remain listed. `list` still shows only running hands.
+
+To revive or rehome, use `spawn <model> name=<listed-target>` in the desired home.
+This retains the bot, workdir and available conversation rather than creating a
+new hand named after the target. Exact model-qualified legacy revivals still work;
+unresolved ties refuse without changes. Use the parenthesized target when shown:
+it may be a tmux name or a reserved `hand:<encoded-tmux>` address that cannot be
+confused with another hand's alias (the `hand:` prefix is reserved in any case,
+e.g. `HAND:`; the encoded tmux name is exact). These targets also work with `stop`, `peek`,
+`answer`, `press`, `model`, `rename` and `delete`. Hints use the same selection.
+New names remain limited to 1–24 letters, digits or hyphens, and cannot overlap
+another identity's names, tmux, email or aliases.
 
 `delete <hand>` previews **all launch records** for that hand, its hand directory,
 recorded work directory/directories and bot deactivation, without changing anything.

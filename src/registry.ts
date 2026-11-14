@@ -6,7 +6,8 @@ import { type DirectoryIdentity } from './directory-owner.js';
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { handIdentityName } from './names.js';
+import { canonicalHandTarget, handIdentityName, isHandTarget } from './names.js';
+import { botEmailPrefix } from './provision.js';
 import type { PendingQuestion } from './question.js';
 
 /**
@@ -125,7 +126,8 @@ export class Registry {
 
   /** An ALIVE entry by suffix, persona name, bot email or tmux session. */
   findAlive(target: string): BotEntry | undefined {
-    return this.alive().find((e) => this.matches(e, target));
+    const matches = this.matchingHands(target);
+    return matches.length === 1 && matches[0].status === 'alive' ? matches[0] : undefined;
   }
 
   private matches(e: BotEntry, target: string): boolean {
@@ -144,7 +146,26 @@ export class Registry {
   }
 
   matchingHands(target: string): BotEntry[] {
+    // Reserved namespace bypasses aliases, even in imported colliding registries.
+    // The prefix is reserved in every case (`HAND:`, `Hand:`), so an imported
+    // alias spelled like a reserved target is never matched as an alias.
+    if (isHandTarget(target)) {
+      try {
+        const session = decodeURIComponent(target.slice('hand:'.length));
+        return this.currentHands().filter(e => e.tmuxSession === session);
+      } catch { return []; }
+    }
     return this.currentHands().filter((e) => this.matches(e, target));
+  }
+
+  /** Copyable by both target commands and spawn name=; never an ambiguous alias. */
+  commandTarget(entry: BotEntry): string {
+    for (const candidate of [entry.friendlyName ?? entry.suffix, entry.tmuxSession]) {
+      if (!/^[A-Za-z0-9-]+$/.test(candidate)) continue;
+      const matches = this.matchingHands(candidate);
+      if (matches.length === 1 && matches[0].tmuxSession === entry.tmuxSession) return candidate;
+    }
+    return canonicalHandTarget(entry);
   }
 
   /** Spawn fallback only: never treat a stable suffix/session/email as a rename. */
@@ -155,13 +176,17 @@ export class Registry {
   }
 
   /** All historical names remain reserved, including stopped/failed hands. */
-  nameCollision(result: BotEntry): boolean {
+  nameCollision(result: BotEntry, reserveNewBotEmail = false): boolean {
     const names = (e: BotEntry): string[] => [
       e.suffix, e.tmuxSession, e.personaName, e.botEmail, e.friendlyName,
       e.personaName.match(/^\[[^\]]+\] (.+)$/)?.[1], ...(e.nameAliases ?? []),
     ].filter((name): name is string => name !== undefined && name !== '').map(handIdentityName);
     const resultingNames = new Set(names(result));
-    return this.entries.some((e) => e.tmuxSession !== result.tmuxSession && names(e).some((name) => resultingNames.has(name)));
+    // Before provisioning, the full email's realm suffix is not known. Reserve
+    // its Zulip-generated prefix too, across every historical name/alias.
+    const prefix = reserveNewBotEmail ? botEmailPrefix(result.tmuxSession) : undefined;
+    return this.entries.some(e => e.tmuxSession !== result.tmuxSession &&
+      names(e).some(name => resultingNames.has(name) || prefix !== undefined && name.startsWith(prefix)));
   }
 
   /** Current launch, including activity during startup; never stopped history. */
