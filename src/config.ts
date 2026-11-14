@@ -30,6 +30,9 @@ export interface SpawnerConfig {
   /** Optional owner for other creators' hands; absent/null means no owner.
    * Still subject to the ordinary command allow-lists. */
   ownerUserId?: number | null;
+  /** Force-legacy admins only; omitted falls back to ownerUserId, [] disables.
+   * Does not grant other owner powers or bypass command allow-lists. */
+  adminUserIds?: number[];
   /** Restrict raw keys, permission answers and rehome to creator/owner.
    * Default false preserves collaborative upstream controls. */
   creatorOnlyControls?: boolean;
@@ -138,6 +141,8 @@ export function loadConfig(): SpawnerConfig {
   }
   const cfg: SpawnerConfig = { ...DEFAULTS, ...fileCfg };
 
+  if (cfg.adminUserIds !== undefined && (!Array.isArray(cfg.adminUserIds) ||
+      cfg.adminUserIds.some(id => !Number.isSafeInteger(id) || id <= 0))) throw new Error('adminUserIds must be an array of positive user ids');
   if (cfg.ownerUserId != null && (!Number.isSafeInteger(cfg.ownerUserId) || cfg.ownerUserId <= 0)) throw new Error('ownerUserId must be a positive user id');
   if (typeof cfg.creatorOnlyControls !== 'boolean') throw new Error('creatorOnlyControls must be a boolean');
 

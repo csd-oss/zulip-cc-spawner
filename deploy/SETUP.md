@@ -125,3 +125,10 @@ renames preserve the previous full name as an alias.
 - Restart the daemon while a hand runs (`systemctl restart cc-spawner`): the hand must survive.
 - `@**CC Spawner** spawn sonnet-5-5 name=smoke` in an allowed stream: the hand should post within
   a minute; if it stays silent for 10 minutes the spawner says so — `peek smoke` shows its screen.
+
+
+For legacy cleanup, set `adminUserIds` to the positive numeric Zulip IDs of
+authorized operators (look up their numeric IDs; do not use display names). The example's `[]` disables force-legacy. Omit the
+field to retain the legacy `ownerUserId` fallback; an explicit list replaces it.
+Admins still need normal caller/stream authorization and gain no other owner
+powers. This is independent of the API credential file `adminRc`.

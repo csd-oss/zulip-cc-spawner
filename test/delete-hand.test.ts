@@ -801,7 +801,7 @@ async function forcePreview(f: ReturnType<typeof fixture>) {
 
 test('force legacy requires owner and separate single-use preview; deletes real nonempty dirs without markers', async () => {
   const f = fixture(); const e = legacy(f);
-  assert.match((await f.run('delete scout confirm force-legacy')).content, /configured owner/);
+  assert.match((await f.run('delete scout confirm force-legacy')).content, /configured force-legacy admins/);
   const { reply, command } = await forcePreview(f);
   assert.ok(reply.includes(e.handDir)); assert.ok(reply.includes(e.workDir!)); assert.match(reply, /user 42/);
   assert.ok(existsSync(e.handDir)); assert.equal(existsSync(join(e.handDir, '.cc-spawner-owner')), false);
@@ -856,7 +856,7 @@ test('list stopped size sort and creator filters combine; unknown does not mean 
   const other = legacy(f, { suffix: 'other', friendlyName: 'Other', personaName: 'Other', tmuxSession: 'cc-other', handDir: join(f.config.handsDir, 'cc-other'), workDir: join(f.config.projectDir, 'other-work'), spawnedBy: undefined });
   writeFileSync(join(other.workDir!, 'big'), Buffer.alloc(1000));
   const sorted = (await f.run('list stopped by size')).content;
-  assert.ok(sorted.indexOf('**Other**') < sorted.indexOf('**[cc-opus')); assert.match(sorted, /1008 bytes/);
+  assert.ok(sorted.indexOf('**Other**') < sorted.indexOf('**[cc-opus')); assert.match(sorted, /0 MB/);
   assert.doesNotMatch((await f.run('list stopped mine by size')).content, /\*\*Other\*\*/);
   assert.doesNotMatch((await f.run('list stopped by size by=unknown')).content, /Pathfinder/);
   assert.match((await f.run('list stopped by=1')).content, /Pathfinder/);
@@ -865,7 +865,7 @@ test('list stopped size sort and creator filters combine; unknown does not mean 
 test('force legacy token expires and cannot cross owners or authorize new shared references', async () => {
   const f = fixture(); const e = legacy(f);
   const first = await forcePreview(f);
-  assert.match((await f.run(first.command, 1)).content, /configured owner/);
+  assert.match((await f.run(first.command, 1)).content, /configured force-legacy admins/);
   const now = Date.now;
   try {
     Date.now = () => now() + 6 * 60_000;
@@ -909,4 +909,47 @@ test('force legacy token ignores unrelated activity but binds reference changes'
   const next = await forcePreview(f);
   f.registry.update(other, { lastActivity: new Date().toISOString() });
   assert.match((await f.run(next.command, 9)).content, /Deleted/);
+});
+
+
+test('explicit admins work without an owner and cannot use ordinary owner-only deletion', async () => {
+  const f = fixture({ ownerUserId: undefined, adminUserIds: [2, 9] }); const e = legacy(f);
+  assert.match((await f.run('delete scout confirm', 2)).content, /Only this hand.s creator/);
+  const reply = (await f.run('delete scout force-legacy', 2)).content;
+  assert.match(reply, /Force-legacy preview/);
+  assert.ok(existsSync(e.handDir)); assert.deepEqual(f.deactivated, []);
+  const command = reply.match(/delete cc-scout confirm force-legacy [a-f0-9]+/)![0];
+  assert.match((await f.run(command, 1)).content, /configured force-legacy admins/);
+  assert.match((await f.run(command, 9)).content, /Force-legacy preview/);
+  assert.match((await f.run(command, 2)).content, /Deleted/);
+  assert.equal(existsSync(e.handDir), false); assert.deepEqual(f.deactivated, [42]);
+});
+
+for (const adminUserIds of [[], [2]]) test('explicit admin list replaces owner fallback: ' + JSON.stringify(adminUserIds), async () => {
+  const f = fixture({ adminUserIds }); const e = legacy(f);
+  for (const command of ['delete scout force-legacy', 'delete scout confirm force-legacy', 'delete scout confirm force-legacy fake']) {
+    assert.match((await f.run(command, 9)).content, adminUserIds.length ? /configured force-legacy admins/ : /disabled/);
+    assert.ok(existsSync(e.handDir)); assert.deepEqual(f.deactivated, []);
+  }
+});
+
+test('admin removal revokes a pending legacy confirmation', async () => {
+  const f = fixture({ ownerUserId: undefined, adminUserIds: [9] }); const e = legacy(f);
+  const { command } = await forcePreview(f);
+  f.config.adminUserIds = [];
+  assert.match((await f.run(command, 9)).content, /disabled/);
+  assert.ok(existsSync(e.handDir)); assert.deepEqual(f.deactivated, []);
+});
+
+for (const overrides of [{ allowedUsers: [1] }, { allowedStreams: ['elsewhere'] }]) test('force-legacy admins still need normal authorization ' + JSON.stringify(overrides), async () => {
+  const f = fixture({ adminUserIds: [2], ...overrides }); const e = legacy(f);
+  const reply = await f.run('delete scout force-legacy', 2);
+  assert.doesNotMatch(reply.content, /Force-legacy preview/);
+  assert.ok(existsSync(e.handDir)); assert.deepEqual(f.deactivated, []);
+});
+
+test('no owner and omitted admin list disables force-legacy', async () => {
+  const f = fixture({ ownerUserId: null }); const e = legacy(f);
+  assert.match((await f.run('delete scout force-legacy', 9)).content, /disabled/);
+  assert.ok(existsSync(e.handDir)); assert.deepEqual(f.deactivated, []);
 });

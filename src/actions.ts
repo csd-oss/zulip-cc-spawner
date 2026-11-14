@@ -1,4 +1,4 @@
-import { workdirSizes } from './workdir-size.js';
+import { formatWorkdirSize, workdirSizes } from './workdir-size.js';
 import { PREPARE_HANDDIR_JS } from './directory-owner.js';
 /**
  * SpawnerActions — the core. The Zulip control surface builds an Invocation
@@ -561,7 +561,7 @@ export class SpawnerActions {
     const sizeMap = new Map(stopped.map((e, i) => [e, sizes[i]]));
     if (bySize) stopped.sort((a, b) => sizeMap.get(b)!.bytes - sizeMap.get(a)!.bytes);
     return `${stopped.length} stopped hand(s):\n` + stopped.map(e =>
-      `* **${e.personaName}** (\`${e.friendlyName ?? e.suffix}\`, tmux \`${e.tmuxSession}\`) — creator: ${e.spawnedBy?.username || e.spawnedBy?.userId || 'unknown'}, home ${home(e)}, work-dir size: ${sizeMap.get(e)!.partial ? '≥' : ''}${sizeMap.get(e)!.bytes} bytes${sizeMap.get(e)!.partial ? ' (partial/unknown)' : ''}${!e.workDir ? ' (shared projectDir)' : ''}${e.lastActivity ? `, last activity ${e.lastActivity}` : ''}`,
+      `* **${e.personaName}** (\`${e.friendlyName ?? e.suffix}\`, tmux \`${e.tmuxSession}\`) — creator: ${e.spawnedBy?.username || e.spawnedBy?.userId || 'unknown'}, home ${home(e)}, work-dir size: ${formatWorkdirSize(sizeMap.get(e)!)}${!e.workDir ? ' (shared projectDir)' : ''}${e.lastActivity ? `, last activity ${e.lastActivity}` : ''}`,
     ).concat(failures).join('\n');
   }
 
@@ -571,8 +571,11 @@ export class SpawnerActions {
     if (!matches.length) return `Hand \`${target}\` not found.`;
     if (matches.length !== 1) return 'Ambiguous hand name — use its bot email or tmux session; nothing was changed.';
     const entry = matches[0];
-    if (forceLegacy && inv.invoker.userId !== cfg.ownerUserId) return 'Only the configured owner may use force-legacy.';
-    if (!this.owns(inv, entry)) {
+    const admins = cfg.adminUserIds ?? (cfg.ownerUserId == null ? [] : [cfg.ownerUserId]);
+    if (forceLegacy && !admins.includes(inv.invoker.userId)) {
+      return admins.length ? 'Only configured force-legacy admins may use force-legacy.' : 'force-legacy is disabled: no admins configured.';
+    }
+    if (!forceLegacy && !this.owns(inv, entry)) {
       if (!entry.spawnedBy && cfg.ownerUserId == null) return 'Cannot delete this hand: creator unknown and no ownerUserId configured; nothing was changed.';
       return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or ${this.ownerDescription()} may delete it, regardless of creatorOnlyControls.`;
     }
@@ -646,7 +649,7 @@ ${rawPreview}`;
         const key = `${inv.invoker.userId}:${entry.tmuxSession}`;
         const signature = JSON.stringify([history, [...new Set(references)].sort(),
           [...new Set(registry.all().filter(e => e.tmuxSession !== entry.tmuxSession).map(e => e.botUserId))].sort((a, b) => a - b),
-          cfg.projectDir, cfg.handsDir, cfg.workRoot, checked.paths, bots]);
+          cfg.projectDir, cfg.handsDir, cfg.workRoot, admins, checked.paths, bots]);
         const pending = this.legacyDeletes.get(key);
         this.legacyDeletes.delete(key);
         if (!legacyToken || !pending || pending.token !== legacyToken ||

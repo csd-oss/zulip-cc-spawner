@@ -180,12 +180,13 @@ test('delete and list stopped grammar: explicit confirmation and no trailing con
 });
 
 test('legacy confirmation and stopped filters are explicit and composable', () => {
+  assert.deepEqual(parseCommand('delete scout force-legacy'), { kind: 'delete', target: 'scout', forceLegacy: true });
   assert.deepEqual(parseCommand('delete scout confirm force-legacy'), { kind: 'delete', target: 'scout', confirm: true, forceLegacy: true, legacyToken: undefined });
   assert.deepEqual(parseCommand('delete scout confirm force-legacy abc'), { kind: 'delete', target: 'scout', confirm: true, forceLegacy: true, legacyToken: 'abc' });
   assert.deepEqual(parseCommand('list stopped mine by size'), { kind: 'list', stopped: true, creator: 'mine', bySize: true });
   assert.deepEqual(parseCommand('list stopped by size by=9'), { kind: 'list', stopped: true, bySize: true, creator: 9 });
   assert.deepEqual(parseCommand('list stopped by=unknown'), { kind: 'list', stopped: true, creator: 'unknown' });
-  for (const text of ['delete scout force-legacy', 'delete scout confirm force-legacy abc please', 'rename a b force-legacy', 'list stopped mine by=9', 'list stopped by=size', 'list stopped by=0']) {
+  for (const text of ['delete scout force-legacy abc', 'delete scout confirm force-legacy abc please', 'rename a b force-legacy', 'list stopped mine by=9', 'list stopped by=size', 'list stopped by=0']) {
     assert.equal(parseCommand(text).kind, 'help');
   }
 });

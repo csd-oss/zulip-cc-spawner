@@ -459,6 +459,11 @@ Codex spawn/revive snapshots an inclusive home-topic message-ID boundary: catch-
   Set a positive Zulip user ID explicitly if an operator needs owner powers.
   Upgrading from the earlier PR #8 build: set `creatorOnlyControls: true` and an explicit
   `ownerUserId` to retain its restrictive policy; allow-lists still apply to the owner.
+- `adminUserIds` is an optional array of positive Zulip user IDs for **force-legacy
+  only**. When omitted, it falls back to `ownerUserId` for existing configs.
+  An explicit list replaces that fallback (even the owner must be listed);
+  `[]` disables force-legacy. It grants no other creator/owner powers and does
+  not bypass caller/stream allow-lists. No owner is required when a list is set.
 - Upgrade note: rename/model now follow `creatorOnlyControls`, too. They are open to
   allowed callers by default; enable strict mode to retain creator/owner-only controls.
 - Adopted hands without `spawnedBy` never acquire the reviver as creator. With no owner
@@ -507,9 +512,11 @@ rather than guessed, and unmarked bracket-name collisions stay fail-closed.
 
 ### Legacy cleanup and stopped-hand inventory
 
-`delete <hand> confirm force-legacy` is **configured `ownerUserId` only** (the
+`delete <hand> force-legacy` is **configured `adminUserIds` only** (with the
+legacy owner fallback described above; the
 normal caller/stream allow-lists still apply). It does not immediately delete:
-it previews exact directory paths and bot user IDs, then supplies a separate
+The old `delete <hand> confirm force-legacy` preview spelling still works.
+It previews exact directory paths and bot user IDs, then supplies a separate
 `delete <tmux-name> confirm force-legacy <token>` command. The token expires in
 five minutes, is single-use, and is invalidated by registry/configuration or
 directory-identity changes. A restart loses pending confirmations. An ordinary
@@ -537,7 +544,10 @@ Examples: `list stopped mine by size`, `list stopped by=9`, and
 creator, never an inferred reviver; unknown creators are excluded from `mine`
 and numeric filters. User IDs, not ambiguous display names, are accepted.
 
-Sizes are **apparent regular-file bytes**, including hidden files, deduplicating
+Sizes are displayed in decimal **MB**, switching to **GB at 1,000 MB**, with
+at most two decimal places (for example `840 MB` or `≥840 MB (partial/unknown)`).
+Partial lower bounds are rounded down. Sorting still uses unrounded bytes.
+Sizes measure **apparent regular-file bytes**, including hidden files, deduplicating
 hardlinks within each workDir (not allocated disk usage). Legacy projectDir is
 labelled shared. Measurement runs as the agents user, does not follow symlinks
 at any path component, and stays on the starting device. It streams directory
