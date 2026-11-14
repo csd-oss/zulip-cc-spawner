@@ -21,7 +21,7 @@ function fixture() {
  const host=new LocalHost();
  host.exec=async(cmd,args,opts)=>args[1]===HAND_PROCESSES_JS?{stdout:'false'}:local.exec(cmd,args,opts);
  const sessions=new Set<string>();
- const tmux={hasSession:async(s: string)=>sessions.has(s),killSession:async(s: string)=>sessions.delete(s)};
+ const tmux={otherPaneRoots: async () => [], hasSession:async(s: string)=>sessions.has(s),killSession:async(s: string)=>sessions.delete(s)};
  const provisioner={ensure:async(_full: string,short: string)=>({bot:{userId:100,email:short+'@offline'},created:true}),subscribe:async()=>{},rename:async()=>{},deactivate:async()=>{},credsFor:()=>({email:'fake@offline',key:'fake',site:'https://offline'})};
  const launcher={launch:async(r: any)=>{sessions.add(r.tmuxSession); return {};}};
  const watcher={transcriptPath:(id: string)=>join(dir,'transcripts',id)};

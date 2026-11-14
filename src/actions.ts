@@ -15,7 +15,7 @@ import { isPlausibleMessageTime } from './activity-time.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { prepareWorkDir } from './workdir.js';
-import { deletionPaths, handStopped, type CheckedDeletionPath, type DeletionPath } from './delete-hand.js';
+import { ProcessLivenessError, deletionPaths, handStopped, type CheckedDeletionPath, type DeletionPath } from './delete-hand.js';
 import { handIdentityName, handName, modelDisplayName } from './names.js';
 import { isAllowed, type GroupCheck, type Invoker, type Where } from './auth.js';
 import {
@@ -548,8 +548,9 @@ export class SpawnerActions {
       try {
         if (await handStopped(this.d.host, this.d.tmux, this.d.config, history)) stopped.push(entry);
       } catch (err) {
-        log(`list stopped liveness ${entry.tmuxSession}: ${JSON.stringify((err as Error).message)}`);
-        failures.push(`* Could not verify stopped hand **${entry.personaName}** (tmux \`${entry.tmuxSession}\`): ${(err as Error).message}`);
+        const cause = err instanceof ProcessLivenessError ? err.message : 'liveness check failed';
+        log(`list stopped liveness ${entry.tmuxSession}: ${JSON.stringify(cause)}`);
+        failures.push(`* Could not verify stopped hand **${entry.personaName}** (tmux \`${entry.tmuxSession}\`): ${cause}`);
       }
     }
     if (!stopped.length) return [failures.length ? 'No verified stopped hands.' : 'No stopped hands.', ...failures].join('\n');
@@ -639,7 +640,8 @@ export class SpawnerActions {
       log(`delete ${entry.tmuxSession}: removed ${count} registry entries`);
       return `Deleted **${entry.personaName}**.\n${previewFor(cleanup.paths!)}${warnings.length ? '\n' + warnings.join('\n') : ''}`;
     } catch (err) {
-      log(`delete ${entry.tmuxSession}: failed ${JSON.stringify((err as Error).message)}`);
+      log(`delete ${entry.tmuxSession}: failed ${err instanceof ProcessLivenessError ? JSON.stringify(err.message) : 'path, liveness or registry check failed'}`);
+      if (err instanceof ProcessLivenessError) return `Could not complete deletion: ${err.message}. Registry kept for retry.`;
       return 'Could not complete deletion (path, liveness or registry check failed). Registry kept for retry; inspect logs before retrying.';
     }
   }

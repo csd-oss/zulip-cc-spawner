@@ -1,4 +1,7 @@
 # /etc/sudoers.d/cc-spawner  (visudo -cf before installing; mode 0440)
 # One way only: the spawner may act as the hands' user; the hands get nothing back.
 Defaults:cc-spawner !requiretty
+# Avoid pam_systemd creating a user manager and non-dumpable (sd-pam) per sudo
+# on EL9, which would make delete's liveness check always fail closed.
+Defaults:cc-spawner !pam_session
 cc-spawner ALL=(cc-agents) NOPASSWD: ALL
