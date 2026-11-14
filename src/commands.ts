@@ -8,7 +8,7 @@
  *   models                (also: help models)
  *   list
  *   stop <name>            (alias: kill)
- *   peek <name> [lines]    (always answered by DM)
+ *   peek <name> [lines] [here] (DM by default; here replies at invocation)
  *   answer <name> <choice>
  *   press <name> <keys…>
  *   rescan
@@ -21,7 +21,7 @@ export type Command =
   | { kind: 'models' }
   | { kind: 'list' }
   | { kind: 'stop'; target: string }
-  | { kind: 'peek'; target: string; lines?: number }
+  | { kind: 'peek'; target: string; lines?: number; here?: boolean }
   | { kind: 'answer'; target: string; spec: string }
   | { kind: 'press'; target: string; keys: string[] }
   | { kind: 'rescan' }
@@ -110,12 +110,13 @@ export const USAGE = [
   '`spawn <model> [name=<friendly>] [effort=<level>] [engine=codex|claude]` — spawn a hand whose home is this stream + topic (model explicit: fable-5-1, opus-5-5, sonnet-5-5, haiku-4-5, … or a full id; Claude effort: low, medium, high, xhigh, max, ultracode — kept across revivals, `effort=default` clears it)',
   'Codex: `gpt-*` → `codex` CLI; other ids → `claude`. Override with `engine=codex|claude`. Display names: `[cx-<model>] <name>` (Claude: `[cc-<model>] <name>`); new bot emails/tmux/workdirs use only `cx-<name>` / `cc-<name>`.',
   `Codex efforts: ${[...new Set(MODEL_CAPABILITIES.filter((r) => r.engine === 'codex').flatMap((r) => r.efforts))].join(', ')} (passed through; model-dependent).`,
-  '`model <hand> [<model>] [effort=...]` — live same-engine switch (creator/owner only); omit model to list the live menu',
-  '`rename <hand> <new-friendly-name>` — change the visible name only (creator/owner); old names remain aliases, including on revival',
+  '`model <hand> [<model>] [effort=...]` — live same-engine switch (follows creatorOnlyControls; open by default); omit model to list the live menu',
+  '`rename <hand> <new-friendly-name>` — change the visible name only (follows creatorOnlyControls; open by default); old names remain aliases, including on revival',
+  'Rename/model, model-menu answers and model-changing revival follow `creatorOnlyControls`: any allowed caller by default; creator/owner in strict mode (adopted hands with neither creator nor configured owner stay collaborative).',
   '`models` (or `help models`) — aliases, full ids, CLIs, allowed efforts and default behaviour',
   '`list` — show running hands',
   '`stop <name>` — stop a hand (identity and conversation are kept; `spawn` the same name revives it, optionally with a new home/model)',
-  '`peek <name> [lines]` — DM yourself the hand\'s terminal tail (default 20 lines)',
+  '`peek <name> [lines] [here]` — terminal tail (default 20 lines), DM by default; here shares it with everyone in the invoking topic (or replies in the invoking DM)',
   '`answer <name> <choice>` — answer a hand\'s pending question or permission prompt (`2`, `1,3`, `yes`/`no`, `text: …`, or `esc`)',
   '`press <name> <keys…>` — raw keystrokes into a hand\'s terminal (`press scout 1 enter`; keys: digits, `enter`, `esc`, `tab`, `up`/`down`, `ctrl-c`, or literal text)',
   '`rescan` — re-check every hand for an open question dialog and (re)post it',
@@ -325,8 +326,16 @@ export function parseCommand(body: string): Command {
     case 'stop':
     case 'kill':
       return extra(2) ?? buildStopCommand(tokens[1]);
-    case 'peek':
-      return extra(3) ?? buildPeekCommand(tokens[1], tokens[2]);
+    case 'peek': {
+      const args = tokens.slice(2);
+      const here = args.includes('here');
+      const counts = args.filter(token => token !== 'here');
+      if (args.filter(token => token === 'here').length > 1 || counts.length > 1) {
+        return { kind: 'help', error: 'peek takes a target, optional line count, and optional here — `peek <name> [lines] [here]`' };
+      }
+      const command = buildPeekCommand(tokens[1], counts[0]);
+      return here && command.kind === 'peek' ? { ...command, here: true } : command;
+    }
     case 'answer': {
       // The spec is free text — take the raw remainder after the target token.
       const afterVerb = body.trim().slice(tokens[0].length).trim();

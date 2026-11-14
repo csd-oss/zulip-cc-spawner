@@ -155,3 +155,16 @@ test('rename grammar accepts friendly/full/mention targets and strictly rejects 
     assert.equal(parseCommand(text).kind, 'help', text);
   }
 });
+
+test('peek here accepts either ordering and keeps DM as the default', () => {
+  assert.deepEqual(parseCommand('peek scout'), { kind: 'peek', target: 'scout' });
+  assert.deepEqual(parseCommand('peek scout here'), { kind: 'peek', target: 'scout', here: true });
+  for (const lines of [1, 20, 400]) for (const args of [`here ${lines}`, `${lines} here`]) {
+    assert.deepEqual(parseCommand(`peek scout ${args}`), { kind: 'peek', target: 'scout', lines, here: true });
+  }
+  for (const args of ['here 0', '401 here', 'here -1', '1.5 here', 'here NaN', 'here elsewhere', 'elsewhere',
+    'here here', 'here 20 30', '20 here unknown']) {
+    assert.equal(parseCommand(`peek scout ${args}`).kind, 'help', args);
+  }
+  assert.equal(parseCommand('peek').kind, 'help');
+});
