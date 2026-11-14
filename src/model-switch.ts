@@ -29,14 +29,22 @@ export function parseModelMenu(pane: string, engine: 'claude' | 'codex'): ModelM
   const block = pane.slice(last.index);
   const kind = /^Switch model\?/.test(block) ? 'confirm' : /^Select Reasoning Level/.test(block) ? 'reasoning' : 'models';
   const options: ModelOption[] = [];
+  let descriptionColumn: number | undefined;
   for (const line of block.split('\n').slice(1)) {
-    const m = line.match(/^\s*([›❯]\s*)?(\d+)\.\s+(.+?)\s*$/);
+    const m = line.match(/^\s*([↑↓›❯\s]*?)(\d+)\.\s+(.+?)\s*$/);
     if (!m) continue;
+    // Even a numbered continuation belongs to the description, not the menu.
+    if (engine === 'claude' && descriptionColumn !== undefined && line.indexOf(m[2]) >= descriptionColumn) continue;
     // Two or more spaces separate a display label from its prose description.
-    const label = m[3].split(/\s{2,}/)[0].trim();
-    options.push({ number: Number(m[2]), label, model: displayId(label, engine), cursor: !!m[1] });
+    const [label, description] = m[3].split(/\s{2,}/);
+    if (description) descriptionColumn = line.indexOf(description, line.indexOf(m[3]) + label.length);
+    // 2.1.323 labels are families (and may carry ✔); the version lives in
+    // the description column, rather than in wrapped continuation lines.
+    const versioned = engine === 'claude' && description?.match(/^((?:Claude[ -])?[a-z][a-z -]* \d+(?:\.\d+)*)(?=\s*(?:·|$))/i)?.[1];
+    const identity = engine === 'claude' ? versioned || label.replace(/\s*✔/g, '').trim() : label;
+    options.push({ number: Number(m[2]), label: label.trim(), model: displayId(identity, engine), cursor: /[›❯]/.test(m[1]) });
   }
-  return options.length ? { kind, options, more: /^\s*↓\s*$/m.test(block) } : undefined;
+  return options.length ? { kind, options, more: /^\s*(?:[›❯]\s*)?↓(?:\s|$)|^\s*…\s*\+\d+\s+models?\b/m.test(block) } : undefined;
 }
 
 export function reasoningKeys(menu: ModelMenu, effort?: string): string[] | undefined {
@@ -56,13 +64,60 @@ export type SwitchResult = { kind: 'switched'; model: string; effort?: string } 
 export class LiveModelSwitcher {
   constructor(private tmux: Tmux, private pause = (ms: number) => new Promise<void>(r => setTimeout(r, ms))) {}
 
-  private async wait(session: string, accepts: (pane: string) => boolean): Promise<string> {
+  private async wait(session: string, accepts: (pane: string) => boolean, phase = 'confirmation'): Promise<string> {
     for (let i = 0; i < 12; i++) {
       await this.pause(200);
       const pane = await this.tmux.capturePane(session);
       if (accepts(pane)) return pane;
     }
-    throw new Error('unexpected model screen or confirmation timed out; old registry model kept — inspect with `peek`');
+    throw new Error(`unexpected model screen or ${phase} timed out; old registry model kept — inspect with \`peek\``);
+  }
+
+  /** Walk Claude's viewport, never select it. Stop at verified endpoints and
+   * refuse incomplete/inconsistent snapshots rather than guessing hidden ids. */
+  private async claudeModels(session: string, initial: ModelMenu): Promise<ModelMenu> {
+    if (!initial.more && Math.min(...initial.options.map(o => o.number)) === 1) {
+      // A cursor on the last visible row can hide a ↓-only indicator.
+      // With no prior viewport evidence, report uncertainty, not completeness.
+      return { ...initial, more: initial.options.at(-1)?.cursor === true };
+    }
+    const options = new Map<number, ModelOption>();
+    const originalCursor = initial.options.find(o => o.cursor)?.number;
+    let menu = initial;
+    let moves = 0;
+    let requiredBottom = 1;
+    const merge = () => {
+      // Remember evidence of hidden rows even if ↓ is replaced by the cursor
+      // on a subsequent screen. A disappearing marker is not an endpoint.
+      if (menu.more) requiredBottom = Math.max(requiredBottom, Math.max(...menu.options.map(o => o.number)) + 1);
+      for (const option of menu.options) {
+        const previous = options.get(option.number);
+        if (previous && previous.model !== option.model) throw new Error('Claude model menu changed while scrolling; retry');
+        options.set(option.number, { ...option, cursor: option.number === originalCursor });
+      }
+    };
+    const cursor = () => {
+      const option = menu.options.find(o => o.cursor);
+      if (!option) throw new Error('Claude scrolling model menu has no cursor; old model kept');
+      return option.number;
+    };
+    const step = async (key: 'Up' | 'Down') => {
+      if (++moves > 64) throw new Error('Claude model menu discovery exceeded 64 moves; old model kept');
+      const expected = cursor() + (key === 'Up' ? -1 : 1);
+      await this.tmux.sendKeys(session, key);
+      const pane = await this.wait(session, p => {
+        const next = parseModelMenu(p, 'claude');
+        return next?.kind === 'models' && next.options.some(o => o.cursor && o.number === expected);
+      }, 'Claude model menu discovery');
+      menu = parseModelMenu(pane, 'claude')!;
+      merge();
+    };
+    merge();
+    while (cursor() > 1) await step('Up');
+    while (menu.more || cursor() < Math.max(requiredBottom, ...menu.options.map(o => o.number))) await step('Down');
+    const sorted = [...options.values()].sort((a, b) => a.number - b.number);
+    if (sorted.some((o, i) => o.number !== i + 1)) throw new Error('Claude model menu discovery missed entries; retry');
+    return { kind: 'models', options: sorted, more: false };
   }
 
   async run(session: string, engine: 'claude' | 'codex', model?: string, effort?: string): Promise<SwitchResult> {
@@ -85,18 +140,22 @@ export class LiveModelSwitcher {
       await this.tmux.sendText(session, engine === 'claude' && model ? `/model ${model}` : '/model');
       await this.tmux.sendKeys(session, 'Enter');
       const freshClaude = (p: string) => !!model && this.claudeConfirmed(p, model) && this.confirmations(p, 'claude', model) > this.confirmations(before, 'claude', model);
-      let pane = await this.wait(session, p => !!parseModelMenu(p, engine) || (engine === 'claude' && freshClaude(p)));
+      let pane = await this.wait(session, p => !!parseModelMenu(p, engine) || (engine === 'claude' && freshClaude(p)), 'model menu opening');
       if (engine === 'claude' && model && freshClaude(pane)) {
         applied = true;
         return { kind: 'switched', model };
       }
       let menu = parseModelMenu(pane, engine)!;
+      if (engine === 'claude' && menu.kind === 'models') menu = await this.claudeModels(session, menu);
       if (!model) return { kind: 'menu', menu };
       if (engine === 'claude') {
         if (menu.kind === 'models') return { kind: 'menu', menu };
         if (menu.kind !== 'confirm') throw new Error('expected Claude “Switch model?” confirmation');
         const yes = menu.options.find(o => /^Yes, switch to /i.test(o.label) && sameModel(o.label.replace(/^Yes, switch to /i, ''), model, engine));
         if (!yes) throw new Error('Claude confirmation did not name the requested model');
+        // Keep the captured /model <id> -> Yes flow. The list advertises `s`,
+        // but no captured session-only confirmation establishes its safety.
+        // This path may save Claude's default; launches still pass --model.
         await this.tmux.sendKeys(session, String(yes.number));
         await this.wait(session, p => freshClaude(p));
         applied = true;

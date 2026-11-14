@@ -1,3 +1,4 @@
+import { claude323Replay } from './model-replay.js';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -15,7 +16,7 @@ import { Registry, type BotEntry } from '../src/registry.js';
 import type { Tmux } from '../src/tmux.js';
 import { TranscriptWatcher } from '../src/transcript-watch.js';
 import { testConfig, tmp } from './helpers.js';
-import { CLAUDE_CONFIRM, CLAUDE_CHANGED, CODEX_MODELS, CODEX_REASONING, CODEX_CHANGED } from './model-fixtures.js';
+import { CLAUDE_323_CONFIRM, CLAUDE_323_CHANGED, CLAUDE_CONFIRM, CLAUDE_CHANGED, CODEX_MODELS, CODEX_REASONING, CODEX_CHANGED } from './model-fixtures.js';
 
 const home: Where = { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic: 'old' };
 const elsewhere: Where = { kind: 'stream', streamName: 'elsewhere', streamId: 8, topic: 'new' };
@@ -79,7 +80,7 @@ function fixture(overrides: Partial<SpawnerConfig> = {}) {
     registry.add(e);
     return e;
   }
-  return { host, actions, config, dir, registry, launches, subscriptions, renames, posts, state, keys, texts, prior, run };
+  return { tmux, host, actions, config, dir, registry, launches, subscriptions, renames, posts, state, keys, texts, prior, run };
 }
 
 for (const user of [1, 9]) for (const model of ['sonnet-5-5', 'opus-5-5']) test(`user ${user} rehomes and resumes with ${model}, retaining creator, bot, paths, transcript`, async () => {
@@ -878,4 +879,50 @@ for (const overlap of ['session', 'alias']) test(`a running renamed hand's ${ove
   assert.equal(f.launches[0].tmuxSession, c.tmuxSession);
   assert.equal(f.launches[0].sessionId, c.sessionId);
   assert.equal(a.status, 'alive');
+});
+
+test('Claude 2.1.323 end-to-end: full menu posted, numeric Fable snapshot reopens and verifies version', async () => {
+  const f = live();
+  const replay = claude323Replay(f.keys, f.texts);
+  Object.assign(f.tmux, replay.tmux);
+  assert.match((await f.run('model scout', elsewhere)).content, /menu posted/);
+  assert.equal(f.posts[0].streamName, 'cc-hands');
+  assert.equal(f.posts[0].topic, 'old');
+  for (const row of ['2. Opus', '3. Fable', '4. Sonnet ✔', '5. Haiku']) assert.ok(f.posts[0].content.includes(row), row);
+  assert.doesNotMatch(f.posts[0].content, /More entries/);
+  assert.deepEqual(f.e.pendingModelMenu!.options.map(o => [o.number, o.model]), [
+    [2, 'claude-opus-5-5'], [3, 'claude-fable-5-2'], [4, 'claude-sonnet-5-5'], [5, 'claude-haiku-5-5'],
+  ]);
+  assert.equal(f.e.model, 'claude-sonnet-5-5');
+  assert.deepEqual(f.keys.at(-1), ['Escape']);
+  assert.equal(replay.index, 8);
+  assert.match((await f.run('answer scout 3')).content, /without stopping/);
+  assert.equal(f.e.model, 'claude-fable-5-2');
+  assert.equal(f.e.pendingModelMenu, undefined);
+  assert.deepEqual(f.texts, ['/model', '/model claude-fable-5-2']);
+  assert.deepEqual(f.keys.at(-1), ['1']);
+  assert.equal(f.launches.length, 0);
+});
+
+test('Claude 2.1.323 end-to-end: explicit fable-5-2 matches versioned confirmation', async () => {
+  const f = live();
+  f.state.panes = ['? for shortcuts', CLAUDE_323_CONFIRM, CLAUDE_323_CHANGED];
+  assert.match((await f.run('model scout fable-5-2')).content, /without stopping/);
+  assert.equal(f.e.model, 'fable-5-2');
+  assert.deepEqual(f.texts, ['/model fable-5-2']);
+  assert.deepEqual(f.keys, [['Enter'], ['1']]);
+});
+
+for (const stage of ['confirm', 'success']) test(`Claude 2.1.323 end-to-end: mismatched ${stage} retains registry/name`, async () => {
+  const f = live();
+  const before = f.e.personaName;
+  f.state.panes = ['? for shortcuts',
+    stage === 'confirm' ? CLAUDE_323_CONFIRM.replace('5.2', '5.1') : CLAUDE_323_CONFIRM,
+    stage === 'success' ? CLAUDE_323_CHANGED.replace('5.2', '5.1') : CLAUDE_323_CHANGED,
+  ];
+  assert.match((await f.run('model scout fable-5-2')).content, /Could not change/);
+  assert.equal(f.e.model, 'claude-sonnet-5-5');
+  assert.equal(f.e.personaName, before);
+  assert.deepEqual(f.renames, []);
+  assert.deepEqual(f.keys, stage === 'confirm' ? [['Enter'], ['Escape']] : [['Enter'], ['1'], ['Escape']]);
 });

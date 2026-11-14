@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { LiveModelSwitcher, normalizeModel, parseModelMenu, reasoningKeys } from '../src/model-switch.js';
 import { parseCommand } from '../src/commands.js';
+import { claude323Replay } from './model-replay.js';
 import type { Tmux } from '../src/tmux.js';
-import { CLAUDE_CONFIRM, CLAUDE_CHANGED, CODEX_MODELS, CODEX_REASONING, CODEX_CHANGED } from './model-fixtures.js';
+import { claude323Capture, CLAUDE_323_MIDDLE, CLAUDE_323_TOP, CLAUDE_323_BOTTOM, CLAUDE_323_CONFIRM, CLAUDE_323_CHANGED, CLAUDE_323_SCAN, CLAUDE_CONFIRM, CLAUDE_CHANGED, CODEX_MODELS, CODEX_REASONING, CODEX_CHANGED } from './model-fixtures.js';
 
 /** Each pane is a post-transition capture; an exhausted script stays on the
  * last screen so timeouts and unexpected screens are exercised without clocks. */
@@ -170,4 +171,115 @@ test('stuck menu cleanup fails loudly rather than claiming to have closed it', a
   };
   await assert.rejects(f.switcher.run('s', 'codex'), /could not dismiss/);
   assert.equal(f.keys.flat().filter(k => k === 'Escape').length, 4);
+});
+
+test('Claude 2.1.323 verbatim middle: scroll marker, versioned description, wrapped price, +1 model', () => {
+  const m = parseModelMenu(CLAUDE_323_MIDDLE, 'claude')!;
+  assert.equal(m.more, true);
+  assert.deepEqual(m.options, [
+    { number: 2, label: 'Opus', model: 'claude-opus-5-5', cursor: false },
+    { number: 3, label: 'Fable', model: 'claude-fable-5-2', cursor: false },
+    { number: 4, label: 'Sonnet ✔', model: 'claude-sonnet-5-5', cursor: true },
+  ]);
+});
+
+test('Claude 2.1.323 top/bottom, down marker, plural more and label fallback', () => {
+  const top = parseModelMenu(CLAUDE_323_TOP, 'claude')!;
+  assert.equal(top.more, true);
+  assert.equal(top.options[2].number, 3);
+  assert.equal(top.options[2].cursor, false);
+  assert.equal(parseModelMenu(CLAUDE_323_TOP.replace('      … +2 models\n', ''), 'claude')!.more, true);
+  const bottom = parseModelMenu(CLAUDE_323_BOTTOM, 'claude')!;
+  assert.equal(bottom.more, false);
+  assert.equal(bottom.options[2].model, 'claude-haiku-5-5');
+  assert.equal(bottom.options[2].cursor, true);
+  assert.equal(parseModelMenu('Select model\n› 1. Sonnet 5.5 ✔', 'claude')!.options[0].model, 'claude-sonnet-5-5');
+});
+
+test('Claude 2.1.323 list merges all viewports by number and dismisses without selection', async () => {
+  const f = claude323Replay();
+  const switcher = new LiveModelSwitcher(f.tmux, async () => {});
+  const result = await switcher.run('s', 'claude');
+  assert.equal(result.kind, 'menu');
+  assert.equal(f.index, 8);
+  if (result.kind !== 'menu') return;
+  assert.equal(result.menu.more, false);
+  assert.deepEqual(result.menu.options.map(o => [o.number, o.model]), [
+    [1, 'claude-default'], [2, 'claude-opus-5-5'], [3, 'claude-fable-5-2'], [4, 'claude-sonnet-5-5'], [5, 'claude-haiku-5-5'],
+  ]);
+  assert.deepEqual(result.menu.options.filter(o => o.cursor).map(o => o.number), [4]);
+  assert.deepEqual(f.keys, [['Enter'], ['Up'], ['Up'], ['Up'], ['Down'], ['Down'], ['Down'], ['Down'], ['Escape']]);
+});
+
+for (const model of ['claude-fable-5-2', 'fable-5-2']) test(`Claude 2.1.323 ${model}: versioned confirm and saved-default success`, async () => {
+  const f = scripted(['? for shortcuts', CLAUDE_323_CONFIRM, CLAUDE_323_CHANGED]);
+  assert.deepEqual(await f.switcher.run('s', 'claude', model), { kind: 'switched', model });
+  assert.deepEqual(f.keys, [['Enter'], ['1']]);
+});
+
+for (const [name, panes] of [
+  ['missing scroll cursor', [CLAUDE_323_MIDDLE.replace('❯', ' ')]],
+  ['stalled scrolling', [CLAUDE_323_MIDDLE]],
+  ['changed model identity', [CLAUDE_323_MIDDLE, CLAUDE_323_SCAN[1].replace('Fable 5.2', 'Fable 5.1')]],
+] as const) test(`Claude discovery refuses ${name} and dismisses menu`, async () => {
+  const f = scripted(['? for shortcuts', ...panes]);
+  await assert.rejects(f.switcher.run('s', 'claude'));
+  assert.deepEqual(f.keys.at(-1), ['Escape']);
+});
+
+test('Claude discovery is bounded even if every page advertises more', async () => {
+  const panes = Array.from({ length: 66 }, (_, i) => `Select model\n❯ ${i + 1}. Fable 5.2\n… +1 model`);
+  const f = scripted(['? for shortcuts', ...panes]);
+  await assert.rejects(f.switcher.run('s', 'claude'), /exceeded 64 moves/);
+  assert.equal(f.keys.filter(k => k[0] === 'Down').length, 64);
+  assert.deepEqual(f.keys.at(-1), ['Escape']);
+});
+
+test('Claude description continuations cannot invent numbered model options', () => {
+  const pane = CLAUDE_323_MIDDLE.replace('$4/$20 per Mtok', '9. A numbered description continuation');
+  assert.deepEqual(parseModelMenu(pane, 'claude')!.options.map(o => o.number), [2, 3, 4]);
+});
+
+test('scroll arrows do not masquerade as cursors, including combined markers', () => {
+  const m = parseModelMenu('Select model\n↑ › 2. Opus 5.5\n↓ 3. Fable 5.2', 'claude')!;
+  assert.equal(m.options[0].cursor, true);
+  assert.equal(m.options[1].cursor, false);
+  assert.equal(m.more, true);
+});
+
+test('discovery timeout is distinct from confirmation timeout', async () => {
+  const f = scripted(['? for shortcuts', CLAUDE_323_MIDDLE]);
+  await assert.rejects(f.switcher.run('s', 'claude'), /Claude model menu discovery timed out/);
+  const g = scripted(['? for shortcuts', CLAUDE_323_CONFIRM, '? for shortcuts']);
+  await assert.rejects(g.switcher.run('s', 'claude', 'claude-fable-5-2'), /confirmation timed out/);
+});
+
+test('↓-only evidence survives the marker disappearing under the cursor', async () => {
+  const panes = [
+    'Select model\n❯ 1. Opus 5.5\n↓ 2. Fable 5.2',
+    'Select model\n  1. Opus 5.5\n❯ 2. Fable 5.2',
+    'Select model\n↑ 2. Fable 5.2\n❯ 3. Haiku 5.5',
+  ];
+  const f = scripted(['? for shortcuts', ...panes]);
+  const result = await f.switcher.run('s', 'claude');
+  assert.equal(result.kind, 'menu');
+  if (result.kind !== 'menu') return;
+  assert.deepEqual(result.menu.options.map(o => o.number), [1, 2, 3]);
+  assert.equal(result.menu.more, false);
+  assert.deepEqual(f.keys, [['Enter'], ['Down'], ['Down'], ['Escape']]);
+});
+
+test('initial cursor may conceal a ↓-only marker: snapshot remains explicitly incomplete', async () => {
+  const f = scripted(['? for shortcuts', 'Select model\n  1. Opus 5.5\n❯ 2. Fable 5.2']);
+  const result = await f.switcher.run('s', 'claude');
+  assert.equal(result.kind, 'menu');
+  if (result.kind === 'menu') assert.equal(result.menu.more, true);
+  assert.deepEqual(f.keys, [['Enter'], ['Escape']]);
+});
+
+test('live Down-from-5 capture confirms wrapping; discovery must not use it', () => {
+  const wrapped = parseModelMenu(claude323Capture('20-down-from5-wrap'), 'claude')!;
+  assert.equal(wrapped.options.find(o => o.cursor)?.number, 1);
+  assert.equal(wrapped.more, true);
+  assert.equal(parseModelMenu(claude323Capture('30-after-escape'), 'claude'), undefined);
 });
