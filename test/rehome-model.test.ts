@@ -1,6 +1,7 @@
+import { randomBytes } from 'node:crypto';
 import { claude323Replay } from './model-replay.js';
 import assert from 'node:assert/strict';
-import { mkdirSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, lstatSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
@@ -75,7 +76,10 @@ function fixture(overrides: Partial<SpawnerConfig> = {}) {
     // Model a current, attested workspace for these revival/control fixtures.
     if (e.workDir && e.workDirReady) {
       const { dev, ino } = lstatSync(e.workDir);
-      e.workDirIdentity = { dev, ino };
+      const marker = join(e.workDir, '.cc-spawner-owner');
+      const nonce = existsSync(marker) ? readFileSync(marker, 'utf8') : randomBytes(32).toString('hex');
+      writeFileSync(join(e.workDir, '.cc-spawner-owner'), nonce);
+      e.workDirIdentity = { dev, ino, nonce };
     }
     writeFileSync(join(e.workDir ?? config.projectDir, 'keep.txt'), 'work');
     if (e.engine !== 'codex') {

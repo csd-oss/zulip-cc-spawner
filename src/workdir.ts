@@ -1,3 +1,4 @@
+import { DIRECTORY_OWNER_JS, type DirectoryIdentity } from './directory-owner.js';
 import { join } from 'node:path';
 import type { SpawnerConfig } from './config.js';
 import type { AgentHost } from './host.js';
@@ -5,7 +6,7 @@ import type { AgentHost } from './host.js';
 // Runs as the hand user, not the daemon. A separate lock directory serializes
 // cooperating spawns across processes; never unlink a potentially live lock.
 // Timeout fails closed (operator may remove a stale lock after checking owners).
-export const PREPARE_WORKDIR_JS = String.raw`
+export const PREPARE_WORKDIR_JS = DIRECTORY_OWNER_JS + String.raw`
 const fs = require('node:fs/promises'), path = require('node:path');
 (async () => {
   const [dir, file, fresh] = process.argv.slice(1);
@@ -19,13 +20,10 @@ const fs = require('node:fs/promises'), path = require('node:path');
       throw e;
     }
   }
-  const st = await fs.lstat(dir);
-  if (!st.isDirectory() || st.isSymbolicLink()) throw Error('unsafe workDir');
   const expected = JSON.parse(process.argv[5] || 'null');
-  if (fresh !== 'yes' && (!expected || st.dev !== expected.dev || st.ino !== expected.ino))
+  const identity = attestDirectory(dir, fresh === 'yes', expected);
+  if (!identity)
     throw Error('Workspace already exists: ' + dir + '. Refusing to adopt it: directory identity is unattested.');
-  const identity = {dev:st.dev, ino:st.ino};
-  await fs.chmod(dir, 0o700);
   if (process.argv[4] === 'no-trust') { console.log(JSON.stringify(identity)); return; }
   await fs.mkdir(path.dirname(file), {recursive:true, mode:0o700});
   const lock = file + '.spawner-lock';
@@ -60,7 +58,7 @@ const fs = require('node:fs/promises'), path = require('node:path');
 })().catch(e => { console.error(e.message); process.exitCode = 1; });
 `;
 
-export async function prepareWorkDir(host: AgentHost, cfg: SpawnerConfig, workDir: string, fresh: boolean, claudeTrust = true, identity?: { dev: number; ino: number }): Promise<{ dev: number; ino: number } | undefined> {
+export async function prepareWorkDir(host: AgentHost, cfg: SpawnerConfig, workDir: string, fresh: boolean, claudeTrust = true, identity?: DirectoryIdentity): Promise<DirectoryIdentity | undefined> {
   const { stdout } = await host.exec(cfg.nodeBin, ['-e', PREPARE_WORKDIR_JS, workDir, join(cfg.agentsHome, '.claude.json'), fresh ? 'yes' : 'no', claudeTrust ? 'trust' : 'no-trust', JSON.stringify(identity ?? null)]);
   return stdout.trim() ? JSON.parse(stdout) : undefined;
 }

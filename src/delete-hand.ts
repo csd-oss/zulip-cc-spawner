@@ -1,3 +1,4 @@
+import { DIRECTORY_OWNER_JS, type DirectoryIdentity } from './directory-owner.js';
 /** Destructive filesystem work runs as the agents user, just like provisioning. */
 import { resolve } from 'node:path';
 import type { SpawnerConfig } from './config.js';
@@ -5,14 +6,14 @@ import type { AgentHost } from './host.js';
 import type { BotEntry } from './registry.js';
 import type { Tmux } from './tmux.js';
 
-export interface DeletionPath { kind: 'hand dir' | 'workDir'; path: string; root: string; recursive?: boolean; identities?: { dev: number; ino: number }[] }
+export interface DeletionPath { kind: 'hand dir' | 'workDir'; path: string; root: string; recursive?: boolean; identities?: DirectoryIdentity[] }
 export interface CheckedDeletionPath extends DeletionPath { exists: boolean; kept?: boolean }
 
 // Validate the ENTIRE plan before removing anything. Never follow a symlink,
 // including an intermediate component or a link inside the directory tree.
 // Missing paths are safe only when their existing ancestors pass the same checks
 // (failed provisioning and retries after partial filesystem cleanup).
-export const DELETE_PATHS_JS = String.raw`
+export const DELETE_PATHS_JS = DIRECTORY_OWNER_JS + String.raw`
 const fs = require('node:fs'), path = require('node:path');
 const [plan, remove, protectedRoots] = JSON.parse(process.argv[1]);
 const removed = [];
@@ -48,7 +49,7 @@ try {
     const fd = fs.openSync(target, flags);
     try {
       if (fs.fstatSync(fd).dev !== dev) throw Error('mount point refused during removal (different device): ' + name);
-      if (identities && !matches(fs.fstatSync(fd), identities)) throw Object.assign(Error('directory identity changed'), {code:'UNATTESTED'});
+      if (identities && !ownerMatches(fd, identities)) throw Object.assign(Error('directory identity changed'), {code:'UNATTESTED'});
       for (const child of fs.readdirSync('/proc/self/fd/' + fd)) removeAt(fd, child, dev, true);
     }
     finally { fs.closeSync(fd); }
@@ -93,7 +94,9 @@ try {
     if (roots.some(r => canonical === r || inside(canonical, r))) throw Error('refusing to delete a configured root: ' + p.path);
     if (exists) {
       if (!fs.lstatSync(dir).isDirectory()) throw Error('not a directory: ' + dir);
-      p.recursive = Boolean(p.recursive && matches(fs.lstatSync(dir), p.identities));
+      const fd = fs.openSync(dir, flags);
+      try { p.recursive = Boolean(p.recursive && ownerMatches(fd, p.identities)); }
+      finally { fs.closeSync(fd); }
       if (p.recursive) tree(dir, dev);
     }
     return {...p, exists, dev, kept: exists && !p.recursive && fs.readdirSync(dir).length > 0};

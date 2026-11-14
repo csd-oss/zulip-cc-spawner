@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, openSync, readSync, closeSync, rmdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, openSync, readSync, closeSync, rmdirSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
@@ -76,7 +76,7 @@ test('new spawn is empty, private, trusted; revive retains cwd and transcript', 
   assert.match((await c.run('spawn opus-5-5 name=Scout')).content, /Spawned/);
   const e = c.registry.all()[0];
   assert.equal(e.workDir, join(c.cfg.projectDir, 'hands', e.tmuxSession));
-  assert.deepEqual(readdirSync(e.workDir!), []);
+  assert.deepEqual(readdirSync(e.workDir!), ['.cc-spawner-owner']);
   assert.equal(statSync(e.workDir!).mode & 0o777, 0o700);
   assert.equal(statSync(e.workDir!).uid, process.getuid!());
   const paths = handPaths(c.cfg.handsDir, e.tmuxSession, e.handDir);
@@ -97,7 +97,7 @@ test('new spawn is empty, private, trusted; revive retains cwd and transcript', 
   assert.equal(c.launches[1].resume, true);
   assert.equal(c.launches[1].sessionId, e.sessionId);
   assert.deepEqual(c.cwds, [e.workDir, e.workDir]);
-  assert.deepEqual(readdirSync(e.workDir!), []);
+  assert.deepEqual(readdirSync(e.workDir!), ['.cc-spawner-owner']);
   assert.equal(uploadRoot(), `work=${e.workDir}`, 'revival exports prior.workDir, not the current workRoot');
 });
 
@@ -198,7 +198,7 @@ test('trust merge serializes concurrent processes and replaces atomically, prese
   assert.equal(Object.keys(data.projects).length, 9);
   assert.equal(statSync(file).mode & 0o777, 0o600);
   data.projects[join(c.dir, 'work-0')].extra = true; writeFileSync(file, JSON.stringify(data));
-  await prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false, true, statSync(join(c.dir, 'work-0')));
+  await prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false, true, { ...statSync(join(c.dir, 'work-0')), nonce: readFileSync(join(c.dir, 'work-0', '.cc-spawner-owner'), 'utf8') });
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).projects[join(c.dir, 'work-0')].extra, true);
   writeFileSync(file, 'broken');
   await assert.rejects(prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false, true, statSync(join(c.dir, 'work-0'))));
@@ -254,7 +254,7 @@ test('first trust failure stays fail-closed after JSON repair; manual empty-dir 
   const workDir = first.workDir!;
   assert.equal(first.status, 'failed');
   assert.equal(first.workDirReady, undefined);
-  assert.deepEqual(readdirSync(workDir), []);
+  assert.deepEqual(readdirSync(workDir), ['.cc-spawner-owner']);
   assert.equal(c.launches.length, 0);
 
   writeFileSync(file, '{}'); // isolated test config; real operators preserve keys
@@ -263,9 +263,10 @@ test('first trust failure stays fail-closed after JSON repair; manual empty-dir 
   assert.ok(retry.content.includes(workDir), 'action reply names the exact workspace');
   assert.match(retry.content, /Refusing to adopt it/);
   assert.equal(c.launches.length, 0);
-  assert.deepEqual(readdirSync(workDir), []);
+  assert.deepEqual(readdirSync(workDir), ['.cc-spawner-owner']);
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {});
 
+  unlinkSync(join(workDir, '.cc-spawner-owner')); // inspected failed-preparation marker only
   rmdirSync(workDir); // documented manual recovery, refuses nonempty directories
   assert.match((await c.run('spawn opus-5-5 name=retry')).content, /Spawned/);
   const recovered = c.registry.findAlive('retry')!;
@@ -273,7 +274,7 @@ test('first trust failure stays fail-closed after JSON repair; manual empty-dir 
   assert.equal(recovered.botEmail, first.botEmail);
   assert.equal(recovered.workDirReady, true);
   assert.equal(c.launches.length, 1);
-  assert.deepEqual(readdirSync(workDir), []);
+  assert.deepEqual(readdirSync(workDir), ['.cc-spawner-owner']);
 });
 
 for (const [effort, abbreviation] of [

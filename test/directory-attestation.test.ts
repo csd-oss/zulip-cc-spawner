@@ -1,5 +1,7 @@
+import { PREPARE_WORKDIR_JS } from '../src/workdir.js';
+import { PREPARE_HANDDIR_JS } from '../src/directory-owner.js';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, rmSync, rmdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
@@ -84,4 +86,77 @@ test('move aside and replace '+kind+', revival='+revive, async () => {
  assert.match(await f.run('delete Explorer confirm'),/kept: not created/);
  assert.equal(readFileSync(join(original,'precious'),'utf8'),'foreign replacement');
  assert.equal(readFileSync(join(original+'.retired','precious'),'utf8'),'original');
+});
+
+
+for (const kind of ['workDir', 'handDir'] as const) test('creation swap never attests pre-existing precious: ' + kind, async () => {
+ const f=fixture(), root=kind==='handDir'?f.config.handsDir:join(f.dir,'hands');
+ const p=join(root,'cc-scout'), foreign=join(root,'preexisting-foreign');
+ mkdirSync(foreign); writeFileSync(join(foreign,'precious'),'foreign');
+ const exec=f.host.exec.bind(f.host); let injected=false;
+ f.host.exec=async(cmd,args,opts)=>{
+  if (!injected && args[1]===(kind==='workDir'?PREPARE_WORKDIR_JS:PREPARE_HANDDIR_JS)) {
+   injected=true;
+   const hook=kind==='workDir'?
+    `const F=require('node:fs/promises'), S=require('node:fs'), mkdir=F.mkdir;F.mkdir=async function(p,...rest){const r=await mkdir.call(this,p,...rest);if(p===${JSON.stringify(p)}){S.renameSync(p,p+'.retired');S.renameSync(${JSON.stringify(foreign)},p);}return r;};
+`:
+    `const F=require('node:fs'), mkdir=F.mkdirSync;F.mkdirSync=function(p,...rest){const r=mkdir.call(this,p,...rest);if(p===${JSON.stringify(p)}){F.renameSync(p,p+'.retired');F.renameSync(${JSON.stringify(foreign)},p);}return r;};
+`;
+   return exec(cmd,['-e',hook+args[1],...args.slice(2)],opts);
+  }
+  return exec(cmd,args,opts);
+ };
+ assert.match(await f.run('spawn opus-5-5 name=scout'),/failed/);
+ assert.ok(injected);
+ const e=f.registry.all()[0];
+ assert.equal(e[kind==='handDir'?'handDirIdentity':'workDirIdentity'],undefined);
+ assert.notEqual(lstatSync(p).ino,lstatSync(p+'.retired').ino);
+ assert.match(await f.run('delete scout confirm'),/kept: not created/);
+ assert.equal(readFileSync(join(p,'precious'),'utf8'),'foreign');
+ assert.ok(existsSync(p+'.retired'));
+});
+
+for (const kind of ['workDir', 'handDir'] as const) test('inode reuse cannot authorize precious without nonce: ' + kind, async (t) => {
+ const f=fixture(); await f.run('spawn opus-5-5 name=scout'); await f.run('stop scout');
+ const e=f.registry.all()[0], p=e[kind]!, key=kind==='handDir'?'handDirIdentity':'workDirIdentity', id=e[key]!;
+ rmSync(p,{recursive:true});
+ let reused=false;
+ for(let i=0;i<2000;i++) {
+  mkdirSync(p); const st=lstatSync(p);
+  if(st.ino===id.ino && st.dev===id.dev) { reused=true; break; }
+  rmdirSync(p);
+ }
+ if(!existsSync(p)) mkdirSync(p);
+ if(!reused) {
+  // Deterministic collision model on filesystems whose allocator avoids reuse.
+  const {dev,ino}=lstatSync(p); f.registry.update(e,{[key]:{...id,dev,ino}});
+ }
+ t.diagnostic(reused?'real inode reuse':'allocator did not reuse; modeled dev/ino collision');
+ writeFileSync(join(p,'precious'),'foreign');
+ assert.match(await f.run('delete scout confirm'),/kept: not created/);
+ assert.equal(readFileSync(join(p,'precious'),'utf8'),'foreign');
+});
+
+for (const kind of ['workDir', 'handDir'] as const) for(const marker of ['missing','wrong'])
+test('revival and cleanup require marker: '+kind+' '+marker, async () => {
+ const f=fixture(); await f.run('spawn opus-5-5 name=scout'); await f.run('stop scout');
+ const e=f.registry.all()[0], p=e[kind]!;
+ if(marker==='missing') rmSync(join(p,'.cc-spawner-owner'));
+ else writeFileSync(join(p,'.cc-spawner-owner'),'0'.repeat(64));
+ writeFileSync(join(p,'precious'),'foreign');
+ assert.match(await f.run('spawn opus-5-5 name=scout'),kind==='workDir'?/Refusing to adopt/:/Spawned/);
+ await f.run('stop scout');
+ assert.match(await f.run('delete scout confirm'),/kept: not created/);
+ assert.equal(readFileSync(join(p,'precious'),'utf8'),'foreign');
+});
+
+test('marker leaves workspace usable and ordinary lifecycle deletes both folders', async () => {
+ const f=fixture(); assert.match(await f.run('spawn opus-5-5 name=scout'),/Spawned/);
+ const e=f.registry.all()[0];
+ for(const p of [e.workDir!,e.handDir]) assert.match(readFileSync(join(p,'.cc-spawner-owner'),'utf8'),/^[a-f0-9]{64}$/);
+ writeFileSync(join(e.workDir!,'project.txt'),'normal workspace use');
+ await f.run('stop scout'); assert.match(await f.run('spawn opus-5-5 name=scout'),/Spawned|Revived/);
+ assert.equal(readFileSync(join(e.workDir!,'project.txt'),'utf8'),'normal workspace use');
+ await f.run('stop scout'); assert.match(await f.run('delete scout confirm'),/Deleted/);
+ assert.equal(existsSync(e.workDir!),false); assert.equal(existsSync(e.handDir),false);
 });

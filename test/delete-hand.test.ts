@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -60,7 +61,10 @@ function fixture(overrides: Parameters<typeof testConfig>[1] = {}) {
       const dir = entry[kind];
       if (dir && entry[kind === 'handDir' ? 'handDirReady' : 'workDirReady']) {
         const { dev, ino } = lstatSync(dir);
-        entry[kind === 'handDir' ? 'handDirIdentity' : 'workDirIdentity'] = { dev, ino };
+        const marker = join(dir, '.cc-spawner-owner');
+        const nonce = existsSync(marker) ? readFileSync(marker, 'utf8') : randomBytes(32).toString('hex');
+        writeFileSync(marker, nonce);
+        entry[kind === 'handDir' ? 'handDirIdentity' : 'workDirIdentity'] = { dev, ino, nonce };
       }
     }
     registry.add(entry);

@@ -1,3 +1,4 @@
+import { PREPARE_HANDDIR_JS } from './directory-owner.js';
 /**
  * SpawnerActions — the core. The Zulip control surface builds an Invocation
  * and calls run(); the returned result is the reply.
@@ -326,7 +327,7 @@ export class SpawnerActions {
       await this.d.host.mkdirp(cfg.handsDir);
       // mkdir without recursive is an exclusive creation claim, not an exists check.
       const { stdout: handDirCreated } = await this.d.host.exec(cfg.nodeBin, ['-e',
-        "const fs=require('node:fs'); let created=false; try { fs.mkdirSync(process.argv[1], {mode:0o700}); created=true; } catch(e) { if(e.code!=='EEXIST') throw e; } const st=fs.lstatSync(process.argv[1]), old=JSON.parse(process.argv[2]); if(!st.isDirectory() || st.isSymbolicLink()) throw Error('unsafe handDir'); console.log(JSON.stringify(created || (old && old.dev===st.dev && old.ino===st.ino) ? {dev:st.dev,ino:st.ino} : null));",
+        PREPARE_HANDDIR_JS,
         paths.dir, JSON.stringify(prior?.handDirReady ? prior.handDirIdentity ?? null : null)]);
       await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir, workDir);
 

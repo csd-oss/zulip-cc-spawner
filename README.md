@@ -63,10 +63,16 @@ Legacy hands without a recorded
 other filesystem failures keep the registry for retry after inspection.
 
 Recursive deletion requires a path-specific creation attestation for this hand:
-the directory's `{dev, ino}`, recorded on exclusive creation, plus its own
-`handDirReady` or `workDirReady` flag. The current directory must match that
-identity on lstat before reuse or cleanup (and on the opened directory before
-recursive removal). Status, the other directory's flag, and readiness alone
+the directory's `{dev, ino, nonce}`, plus its own readiness flag.
+After exclusive mkdir, the agents user opens it with O_DIRECTORY|O_NOFOLLOW,
+fstats it, and requires an empty directory owned by that user. It exclusively
+creates a mode-0600 `.cc-spawner-owner` containing a random 256-bit nonce through
+the directory fd. Revival and cleanup require both the opened directory identity
+and marker nonce to match; inode reuse alone grants no authority.
+The hidden marker is metadata, not a workspace input or credential: leave it in
+place. It does not change the workspace cwd, uploads, trust settings or transcript
+paths, and ordinary spawn → stop → delete removes it with both folders.
+Status, the other directory's flag, and readiness alone
 never prove ownership. Rename/rehome/revival cannot mint an attestation for an
 existing directory. Workspace revival refuses to adopt an unattested directory;
 an existing unattested hand directory stays explicitly unproven.
@@ -253,7 +259,7 @@ assumes Claude uses the normal agentsHome configuration, not an overridden
 ### First-preparation recovery (manual, fail closed)
 
 A failed first preparation (invalid `.claude.json`, lock timeout, or a crash)
-can leave an empty workspace **before** `workDirReady` is persisted. Repairing
+can leave a workspace containing only its owner marker **before** `workDirReady` is persisted. Repairing
 the JSON or removing the lock alone does not fix this: the retry deliberately
 refuses the existing directory, naming its absolute path in the error.
 
@@ -272,7 +278,10 @@ refuses the existing directory, naming its absolute path in the error.
 3. As the hand user, inspect the **exact workspace path named in the error**:
    check its owner and use `ls -ld -- '<workDir>'` and
    `ls -la -- '<workDir>'` to include hidden files. It must be a real directory,
-   not a symlink, owned by the hand user and completely empty. For example,
+   not a symlink and owned by the hand user. If its only entry is the regular
+   `.cc-spawner-owner` file from this failed preparation, inspect and remove that
+   file manually first. Never remove other contents to force recovery. The
+   directory must then be completely empty. For example,
    after the history/session checks above:
    ```sh
    workdir='/absolute/path/from/the/error'  # replace with the verified path

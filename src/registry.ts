@@ -1,3 +1,4 @@
+import { type DirectoryIdentity } from './directory-owner.js';
 /**
  * Persistent registry of spawned hands — ~/.cc-spawner/registry.json.
  * Atomic writes (tmp + rename). Stopped entries are kept as history; reviving
@@ -42,12 +43,12 @@ export interface BotEntry {
   /** True only after writing files into a directory exclusively created by us. */
   handDirReady?: boolean;
   /** Exclusive-creation identity; absent on all pre-attestation records. */
-  handDirIdentity?: { dev: number; ino: number };
+  handDirIdentity?: DirectoryIdentity;
   /** Absent on legacy hands: retain config.projectDir. */
   workDir?: string;
   /** Set only after exclusive workspace creation and trust preparation succeed. */
   workDirReady?: boolean;
-  workDirIdentity?: { dev: number; ino: number };
+  workDirIdentity?: DirectoryIdentity;
   nameScheme?: 'bracket-v1' | 'stable-v2';
   harness?: string;
   engine?: 'claude' | 'codex';
