@@ -6,7 +6,7 @@ import type { AgentHost } from './host.js';
 import type { BotEntry } from './registry.js';
 import type { Tmux } from './tmux.js';
 
-export interface DeletionPath { kind: 'hand dir' | 'workDir'; path: string; root: string; recursive?: boolean; identities?: DirectoryIdentity[] }
+export interface DeletionPath { kind: 'hand dir' | 'workDir'; path: string; root: string; recursive?: boolean; identities?: DirectoryIdentity[]; legacy?: boolean; snapshot?: { dev: number; ino: number } }
 export interface CheckedDeletionPath extends DeletionPath { exists: boolean; kept?: boolean }
 
 // Validate the ENTIRE plan before removing anything. Never follow a symlink,
@@ -15,7 +15,7 @@ export interface CheckedDeletionPath extends DeletionPath { exists: boolean; kep
 // (failed provisioning and retries after partial filesystem cleanup).
 export const DELETE_PATHS_JS = DIRECTORY_OWNER_JS + String.raw`
 const fs = require('node:fs'), path = require('node:path');
-const [plan, remove, protectedRoots] = JSON.parse(process.argv[1]);
+const [plan, remove, protectedRoots, references = []] = JSON.parse(process.argv[1]);
 const removed = [];
 const errno = e => ['EACCES','EPERM','ENOENT','ESRCH','EIO','ENOTDIR','EMFILE','ENFILE','EINVAL','ENOSYS','EOVERFLOW','ELOOP','ENXIO','ENOMEM','EBADF','EBUSY','ENOTEMPTY','EEXIST','UNATTESTED'].includes(e?.code) ? e.code : 'unexpected';
 const refuse = cause => Object.assign(Error(), {causeClass: cause});
@@ -30,9 +30,33 @@ try {
       return path.join(canonical(path.dirname(p)), path.basename(p));
     }
   }
+  const refs = references.map(p => canonical(path.resolve(p)));
   const roots = protectedRoots.map(p => canonical(path.resolve(p)));
+  const inodeKey = st => st.dev + ':' + st.ino;
+  const protectedInodes = new Set(), referenceInodes = new Set();
+  if (plan.some(p => p.legacy)) {
+    // realpath does not resolve bind-mount aliases. Protect reference identities
+    // and their ancestors as well as lexical/canonical spellings.
+    for (const ref of [...refs, ...roots]) {
+      let current = ref;
+      while (true) {
+        try {
+          const key = inodeKey(fs.statSync(current));
+          protectedInodes.add(key);
+          if (current === ref && refs.includes(ref)) referenceInodes.add(key);
+        } catch (e) { if (e.code !== 'ENOENT') throw e; }
+        const parent = path.dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
+    }
+  }
+  function protect(st) {
+    if (protectedInodes.has(inodeKey(st))) throw refuse('directory shared with another hand');
+  }
   function tree(p, dev) {
     const st = fs.lstatSync(p);
+    protect(st);
     if (st.isSymbolicLink()) throw refuse('symlink refused');
     if (st.dev !== dev) throw refuse('mount point refused (different device)');
     if (st.isDirectory()) for (const name of fs.readdirSync(p)) tree(path.join(p, name), dev);
@@ -42,24 +66,27 @@ try {
   // must fail, never turn recursive removal into traversal outside the root.
   const flags = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
   const matches = (st, identities) => identities?.some(id => id.dev === st.dev && id.ino === st.ino);
-  function removeAt(parent, name, dev, recursive, identities) {
+  function removeAt(parent, name, dev, recursive, identities, snapshot) {
     const target = '/proc/self/fd/' + parent + '/' + name;
     const st = fs.lstatSync(target);
+    protect(st);
     if (st.isSymbolicLink()) throw refuse('symlink refused during removal');
     if (st.dev !== dev) throw refuse('mount point refused during removal (different device)');
+    if (snapshot && !matches(st, [snapshot])) throw refuse('directory changed since preview');
     if (recursive && identities && !matches(st, identities)) throw Object.assign(Error('directory identity changed'), {code:'UNATTESTED'});
     if (!recursive) { fs.rmdirSync(target); return; }
     if (!st.isDirectory()) { fs.unlinkSync(target); return; }
     const fd = fs.openSync(target, flags);
     try {
       if (fs.fstatSync(fd).dev !== dev) throw refuse('mount point refused during removal (different device)');
+      if (snapshot && !matches(fs.fstatSync(fd), [snapshot])) throw refuse('directory changed since preview');
       if (identities && !ownerMatches(fd, identities)) throw Object.assign(Error('directory identity changed'), {code:'UNATTESTED'});
       for (const child of fs.readdirSync('/proc/self/fd/' + fd)) removeAt(fd, child, dev, true);
     }
     finally { fs.closeSync(fd); }
     fs.rmdirSync(target);
   }
-  function removeDir(dir, dev, recursive, identities) {
+  function removeDir(dir, dev, recursive, identities, snapshot) {
     let fd = fs.openSync(path.parse(dir).root, flags);
     try {
       const parts = dir.slice(path.parse(dir).root.length).split(path.sep);
@@ -68,7 +95,7 @@ try {
         fs.closeSync(fd); fd = next;
       }
       if (fs.realpathSync('/proc/self/fd/' + fd) !== path.dirname(dir)) throw refuse('parent moved during removal');
-      removeAt(fd, parts[parts.length - 1], dev, recursive, identities);
+      removeAt(fd, parts[parts.length - 1], dev, recursive, identities, snapshot);
     } finally { fs.closeSync(fd); }
   }
   const checked = plan.map(p => {
@@ -97,10 +124,35 @@ try {
     // Also protect the OTHER configured root, even under unusual nested config.
     const canonical = path.join(root, path.relative(lexicalRoot, dir));
     if (roots.some(r => canonical === r || inside(canonical, r))) throw refuse('refusing to delete a configured root');
+    if (refs.some(r => canonical === r || inside(canonical, r) || inside(r, canonical))) throw refuse('directory shared with another hand');
+    if (p.legacy) {
+      let ancestor = dir;
+      while (true) {
+        try {
+          if (referenceInodes.has(inodeKey(fs.statSync(ancestor)))) throw refuse('directory shared with another hand');
+        } catch (e) { if (e.code !== 'ENOENT') throw e; }
+        const parent = path.dirname(ancestor);
+        if (parent === ancestor) break;
+        ancestor = parent;
+      }
+      // Bind mounts can share st_dev. Refuse all visible mount boundaries.
+      const mounts = fs.readFileSync('/proc/self/mountinfo', 'utf8').trim().split('\n').map(line =>
+        line.split(' ')[4].replace(/\\([0-7]{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8))));
+      if (mounts.some(m => m === dir || inside(dir, m))) throw refuse('mount point refused (different device)');
+    }
     if (exists) {
       if (!fs.lstatSync(dir).isDirectory()) throw refuse('not a directory');
       const fd = fs.openSync(dir, flags);
-      try { p.recursive = Boolean(p.recursive && ownerMatches(fd, p.identities)); }
+      try {
+        if (p.legacy) {
+          const st = fs.fstatSync(fd);
+          if (p.snapshot && !matches(st, [p.snapshot])) throw refuse('directory changed since preview');
+          if (remove && !p.snapshot) throw refuse('directory changed since preview');
+          p.snapshot = { dev: st.dev, ino: st.ino };
+          p.recursive = true;
+          p.identities = undefined;
+        } else p.recursive = Boolean(p.recursive && ownerMatches(fd, p.identities));
+      }
       finally { fs.closeSync(fd); }
       if (p.recursive) tree(dir, dev);
     }
@@ -126,7 +178,7 @@ try {
       if (p.exists && !p.kept) {
         try {
           if (checked.some(child => child.kept && inside(dir, path.resolve(child.path)))) { p.kept = true; continue; }
-          removeDir(dir, p.dev, Boolean(p.recursive), p.identities); removed.push(dir);
+          removeDir(dir, p.dev, Boolean(p.recursive), p.identities, p.snapshot); removed.push(dir);
         }
         catch(e) {
           if (e.code === 'UNATTESTED') { p.recursive = false; p.kept = true; }
@@ -140,10 +192,10 @@ try {
 } catch(e) { console.log(JSON.stringify({error: {cause: e.causeClass || 'filesystem', errno: errno(e), stage, rootKind}, removed})); }
 `;
 
-export async function deletionPaths(host: AgentHost, cfg: SpawnerConfig, plan: DeletionPath[], remove = false): Promise<{
+export async function deletionPaths(host: AgentHost, cfg: SpawnerConfig, plan: DeletionPath[], remove = false, references: string[] = []): Promise<{
   paths?: CheckedDeletionPath[]; removed: string[]; error?: string;
 }> {
-  const { stdout } = await helperExec(() => host.exec(cfg.nodeBin, ['-e', DELETE_PATHS_JS, JSON.stringify([plan, remove, [cfg.handsDir, cfg.workRoot ?? resolve(cfg.projectDir, 'hands')]])]));
+  const { stdout } = await helperExec(() => host.exec(cfg.nodeBin, ['-e', DELETE_PATHS_JS, JSON.stringify([plan, remove, [cfg.handsDir, cfg.workRoot ?? resolve(cfg.projectDir, 'hands'), cfg.projectDir], references])]));
   const result = JSON.parse(stdout);
   if (result.error) {
     // Validate even successful-exec error output before rendering it to Zulip.
@@ -152,7 +204,7 @@ export async function deletionPaths(host: AgentHost, cfg: SpawnerConfig, plan: D
       'symlink refused during removal', 'mount point refused during removal (different device)',
       'parent moved during removal', 'unsafe path', 'path must be strictly inside its root',
       'path escapes root', 'refusing to delete a configured root', 'not a directory',
-      'kept directory nested in removal plan'];
+      'kept directory nested in removal plan', 'directory shared with another hand', 'directory changed since preview'];
     const codes = ['EACCES','EPERM','ENOENT','ESRCH','EIO','ENOTDIR','EMFILE','ENFILE','EINVAL','ENOSYS','EOVERFLOW','ELOOP','ENXIO','ENOMEM','EBADF','EBUSY','ENOTEMPTY','EEXIST','UNATTESTED'];
     const cause = causes.includes(e.cause) ? e.cause : 'helper-error';
     const code = codes.includes(e.errno) ? e.errno : 'unexpected';
@@ -174,6 +226,7 @@ try {
 const entries = JSON.parse(process.argv[1]), panes = JSON.parse(process.argv[2] || '[]');
 const uid = fs.statSync('/proc/self').uid;
 const dirs = [...new Set(entries.flatMap(e => [e.handDir, e.workDir].filter(Boolean)))];
+const exactCwds = entries.map(e => e.implicitWorkDir).filter(Boolean);
 const sessions = entries.map(e => e.sessionId).filter(Boolean);
 const mentions = s => dirs.some(d => s.includes(d + path.sep) || s === d);
 function stat(pid) {
@@ -235,7 +288,7 @@ for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p) && +p !== 
   function inspect(target) {
     const env = read('environ', () => fs.readFileSync(target + '/environ', 'utf8').split('\0'));
     const cwd = read('cwd', () => fs.readlinkSync(target + '/cwd').replace(/ \(deleted\)$/, ''));
-    if (env?.some(mentions) || cwd !== undefined && mentions(cwd)) running = true;
+    if (env?.some(mentions) || cwd !== undefined && (mentions(cwd) || exactCwds.includes(cwd))) running = true;
   }
   inspect(base);
   const tasks = read('task-list', () => fs.readdirSync(base + '/task'));
@@ -298,7 +351,7 @@ export async function handStopped(host: AgentHost, tmux: Tmux, cfg: SpawnerConfi
   });
   const panes = await paneRoots();
   const { stdout } = await helperExec(() => host.exec(cfg.nodeBin, ['-e', HAND_PROCESSES_JS,
-    JSON.stringify(entries.map(({ handDir, workDir, sessionId }) => ({ handDir, workDir, sessionId }))), JSON.stringify(panes)]));
+    JSON.stringify(entries.map(({ handDir, workDir, sessionId }) => ({ handDir, workDir, implicitWorkDir: workDir ? undefined : cfg.projectDir, sessionId }))), JSON.stringify(panes)]));
   let result;
   try { result = JSON.parse(stdout); } catch { return fail('invalid-response'); }
   if (typeof result === 'boolean') return !result;

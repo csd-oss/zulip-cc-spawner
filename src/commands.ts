@@ -20,8 +20,8 @@ export type Command =
   | { kind: 'model'; target: string; model?: string; effort?: string }
   | { kind: 'rename'; target: string; friendly: string }
   | { kind: 'models' }
-  | { kind: 'list'; stopped?: boolean }
-  | { kind: 'delete'; target: string; confirm?: boolean }
+  | { kind: 'list'; stopped?: boolean; bySize?: boolean; creator?: 'mine' | 'unknown' | number }
+  | { kind: 'delete'; target: string; confirm?: boolean; forceLegacy?: boolean; legacyToken?: string }
   | { kind: 'stop'; target: string }
   | { kind: 'peek'; target: string; lines?: number; here?: boolean }
   | { kind: 'answer'; target: string; spec: string }
@@ -118,6 +118,8 @@ export const USAGE = [
   '`models` (or `help models`) — aliases, full ids, CLIs, allowed efforts and default behaviour',
   '`list` — show running hands',
   '`list stopped` — stopped hands with display/short name, creator, home and last recorded activity',
+  '`delete <hand> confirm force-legacy` — configured owner only: preview legacy paths/bot IDs, then use the separate expiring confirmation token shown. No creation attestation is fabricated.',
+  '`list stopped [mine|by=<user-id>|by=unknown] [by size]` — filter by recorded creator; show bounded apparent work-dir bytes, largest measured first with by size; partial/unknown sizes are labelled.',
   '`delete <hand> [confirm]` — creator/owner only, regardless of creatorOnlyControls; stopped hands only. Without confirm, preview registry entries, hand dir, workDir and bot deactivation; confirm permanently removes them (only proven spawner-created bots are deactivated). Replies here.',
   '`stop <name>` — stop a hand (identity and conversation are kept; `spawn` the same name revives it, optionally with a new home/model)',
   '`peek <name> [lines] [here]` — terminal tail (default 20 lines), DM by default; here shares it with everyone in the invoking topic (or replies in the invoking DM)',
@@ -325,12 +327,28 @@ export function parseCommand(body: string): Command {
     }
     case 'models':
       return extra(1) ?? { kind: 'models' };
-    case 'list':
-      if (tokens[1]?.toLowerCase() === 'stopped') return extra(2) ?? { kind: 'list', stopped: true };
-      return extra(1) ?? { kind: 'list' };
+    case 'list': {
+      if (tokens[1]?.toLowerCase() !== 'stopped') return extra(1) ?? { kind: 'list' };
+      const cmd: Extract<Command, { kind: 'list' }> = { kind: 'list', stopped: true };
+      for (let i = 2; i < tokens.length; i++) {
+        const token = tokens[i].toLowerCase();
+        if (token === 'by' && tokens[i + 1]?.toLowerCase() === 'size' && !cmd.bySize) {
+          cmd.bySize = true; i++;
+        } else if (cmd.creator === undefined && (token === 'mine' || token === 'by=unknown' || /^by=[1-9][0-9]*$/.test(token))) {
+          cmd.creator = token === 'mine' ? 'mine' : token === 'by=unknown' ? 'unknown' : Number(token.slice(3));
+          if (typeof cmd.creator === 'number' && !Number.isSafeInteger(cmd.creator)) return { kind: 'help', error: 'Invalid creator user ID.' };
+        } else return { kind: 'help', error: 'Use list stopped [mine|by=<user-id>|by=unknown] [by size].' };
+      }
+      return cmd;
+    }
     case 'delete': {
       if (!tokens[1] || (tokens[2] && tokens[2].toLowerCase() !== 'confirm')) {
         return { kind: 'help', error: 'delete needs a hand and optional confirm — `delete <hand> [confirm]`' };
+      }
+      if (tokens[3]?.toLowerCase() === 'force-legacy') {
+        const trailing = extra(5);
+        if (trailing) return trailing;
+        return { kind: 'delete', target: tokens[1], confirm: true, forceLegacy: true, legacyToken: tokens[4] };
       }
       const trailing = extra(3);
       if (trailing) return trailing;
