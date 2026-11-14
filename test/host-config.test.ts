@@ -90,6 +90,12 @@ test('config: collaborative controls default, optional owner, strict boolean val
     return loadConfig();
   };
   try {
+    assert.equal(load().adminUserIds, undefined);
+    assert.deepEqual(load({ adminUserIds: [] }).adminUserIds, []);
+    assert.deepEqual(load({ adminUserIds: [1, 2, 9] }).adminUserIds, [1, 2, 9]);
+    for (const adminUserIds of [null, 9, '9', {}, [0], [-1], [1.5], ['9'], [false], [Number.MAX_SAFE_INTEGER + 1]]) {
+      assert.throws(() => load({ adminUserIds }), /adminUserIds/);
+    }
     assert.equal(load().creatorOnlyControls, false);
     assert.equal(load().ownerUserId, undefined, 'no implicit user 9');
     assert.equal(load({ ownerUserId: null }).ownerUserId, null);

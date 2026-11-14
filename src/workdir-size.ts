@@ -76,3 +76,13 @@ export async function workdirSizes(host: AgentHost, cfg: SpawnerConfig, dirs: st
     return dirs.map(dir => values[unique.indexOf(dir)]);
   } catch { return dirs.map(() => ({ bytes: 0, partial: true })); }
 }
+
+
+// Decimal MB keeps inventories readable; floor lower bounds so rounding never
+// overstates measured bytes. Unknown/partial zero remains explicitly labelled.
+export function formatWorkdirSize(size: { bytes: number; partial: boolean }): string {
+  const gb = size.bytes >= 1_000_000_000;
+  const value = size.bytes / (gb ? 1_000_000_000 : 1_000_000);
+  const rounded = size.partial ? Math.floor(value * 100) / 100 : Math.round(value * 100) / 100;
+  return `${size.partial ? '≥' : ''}${rounded} ${gb ? 'GB' : 'MB'}${size.partial ? ' (partial/unknown)' : ''}`;
+}

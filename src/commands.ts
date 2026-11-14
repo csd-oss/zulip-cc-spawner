@@ -118,8 +118,8 @@ export const USAGE = [
   '`models` (or `help models`) — aliases, full ids, CLIs, allowed efforts and default behaviour',
   '`list` — show running hands',
   '`list stopped` — stopped hands with display/short name, creator, home and last recorded activity',
-  '`delete <hand> confirm force-legacy` — configured owner only: preview legacy paths/bot IDs, then use the separate expiring confirmation token shown. No creation attestation is fabricated.',
-  '`list stopped [mine|by=<user-id>|by=unknown] [by size]` — filter by recorded creator; show bounded apparent work-dir bytes, largest measured first with by size; partial/unknown sizes are labelled.',
+  '`delete <hand> force-legacy` — configured admins only: preview legacy paths/bot IDs, then use the separate expiring confirmation token shown. No creation attestation is fabricated.',
+  '`list stopped [mine|by=<user-id>|by=unknown] [by size]` — filter by recorded creator; show bounded apparent work-dir sizes in MB (GB at 1,000 MB), largest measured first with by size; partial/unknown sizes are labelled.',
   '`delete <hand> [confirm]` — creator/owner only, regardless of creatorOnlyControls; stopped hands only. Without confirm, preview registry entries, hand dir, workDir and bot deactivation; confirm permanently removes them (only proven spawner-created bots are deactivated). Replies here.',
   '`stop <name>` — stop a hand (identity and conversation are kept; `spawn` the same name revives it, optionally with a new home/model)',
   '`peek <name> [lines] [here]` — terminal tail (default 20 lines), DM by default; here shares it with everyone in the invoking topic (or replies in the invoking DM)',
@@ -342,6 +342,9 @@ export function parseCommand(body: string): Command {
       return cmd;
     }
     case 'delete': {
+      if (tokens[1] && tokens[2]?.toLowerCase() === 'force-legacy') {
+        return extra(3) ?? { kind: 'delete', target: tokens[1], forceLegacy: true };
+      }
       if (!tokens[1] || (tokens[2] && tokens[2].toLowerCase() !== 'confirm')) {
         return { kind: 'help', error: 'delete needs a hand and optional confirm — `delete <hand> [confirm]`' };
       }

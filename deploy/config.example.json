@@ -6,6 +6,7 @@
   "allowedGroups": [],
   "creatorOnlyControls": false,
   "ownerUserId": null,
+  "adminUserIds": [],
   "allowedResidents": [],
   "agentsUser": "cc-agents",
   "agentsHome": "/home/cc-agents",
