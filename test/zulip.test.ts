@@ -148,3 +148,10 @@ test('admin bot rename propagates failure for the actions warning boundary', asy
   const { fetch } = fakeZulip({ 'PATCH /bots/42': () => ({ result: 'error', msg: 'not permitted' }) });
   await assert.rejects(new Provisioner(new ZulipClient(creds, fetch)).rename(42, 'new'), /not permitted/);
 });
+
+test('provisioner deactivates through the existing owner client bot endpoint', async () => {
+  const { fetch, calls } = fakeZulip({ 'DELETE /bots/42': () => ({ result: 'success' }) });
+  const p = new Provisioner(new ZulipClient(creds, fetch));
+  await p.deactivate(42);
+  assert.deepEqual(calls, ['DELETE /bots/42']);
+});

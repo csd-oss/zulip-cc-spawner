@@ -30,6 +30,8 @@ export interface BotEntry {
    *  back). 0/'' while provisioning has not created or found it yet. */
   botUserId: number;
   botEmail: string;
+  /** Positive provenance only; absent on old/adopted records. Never infer ownership. */
+  botCreatedBySpawner?: boolean;
   tmuxSession: string;
   /** Home: the stream + topic it was spawned in. Stream id survives renames. */
   streamName: string;
@@ -131,7 +133,7 @@ export class Registry {
   }
 
   /** Latest launch per stable identity, without mutating historical records. */
-  private currentHands(): BotEntry[] {
+  currentHands(): BotEntry[] {
     return [...new Map(this.entries.map((e) => [e.tmuxSession, e])).values()];
   }
 
@@ -187,6 +189,15 @@ export class Registry {
   add(entry: BotEntry): void {
     this.entries.push(entry);
     this.save();
+  }
+
+  /** Remove every launch for one stable hand, using the usual atomic save. */
+  removeHand(tmuxSession: string): number {
+    const previous = this.entries;
+    this.entries = previous.filter(e => e.tmuxSession !== tmuxSession);
+    try { this.save(); }
+    catch (err) { this.entries = previous; throw err; }
+    return previous.length - this.entries.length;
   }
 
   update(entry: BotEntry, patch: Partial<BotEntry>): void {

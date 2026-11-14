@@ -14,7 +14,7 @@ import { codexArgs } from '../src/codex.js';
 import type { Provisioner } from '../src/provision.js';
 import { Registry, type BotEntry } from '../src/registry.js';
 import type { Tmux } from '../src/tmux.js';
-import { TranscriptWatcher } from '../src/transcript-watch.js';
+import { TranscriptWatcher, transcriptPath } from '../src/transcript-watch.js';
 import { testConfig, tmp } from './helpers.js';
 import { CLAUDE_323_CONFIRM, CLAUDE_323_CHANGED, CLAUDE_CONFIRM, CLAUDE_CHANGED, CODEX_MODELS, CODEX_REASONING, CODEX_CHANGED } from './model-fixtures.js';
 
@@ -1034,4 +1034,18 @@ test('peek here preserves default/bounded tails and rejects invalid or unauthori
   }
   assert.match((await f.run('peek scout here', elsewhere, 99)).content, /Not authorized/);
   assert.equal(captures.length, before);
+});
+
+for (const existingBot of [false, true]) test(`bot creation provenance persists over revival (adopted=${existingBot})`, async () => {
+  const f = fixture(); f.state.existingBot = existingBot;
+  assert.match((await f.run('spawn sonnet-5-5 name=scout')).content, /Spawned/);
+  const first = f.registry.alive()[0];
+  assert.equal(first.botCreatedBySpawner, !existingBot);
+  assert.equal(first.spawnedBy?.userId, existingBot ? undefined : 1);
+  const transcript = transcriptPath(f.config.agentsHome, first.workDir!, first.sessionId);
+  mkdirSync(dirname(transcript), { recursive: true }); writeFileSync(transcript, '{}\n');
+  f.registry.update(first, { status: 'reaped' }); f.state.running = false; f.state.existingBot = true;
+  assert.match((await f.run('spawn sonnet-5-5 name=scout')).content, /Revived/);
+  const latest = f.registry.alive()[0]; assert.equal(latest.botCreatedBySpawner, !existingBot);
+  assert.equal(latest.spawnedBy?.userId, first.spawnedBy?.userId);
 });

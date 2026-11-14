@@ -216,6 +216,10 @@ export class ZulipClient {
   }
 
   /** Change only the display name, never the bot's immutable email. */
+  deactivateBot(botId: number): Promise<unknown> {
+    return this.call('DELETE', `/bots/${botId}`);
+  }
+
   updateBot(botId: number, fullName: string): Promise<unknown> {
     return this.call('PATCH', `/bots/${botId}`, { full_name: fullName });
   }

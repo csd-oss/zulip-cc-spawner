@@ -19,12 +19,43 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 @**CC Spawner** rename scout Pathfinder                      # visible name only; follows creatorOnlyControls
 @**CC Spawner** models                                     # also: help models
 @**CC Spawner** list
+@**CC Spawner** list stopped                                 # creator, home, last activity
+@**CC Spawner** delete scout [confirm]                       # preview unless confirm; creator/owner only
 @**CC Spawner** stop scout                                   # alias: kill
 @**CC Spawner** peek scout [lines] [here]                    # terminal tail, DM unless here
 @**CC Spawner** answer scout 2 | 1,3 | yes | text: … | esc   # a hand blocked on a dialog
 @**CC Spawner** press scout 1 enter                          # raw keys, the escape hatch
 @**CC Spawner** rescan
 ```
+
+`list stopped` shows each stopped hand once, with display/short name, creator
+(username or user id; unknown for old records), home topic and last activity when
+recorded. `list` still shows only running hands.
+
+`delete <hand>` previews **all launch records** for that hand, its hand directory,
+recorded work directory/directories and bot deactivation, without changing anything.
+Use `delete <hand> confirm` to permanently remove them. Short names, rename aliases,
+display names, bot emails and tmux sessions resolve as for `rename`. Only the
+recorded creator or configured `ownerUserId` can delete, **regardless of
+`creatorOnlyControls`**; a hand with no creator requires a configured owner.
+Normal caller/stream allow-lists still apply. Replies go to the invoking topic/DM.
+
+Deletion requires stopped registry records, no live tmux session and no surviving
+hand process. It reuses tmux's absence checks and inspects Linux `/proc` as the
+agents user (session ids, command/environment paths and working directories);
+unavailable/unreadable liveness information fails closed. Both directory paths
+must be strictly inside `handsDir` / `workRoot` (default `projectDir/hands`), with
+no `..` or symlinks, including links within the trees. Roots and directories shared
+with another registered hand are protected. Legacy hands without a recorded
+`workDir` keep `projectDir`. Missing directories are reported as already absent;
+other filesystem failures keep the registry for retry after inspection.
+
+Only bots positively recorded with `botCreatedBySpawner: true` are deactivated;
+old/adopted bots without this provenance are kept (the preview says so). New
+spawns record provenance and revivals preserve it. If bot deactivation fails,
+local cleanup still completes and the reply asks for manual deactivation. Deleting
+again reports **not found**. Transcripts outside these directories and global CLI
+configuration are not removed. This is not `stop`: deletion removes revival history.
 
 `peek <hand> [lines]` DMs the terminal tail to you (default 20 lines, range
 1–400). Add `here` before or after the line count to reply in the stream and

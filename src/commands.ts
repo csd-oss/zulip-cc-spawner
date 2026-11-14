@@ -6,7 +6,8 @@
  *   rename <hand> <new-friendly-name>
  *   model <hand> [<model>] [effort=<level>]
  *   models                (also: help models)
- *   list
+ *   list [stopped]
+ *   delete <hand> [confirm]
  *   stop <name>            (alias: kill)
  *   peek <name> [lines] [here] (DM by default; here replies at invocation)
  *   answer <name> <choice>
@@ -19,7 +20,8 @@ export type Command =
   | { kind: 'model'; target: string; model?: string; effort?: string }
   | { kind: 'rename'; target: string; friendly: string }
   | { kind: 'models' }
-  | { kind: 'list' }
+  | { kind: 'list'; stopped?: boolean }
+  | { kind: 'delete'; target: string; confirm?: boolean }
   | { kind: 'stop'; target: string }
   | { kind: 'peek'; target: string; lines?: number; here?: boolean }
   | { kind: 'answer'; target: string; spec: string }
@@ -115,6 +117,8 @@ export const USAGE = [
   'Rename/model, model-menu answers and model-changing revival follow `creatorOnlyControls`: any allowed caller by default; creator/owner in strict mode (adopted hands with neither creator nor configured owner stay collaborative).',
   '`models` (or `help models`) — aliases, full ids, CLIs, allowed efforts and default behaviour',
   '`list` — show running hands',
+  '`list stopped` — stopped hands with display/short name, creator, home and last recorded activity',
+  '`delete <hand> [confirm]` — creator/owner only, regardless of creatorOnlyControls; stopped hands only. Without confirm, preview registry entries, hand dir, workDir and bot deactivation; confirm permanently removes them (only proven spawner-created bots are deactivated). Replies here.',
   '`stop <name>` — stop a hand (identity and conversation are kept; `spawn` the same name revives it, optionally with a new home/model)',
   '`peek <name> [lines] [here]` — terminal tail (default 20 lines), DM by default; here shares it with everyone in the invoking topic (or replies in the invoking DM)',
   '`answer <name> <choice>` — answer a hand\'s pending question or permission prompt (`2`, `1,3`, `yes`/`no`, `text: …`, or `esc`)',
@@ -322,7 +326,16 @@ export function parseCommand(body: string): Command {
     case 'models':
       return extra(1) ?? { kind: 'models' };
     case 'list':
+      if (tokens[1]?.toLowerCase() === 'stopped') return extra(2) ?? { kind: 'list', stopped: true };
       return extra(1) ?? { kind: 'list' };
+    case 'delete': {
+      if (!tokens[1] || (tokens[2] && tokens[2].toLowerCase() !== 'confirm')) {
+        return { kind: 'help', error: 'delete needs a hand and optional confirm — `delete <hand> [confirm]`' };
+      }
+      const trailing = extra(3);
+      if (trailing) return trailing;
+      return tokens[2] ? { kind: 'delete', target: tokens[1], confirm: true } : { kind: 'delete', target: tokens[1] };
+    }
     case 'stop':
     case 'kill':
       return extra(2) ?? buildStopCommand(tokens[1]);
