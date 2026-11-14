@@ -40,6 +40,20 @@ export class Tmux {
     }
   }
 
+  /** Diagnostic pane inventory only; current session membership is not launch ownership. */
+  async otherPaneRoots(excludedSessions: string[]): Promise<{pid: number; pane: string}[]> {
+    try {
+      const { stdout } = await this.tmux(['list-panes', '-a', '-F', '#{pane_pid} #{pane_id} #{session_name}']);
+      return stdout.trim().split('\n').flatMap(line => {
+        const match = /^(\d+) (%\d+) (.+)$/.exec(line);
+        return match && !excludedSessions.includes(match[3]) ? [{pid: Number(match[1]), pane: match[2]}] : [];
+      }).sort((a, b) => a.pid - b.pid);
+    } catch (err) {
+      if (isAbsentError(err)) return [];
+      throw err;
+    }
+  }
+
   /** Create a detached session running `command` (via the user's shell -c) in `cwd`. */
   async newSession(name: string, cwd: string, command: string): Promise<void> {
     await this.tmux(['new-session', '-d', '-s', name, '-c', cwd, command]);

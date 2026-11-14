@@ -1,8 +1,9 @@
+import { managerSnapshot } from './manager-fixture.js';
 import { randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, statSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as pathModule from 'node:path';
 import { runInNewContext } from 'node:vm';
@@ -13,7 +14,7 @@ import { parseCommand } from '../src/commands.js';
 import { DELETE_PATHS_JS, HAND_PROCESSES_JS, handStopped } from '../src/delete-hand.js';
 import { LocalHost, type AgentHost } from '../src/host.js';
 import { Registry, type BotEntry } from '../src/registry.js';
-import type { Tmux } from '../src/tmux.js';
+import { Tmux } from '../src/tmux.js';
 import { testConfig, tmp } from './helpers.js';
 
 const home: Where = { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic: 'invocation' };
@@ -27,7 +28,7 @@ function fixture(overrides: Parameters<typeof testConfig>[1] = {}) {
   const registry = new Registry(registryFile);
   const state = { tmux: false, process: false, failTmux: false, failProcess: false, failBot: false, failRemove: false };
   const deactivated: number[] = [];
-  const tmux = { async hasSession() { if (state.failTmux) throw Error('unavailable'); return state.tmux; } } as Tmux;
+  const tmux = { async otherPaneRoots() { return []; }, async hasSession() { if (state.failTmux) throw Error('unavailable'); return state.tmux; } } as Tmux;
   const local = new LocalHost();
   const host = {
     exec: async (cmd: string, args: string[]) => {
@@ -286,6 +287,7 @@ for (const mode of ['absent', 'command', 'environment', 'cwd', 'zombie', 'other-
     statSync(p: string) { if (mode === 'disappeared' && p !== '/proc/self') return missing(); return { uid: p !== '/proc/self' && (mode === 'other-user' || mode === 'root-owned-unreadable' || mode === 'ownership-changed' && ++ownerChecks > 1) ? 0 : 1 }; },
     readdirSync() { return mode === 'unreadable-with-live-match' ? ['123', '124', '999'] : ['123', '999']; },
     readFileSync(p: string) {
+      if (p.endsWith('/stat')) return '123 (fixture) ' + ['S', '1', ...Array(17).fill('0'), '100'].join(' ');
       if (p.endsWith('/cmdline')) {
         if (p.includes('/124/') || mode === 'command') return 'claude\0--resume\0session\0';
         return mode === 'zombie' ? '' : 'unrelated\0';
@@ -299,7 +301,8 @@ for (const mode of ['absent', 'command', 'environment', 'cwd', 'zombie', 'other-
     require: (name: string) => name === 'node:fs' ? fs : pathModule,
     process: { argv: ['node', JSON.stringify(args)], pid: 999 }, console: { log: (s: string) => { stdout += s; } },
   });
-  if (mode === 'unreadable') assert.throws(evaluate, /cannot rule out a running hand/);
+  if (mode === 'unreadable' || mode === 'ownership-changed') { evaluate(); assert.equal(JSON.parse(stdout).error, 'unreadable-process'); }
+  else if (mode === 'unreadable-with-live-match') { evaluate(); assert.equal(JSON.parse(stdout).running, true); }
   else { evaluate(); assert.equal(stdout, ['command', 'environment', 'cwd', 'unreadable-with-live-match'].includes(mode) ? 'true' : 'false'); }
   assert.equal(stdout.includes('secret'), false);
 });
@@ -472,4 +475,316 @@ for (const stage of ['lstat', 'open'] as const) test('delete: identity replaceme
   assert.match((await f.run('delete scout confirm')).content, /kept: not created by this hand/);
   assert.equal(readFileSync(join(e.handDir, 'precious'), 'utf8'), 'foreign');
   assert.equal(readFileSync(join(e.handDir + '.retired', 'keep'), 'utf8'), 'contents');
+});
+
+test('delete reply reports the safe exec cause, not private failure detail', async () => {
+  const f = fixture(); f.add();
+  const original = f.host.exec;
+  f.host.exec = async (cmd, args) => {
+    if (args[1] === HAND_PROCESSES_JS) throw Object.assign(Error('/secret/node'), {code: 'ENOENT', stderr: 'private-token'});
+    return original(cmd, args);
+  };
+  const result = await f.run('delete scout');
+  assert.match(result.content, /process liveness check failed \(exec ENOENT; stderr present\)/);
+  assert.doesNotMatch(result.content, /secret|private-token/);
+});
+
+test('real moved target pane: live hand stays not deletable', async t => {
+  if (process.platform !== 'linux') return t.skip('requires Linux prctl');
+  if (spawnSync('tmux', ['-V']).status !== 0 || spawnSync('python3', ['-c', 'import ctypes; assert ctypes.CDLL(None).prctl(4,0,0,0,0)==0']).status !== 0) return t.skip('requires tmux and python3/prctl');
+  const f = fixture(); const e = f.add();
+  const before = readFileSync(f.registryFile, 'utf8');
+  const local = new LocalHost();
+  // Scope enumeration to this dispatch's target PID; all per-PID reads remain real.
+  // The host has unrelated unreadable daemons which would mask this finding.
+  f.host.exec = async (cmd, args) => {
+    if (args[0] === '-e' && args[1].includes("const fs = require('node:fs')")) {
+      const prefix = `const realReadDir = require('node:fs').readdirSync; require('node:fs').readdirSync = function(p, ...a) { return p === '/proc' ? [String(${pid})] : realReadDir.call(this,p,...a); };\n`;
+      return local.exec(cmd, [args[0], prefix + args[1], ...args.slice(2)]);
+    }
+    return local.exec(cmd,args);
+  };
+  const realTmux = new Tmux(local, f.config.tmuxSocket);
+  f.tmux.hasSession = realTmux.hasSession.bind(realTmux);
+  f.tmux.otherPaneRoots = realTmux.otherPaneRoots.bind(realTmux);
+  const script = join(f.dir, 'worker.py');
+  const ready = join(f.dir, 'ready');
+  writeFileSync(script, 'import ctypes,os,time\nassert ctypes.CDLL(None).prctl(4,0,0,0,0)==0\nopen('+JSON.stringify(ready)+',"w").write(str(os.getpid()))\ntime.sleep(60)\n');
+  const tx = (args: string[]) => local.exec('tmux', ['-S', f.config.tmuxSocket!, ...args]);
+  let pid = 0;
+  try {
+    await tx(['-f', '/dev/null', 'new-session', '-d', '-s', 'other', 'exec sleep 60']);
+    await tx(['new-session', '-d', '-s', e.tmuxSession, '-c', e.handDir, 'exec python3 '+script]);
+    for (let i=0; i<100 && !existsSync(ready); i++) await new Promise(r => setTimeout(r,20));
+    assert.ok(existsSync(ready)); pid = +readFileSync(ready, 'utf8');
+    assert.equal(lstatSync('/proc/'+pid).uid, process.getuid!());
+    try { readFileSync('/proc/'+pid+'/environ'); return t.skip('host permits reading nondumpable environ'); }
+    catch (err) { assert.equal((err as NodeJS.ErrnoException).code, 'EACCES'); }
+    assert.throws(() => readFileSync('/proc/'+pid+'/cwd'), {code:'EACCES'});
+    await tx(['move-window', '-s', e.tmuxSession+':0', '-t', 'other:1']);
+    assert.equal(await realTmux.hasSession(e.tmuxSession), false);
+    const scan = await f.host.exec(process.execPath, ['-e', HAND_PROCESSES_JS, JSON.stringify([e]), JSON.stringify(await realTmux.otherPaneRoots([e.tmuxSession]))]);
+    assert.equal(JSON.parse(scan.stdout).error, 'unreadable-process');
+    const listing = await f.run('list stopped');
+    assert.match(listing.content, /No verified stopped hands/);
+    assert.match(listing.content, /unreadable-process/);
+    const result = await f.run('delete scout confirm');
+    assert.match(result.content, /unreadable-process/);
+    f.unchanged(e, before);
+    assert.equal(existsSync(e.handDir), true);
+    assert.equal(existsSync(e.workDir!), true);
+    process.kill(pid, 0);
+  } finally {
+    await tx(['kill-server']).catch(() => {});
+    rmSync(f.dir, {recursive: true, force: true});
+  }
+});
+
+
+test('actual delete with missing node reports safe exec classification', async()=>{
+  const f=fixture({nodeBin:'/nonexistent-review-node'}); f.add();
+  f.host.exec=new LocalHost().exec.bind(new LocalHost());
+  try {
+    const listing=await f.run('list stopped');assert.match(listing.content,/exec ENOENT/);
+    const result=await f.run('delete scout');
+    assert.match(result.content,/exec ENOENT/);
+
+  } finally {rmSync(f.dir,{recursive:true,force:true});}
+});
+test('actual delete numeric exec failure never prints raw stderr or command line', async()=>{
+  const f=fixture();f.add();
+  const executable=join(f.dir,'failed-node');
+  writeFileSync(executable,'#!/bin/sh\nprintf "REVIEW-STDERR-SENTINEL /foreign/process/private-path\\n" >&2\nexit 17\n',{mode:0o700});
+  f.config.nodeBin=executable;
+  f.host.exec=new LocalHost().exec.bind(new LocalHost());
+  const logs:string[]=[];const original=console.log;const warn=console.warn;console.warn=console.log=(...args)=>logs.push(args.join(' '));
+  try {
+    const result=await f.run('delete scout');
+    assert.match(result.content,/exec exit-17; stderr present/);
+    const combined=logs.join('\n');
+    assert.doesNotMatch(combined + result.content, /REVIEW-STDERR-SENTINEL|Command failed:|const fs = require|foreign\/process/);
+  } finally {console.log=original;console.warn=warn;rmSync(f.dir,{recursive:true,force:true});}
+});
+
+for (const stage of ['preview', 'remove', 'process', 'tmux'] as const) test(`delete ${stage} exec failure is sanitized and preserves the hand`, async () => {
+  const f = fixture(); const e = f.add();
+  const before = readFileSync(f.registryFile, 'utf8');
+  const originalExec = f.host.exec.bind(f.host);
+  const failure = () => { throw Object.assign(Error('PRIVATE-COMMAND PRIVATE-STDERR'), {code: 'EACCES', stderr: 'PRIVATE-STDERR permission denied'}); };
+  f.host.exec = (cmd, args) => {
+    if ((stage === 'process' && args[1] === HAND_PROCESSES_JS) ||
+        (args[1] === DELETE_PATHS_JS && stage === (JSON.parse(args[2])[1] ? 'remove' : 'preview'))) failure();
+    return originalExec(cmd, args);
+  };
+  if (stage === 'tmux') f.tmux.hasSession = async () => failure();
+  const logs: string[] = []; const log = console.log; const warn = console.warn;
+  console.log = console.warn = (...args) => { logs.push(args.join(' ')); };
+  try {
+    const result = await f.run('delete scout confirm');
+    assert.match(result.content, /exec EACCES; stderr permission/);
+    assert.doesNotMatch(logs.join('\n') + result.content, /PRIVATE/);
+    f.unchanged(e, before);
+  } finally {
+    console.log = log; console.warn = warn;
+    rmSync(f.dir, {recursive: true, force: true});
+  }
+});
+
+test('delete generic parse failure does not log exception message or helper output', async () => {
+  const f = fixture(); const e = f.add();
+  const before = readFileSync(f.registryFile, 'utf8');
+  f.host.exec = async () => ({stdout: 'PRIVATE-INVALID-JSON'});
+  const logs: string[] = []; const log = console.log;
+  console.log = (...args) => { logs.push(args.join(' ')); };
+  try {
+    const result = await f.run('delete scout confirm');
+    assert.match(result.content, /path, liveness or registry check failed/);
+    assert.doesNotMatch(logs.join('\n') + result.content, /PRIVATE/);
+    f.unchanged(e, before);
+  } finally {
+    console.log = log;
+    rmSync(f.dir, {recursive: true, force: true});
+  }
+});
+
+for (const stage of ['preview','remove'] as const) test(`actual ${stage} filesystem exception is bounded and preserves the hand`, async () => {
+  const f=fixture(); const e=f.add(); const before=readFileSync(f.registryFile,'utf8');
+  const privateDir=join(e.handDir,'REVIEW-PRIVATE-FILENAME'); mkdirSync(privateDir);
+  const original=f.host.exec.bind(f.host);
+  f.host.exec=async(cmd,args)=>{
+    if(args[1]===DELETE_PATHS_JS && JSON.parse(args[2])[1]===(stage==='remove')) chmodSync(privateDir,0);
+    return original(cmd,args);
+  };
+  const logs:string[]=[]; const log=console.log; const warn=console.warn;
+  console.log=console.warn=(...args)=>logs.push(args.join(' '));
+  try {
+    const result=await f.run('delete scout'+(stage==='remove'?' confirm':''));
+    assert.match(result.content,/filesystem; EACCES; preview; hand dir/);
+    assert.doesNotMatch(result.content + logs.join('\n'), /REVIEW-PRIVATE-FILENAME|scandir|permission denied/);
+    assert.ok(!result.content.includes(privateDir));
+    f.unchanged(e,before);
+  } finally {console.log=log;console.warn=warn;chmodSync(privateDir,0o700);rmSync(f.dir,{recursive:true,force:true});}
+});
+
+for (const error of ['PRIVATE-message /child/path', {cause: 'PRIVATE-cause', errno: 'PRIVATE-errno', stage: 'PRIVATE-stage', rootKind: 'PRIVATE-root'}]) {
+  test('path helper success-exec error fields are allowlisted before rendering', async () => {
+    const f = fixture(); const e = f.add(); const before = readFileSync(f.registryFile, 'utf8');
+    const original = f.host.exec.bind(f.host);
+    f.host.exec = (cmd, args) => args[1] === DELETE_PATHS_JS ? Promise.resolve({stdout: JSON.stringify({error, removed: []})}) : original(cmd, args);
+    try {
+      const result = await f.run('delete scout confirm');
+      assert.match(result.content, /helper-error; unexpected; unknown-stage/);
+      assert.doesNotMatch(result.content, /PRIVATE|child\/path/);
+      f.unchanged(e, before);
+    } finally { rmSync(f.dir, {recursive: true, force: true}); }
+  });
+}
+
+// Permanent snapshot of review run run-01M7DE6T3SE3QFT18EVJ216HWC:
+// same-uid hand moved to writable init.scope, renamed (sd-pam), reparented
+// to the real manager and made nondumpable. No host cgroups are modified.
+test('reviewer init.scope forgery remains ambiguous and cannot delete a live hand', async () => {
+  const f = fixture(); const e = f.add();
+  const before = readFileSync(f.registryFile, 'utf8');
+  const result = managerSnapshot({childStart: '110296500', parentStart: '39736'});
+  assert.equal('user-manager' in result, false);
+  assert.equal(result.ambiguous, 1);
+  assert.equal(result.diagnostics[0].classification, 'ambiguous');
+  const original = f.host.exec.bind(f.host);
+  f.host.exec = async (cmd, args) => args[1] === HAND_PROCESSES_JS
+    ? {stdout: JSON.stringify(result)} : original(cmd, args);
+  assert.match((await f.run('list stopped')).content, /unreadable-process/);
+  assert.match((await f.run('delete scout confirm')).content, /unreadable-process/);
+  f.unchanged(e, before);
+});
+
+test('real same-uid sd-pam remains ambiguous and cannot delete (no sudo)', async t => {
+  if (process.platform !== 'linux') return t.skip('requires Linux proc');
+  const uid = process.getuid!();
+  const pid = readdirSync('/proc').find(p => {
+    try { return /^\d+$/.test(p) && statSync('/proc/' + p).uid === uid && readFileSync('/proc/' + p + '/comm', 'utf8') === '(sd-pam)\n'; }
+    catch { return false; }
+  });
+  if (!pid) return t.skip('no existing same-uid sd-pam');
+  try { readFileSync(`/proc/${pid}/environ`); return t.skip('sd-pam environ readable on this host'); }
+  catch (e) { assert.ok(['EACCES', 'EPERM'].includes((e as NodeJS.ErrnoException).code!)); }
+  const ppid = Number(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1)!.split(' ')[1]);
+  // Only scope enumeration; all candidate kernel reads and helper logic are real.
+  const hook = `const f = require('node:fs'), original = f.readdirSync; f.readdirSync = function(p, ...args) { return p === '/proc' ? [${JSON.stringify(pid)}] : original.call(this, p, ...args); };\n`;
+  const {stdout} = await new LocalHost().exec(process.execPath, ['-e', hook + HAND_PROCESSES_JS, JSON.stringify([{handDir: '/hands/target'}])]);
+  const result = JSON.parse(stdout);
+  assert.equal(result.ambiguous, 1);
+  assert.equal(result.error, 'unreadable-process');
+  assert.equal(result.diagnostics[0].classification, 'ambiguous');
+  assert.equal(result.diagnostics[0].pid, Number(pid));
+  const f = fixture(); const e = f.add();
+  try {
+    const before = readFileSync(f.registryFile, 'utf8');
+    const original = f.host.exec.bind(f.host);
+    f.host.exec = async (cmd, args) => args[1] === HAND_PROCESSES_JS
+      ? {stdout: JSON.stringify(result)} : original(cmd, args);
+    assert.match((await f.run('delete scout confirm')).content, /unreadable-process/);
+    f.unchanged(e, before);
+  } finally { rmSync(f.dir, {recursive: true, force: true}); }
+  t.diagnostic(`real sd-pam: uid=${uid}; ppid=${ppid}; ambiguous=${result.ambiguous}`);
+});
+
+test('real zero-argv nondumpable child blocks listing and deletion', { timeout: 15000 }, async t => {
+  if (process.platform !== 'linux') return t.skip('requires Linux prctl and /proc');
+  if (spawnSync('cc', ['--version']).error) return t.skip('requires a C compiler');
+  const f = fixture(); const e = f.add();
+  const before = readFileSync(f.registryFile, 'utf8');
+  const executable = join(f.dir, 'empty-argv');
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    const compiled = spawnSync('cc', [new URL('./fixtures/empty-argv.c', import.meta.url).pathname, '-o', executable], { encoding: 'utf8' });
+    assert.equal(compiled.status, 0, compiled.stderr);
+    child = spawn(executable, [], { cwd: e.handDir, env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const worker = child;
+    await Promise.race([
+      once(worker.stdout!, 'data'),
+      once(worker, 'exit').then(() => { throw Error('worker exited before readiness'); }),
+    ]);
+    const pid = worker.pid!;
+    assert.equal(statSync(`/proc/${pid}`).uid, process.getuid!());
+    assert.ok(!readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').some(Boolean));
+    try { readFileSync(`/proc/${pid}/environ`); return t.skip('host permits reading nondumpable environ'); }
+    catch (err) { assert.equal((err as NodeJS.ErrnoException).code, 'EACCES'); }
+    const local = new LocalHost();
+    // Only enumeration is scoped; every per-PID read is real. Unrelated host
+    // daemons must not mask a regression by independently causing ambiguity.
+    const hook = `const fsHook=require('node:fs'),old=fsHook.readdirSync; fsHook.readdirSync=function(p,...a){return p==='/proc'?[String(${pid})]:old.call(this,p,...a);};\n`;
+    f.host.exec = async (cmd, args) => args[1] === HAND_PROCESSES_JS
+      ? local.exec(cmd, ['-e', hook + args[1], ...args.slice(2)]) : local.exec(cmd, args);
+    const scan = JSON.parse((await f.host.exec(process.execPath, ['-e', HAND_PROCESSES_JS, JSON.stringify([e])])).stdout);
+    assert.equal(scan.error, 'unreadable-process');
+    assert.equal(scan.ambiguous, 1);
+    const listing = await f.run('list stopped');
+    assert.match(listing.content, /No verified stopped hands/);
+    assert.match(listing.content, /unreadable-process/);
+    f.unchanged(e, before);
+    for (const command of ['delete scout', 'delete scout confirm']) {
+      assert.match((await f.run(command)).content, /unreadable-process/);
+      f.unchanged(e, before);
+      assert.equal(existsSync(e.handDir), true);
+      assert.equal(existsSync(e.workDir!), true);
+      process.kill(pid, 0);
+    }
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const done = once(child, 'exit'); child.kill(); await done;
+    }
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+// Real reviewer repro: the leader exits but its worker retains the hand cwd.
+test('pthread_exit leader cannot hide a live worker or permit deletion', { timeout: 15000 }, async t => {
+  if (process.platform !== 'linux') return t.skip('requires Linux /proc');
+  if (spawnSync('cc', ['--version']).error) return t.skip('requires a C compiler');
+  const f = fixture(); const e = f.add();
+  const before = readFileSync(f.registryFile, 'utf8');
+  const executable = join(f.dir, 'leader-exit');
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    const compiled = spawnSync('cc', ['-pthread', new URL('./fixtures/leader-exit.c', import.meta.url).pathname, '-o', executable], {encoding: 'utf8'});
+    assert.equal(compiled.status, 0, compiled.stderr);
+    child = spawn(executable, [], {cwd: e.handDir, env: {PATH: process.env.PATH}, stdio: ['ignore', 'pipe', 'pipe']});
+    const worker = child;
+    const ready = await Promise.race([
+      once(worker.stdout!, 'data'),
+      once(worker, 'exit').then(() => { throw Error('worker exited before readiness'); }),
+    ]);
+    const tid = Number(/tid=(\d+)/.exec(String(ready[0]))![1]);
+    const pid = worker.pid!;
+    assert.notEqual(tid, pid);
+    assert.equal(statSync('/proc/' + pid).uid, process.getuid!());
+    assert.equal(readFileSync('/proc/' + pid + '/cmdline', 'utf8'), '');
+    assert.throws(() => readlinkSync('/proc/' + pid + '/cwd'), {code: 'ENOENT'});
+    const task = '/proc/' + pid + '/task/' + tid;
+    assert.equal(readlinkSync(task + '/cwd'), e.handDir);
+    const local = new LocalHost();
+    // Scope only top-level enumeration; task listing and all fields are real.
+    const hook = `const f=require('node:fs'),old=f.readdirSync;f.readdirSync=(p,...a)=>p==='/proc'?['${pid}']:old.call(f,p,...a);\n`;
+    f.host.exec = (cmd, args) => args[1] === HAND_PROCESSES_JS
+      ? local.exec(cmd, ['-e', hook + args[1], ...args.slice(2)]) : local.exec(cmd, args);
+    const scan = JSON.parse((await f.host.exec(process.execPath, ['-e', HAND_PROCESSES_JS, JSON.stringify([e])])).stdout);
+    assert.equal(scan.running, true);
+    assert.equal(scan.ambiguous, 1); // Leader denial survives its missing cwd.
+    assert.equal(scan.diagnostics[0].errno, 'EACCES');
+    assert.match((await f.run('list stopped')).content, /No stopped hands|No verified stopped hands/);
+    f.unchanged(e, before);
+    for (const command of ['delete scout', 'delete scout confirm']) {
+      const result = await f.run(command);
+      assert.match(result.content, /Cannot delete: hand must be STOPPED.*nothing was changed/);
+      f.unchanged(e, before);
+      assert.equal(readlinkSync(task + '/cwd'), e.handDir);
+      assert.match(readFileSync(task + '/stat', 'utf8').split(') ')[1], /^S /);
+    }
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const done = once(child, 'exit'); child.kill(); await done;
+    }
+    rmSync(f.dir, {recursive: true, force: true});
+  }
 });

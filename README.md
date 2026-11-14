@@ -44,10 +44,49 @@ Normal caller/stream allow-lists still apply. Replies go to the invoking topic/D
 Deletion requires stopped registry records, no live tmux session and no surviving
 hand process. It reuses tmux's absence checks and inspects Linux `/proc` as the
 agents user (session ids, command/environment paths and working directories);
-unavailable/unreadable liveness information fails closed for processes owned by
-the agents user or whose ownership cannot be established. Processes whose
-`/proc/<pid>` is owned by another uid are ignored, including root-owned
-nondumpable helpers. Known limitation (LOW-2): long-lived shared daemons that
+unavailable liveness information fails closed. For every enumerated same-uid thread group
+(other than the scanning helper itself), the scanner reads leader cmdline,
+environ and cwd, lists /proc/<pid>/task, and reads every task's environ and cwd.
+A matching marker blocks deletion; any unreadable field or unlistable task
+directory remains ambiguous and blocks deletion. Empty argv and zombie state
+are not exemptions. Missing fields alone never prove disappearance: only a
+stat of the /proc/<pid> directory reporting ENOENT/ESRCH does. Start times are
+rechecked to detect PID reuse. Earlier EACCES/EPERM evidence remains ambiguous
+even if later reads report disappearance. Diagnostics identify the PID. There is no
+user-manager or `(sd-pam)` exemption: even a genuine non-dumpable PAM helper
+is ambiguous. Process names and cgroups cannot establish safe exclusion.
+
+A nondumpable zombie of the agents uid can therefore block deletion until it
+is reaped. The operator must find its parent (for example, inspect PPid in
+/proc/<pid>/status) and have that parent reap it; repair or restart the parent
+under the site's operational policy if it is not collecting children. Do not
+bypass the check based on a zombie state: a dead leader can have live workers.
+
+Another tmux session's pane ancestry is **diagnostic only**, not an exclusion:
+panes can move and descendants can retain a hand's working directory. There is
+no second pane inventory used to authorize deletion. Readable target markers
+always win. All unreadable same-uid processes remain ambiguous, including
+orphans and processes with hidden/broken ancestry. A different cgroup or nested
+PID namespace alone is **not** an exclusion. This is a best-effort live snapshot,
+not process isolation; concurrent externally launched processes are not prevented.
+Processes whose `/proc/<pid>` directory is owned by another uid remain ignored
+(the existing ownership rule); root-owned files inside a same-uid process do not
+qualify for that rule.
+
+Failures now give Zulip a short cause (`exec ENOENT`, numeric exit code with a
+stderr class, `unreadable-process`, `helper-error` with errno/stage, or invalid
+response). The spawner's `[liveness]` log records unreadable counts, PID, errno,
+read stage, ancestry classification, numeric Uid/Gid, NSpid depth, and Dumpable
+when the kernel supplies it. Namespace depth/dumpable are hints, not diagnoses;
+modern kernels may omit Dumpable. Cgroup diagnostics report only entry count,
+v1/v2 and root/non-root classification, **never cgroup paths or unit names**.
+Neither log nor reply includes foreign cmdline, environment, cwd, paths, raw
+stderr, or raw exception messages. Missing pane-enumeration evidence cannot
+authorize ignoring an unreadable process. Path-helper failures expose only bounded
+cause, errno, stage and optional hand-root kind, never child paths. Hosts with unrelated unreadable orphans may therefore
+still require operator investigation; diagnostics should explain the ambiguity.
+
+Known limitation (LOW-2): long-lived shared daemons that
 inherit a hand's environment/cwd (e.g. a Codex daemon or local tmux server)
 can keep that hand classified as running after its session stops. This is
 intentionally fail-closed; shared-process attribution is not resolved here.
@@ -191,6 +230,37 @@ lets it (including streams its owner is in) — see [deploy/SETUP.md](deploy/SET
 npm ci && npm run build
 node dist/src/main.js       # first run writes ~/.cc-spawner/config.json (deny-all)
 ```
+
+The production sudoers file (`deploy/sudoers-cc-spawner`) requires
+`Defaults:cc-spawner !pam_session`, scoped only to the spawner user. On hosts
+whose sudo PAM stack starts `pam_systemd` (notably EL9), this is required for
+delete to work: otherwise each sudo call can create a user manager and a
+non-dumpable `(sd-pam)`, causing liveness to fail closed, including for the
+liveness helper's own sudo call.
+
+`!pam_session` also skips `pam_keyinit`, `pam_limits`, `pam_env`, mkhomedir and
+session logging for those spawner sudo calls. On Ubuntu this includes sudo's
+`pam_limits` and `pam_env` session entries (including `/etc/default/locale`),
+even if its stack does not use `pam_systemd`.
+
+With the managed tmux server running, hands are forked by that server under
+`cc-agents-tmux.service`, not by the sudo client: hand limits come from the
+service. Put required hand environment/locale in `agentsEnvFile`. A missing
+server that auto-starts via a sudo client, or custom tmux environment updates,
+can change that inheritance.
+
+Direct sudo helpers do not receive those PAM session limits/environment. Source
+audit found no requirement for a PAM-set locale or raised limits in the filesystem,
+liveness or rollout-discovery helpers: they use explicit byte/UTF-8, JSON or
+numeric formats. One existing locale-sensitive assumption remains: tmux-client
+absence detection matches English diagnostics (including strerror text). An
+unrecognized/localized error fails closed rather than proving absence; this
+is not a dependency on PAM loading `/etc/default/locale`. Codex queue explicitly
+sources `agentsEnvFile` and sets `HOME`/`CODEX_HOME`; it does not set resource
+limits or require a PAM locale in this repository. The external Codex binary and
+operator env-file contents are not covered by that source audit. If those need
+specific locale or limits, provide/verify them explicitly in the direct-helper
+execution context; the tmux service's limits do not apply to direct helpers.
 
 Production layout (two OS users, systemd, sudo): [deploy/SETUP.md](deploy/SETUP.md). For a dev
 machine set `"devMode": true` (hands run as you and can read your zuliprc files).

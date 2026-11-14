@@ -17,6 +17,10 @@ export const DELETE_PATHS_JS = DIRECTORY_OWNER_JS + String.raw`
 const fs = require('node:fs'), path = require('node:path');
 const [plan, remove, protectedRoots] = JSON.parse(process.argv[1]);
 const removed = [];
+const errno = e => ['EACCES','EPERM','ENOENT','ESRCH','EIO','ENOTDIR','EMFILE','ENFILE','EINVAL','ENOSYS','EOVERFLOW','ELOOP','ENXIO','ENOMEM','EBADF','EBUSY','ENOTEMPTY','EEXIST','UNATTESTED'].includes(e?.code) ? e.code : 'unexpected';
+const refuse = cause => Object.assign(Error(), {causeClass: cause});
+let stage = 'setup', rootKind;
+
 try {
   const inside = (root, p) => p !== root && p.startsWith(root + path.sep);
   function canonical(p) {
@@ -29,8 +33,8 @@ try {
   const roots = protectedRoots.map(p => canonical(path.resolve(p)));
   function tree(p, dev) {
     const st = fs.lstatSync(p);
-    if (st.isSymbolicLink()) throw Error('symlink refused: ' + p);
-    if (st.dev !== dev) throw Error('mount point refused (different device): ' + p);
+    if (st.isSymbolicLink()) throw refuse('symlink refused');
+    if (st.dev !== dev) throw refuse('mount point refused (different device)');
     if (st.isDirectory()) for (const name of fs.readdirSync(p)) tree(path.join(p, name), dev);
   }
   // Anchor each traversal in an open directory fd. O_NOFOLLOW applies at
@@ -41,14 +45,14 @@ try {
   function removeAt(parent, name, dev, recursive, identities) {
     const target = '/proc/self/fd/' + parent + '/' + name;
     const st = fs.lstatSync(target);
-    if (st.isSymbolicLink()) throw Error('symlink refused during removal: ' + name);
-    if (st.dev !== dev) throw Error('mount point refused during removal (different device): ' + name);
+    if (st.isSymbolicLink()) throw refuse('symlink refused during removal');
+    if (st.dev !== dev) throw refuse('mount point refused during removal (different device)');
     if (recursive && identities && !matches(st, identities)) throw Object.assign(Error('directory identity changed'), {code:'UNATTESTED'});
     if (!recursive) { fs.rmdirSync(target); return; }
     if (!st.isDirectory()) { fs.unlinkSync(target); return; }
     const fd = fs.openSync(target, flags);
     try {
-      if (fs.fstatSync(fd).dev !== dev) throw Error('mount point refused during removal (different device): ' + name);
+      if (fs.fstatSync(fd).dev !== dev) throw refuse('mount point refused during removal (different device)');
       if (identities && !ownerMatches(fd, identities)) throw Object.assign(Error('directory identity changed'), {code:'UNATTESTED'});
       for (const child of fs.readdirSync('/proc/self/fd/' + fd)) removeAt(fd, child, dev, true);
     }
@@ -63,19 +67,20 @@ try {
         const next = fs.openSync('/proc/self/fd/' + fd + '/' + part, flags);
         fs.closeSync(fd); fd = next;
       }
-      if (fs.realpathSync('/proc/self/fd/' + fd) !== path.dirname(dir)) throw Error('parent moved during removal');
+      if (fs.realpathSync('/proc/self/fd/' + fd) !== path.dirname(dir)) throw refuse('parent moved during removal');
       removeAt(fd, parts[parts.length - 1], dev, recursive, identities);
     } finally { fs.closeSync(fd); }
   }
   const checked = plan.map(p => {
-    if (!path.isAbsolute(p.path) || p.path.split(path.sep).includes('..')) throw Error('unsafe path: ' + p.path);
+    stage = 'preview'; rootKind = p.kind === 'hand dir' ? 'hand dir' : 'workDir';
+    if (!path.isAbsolute(p.path) || p.path.split(path.sep).includes('..')) throw refuse('unsafe path');
     let ancestor = path.parse(path.resolve(p.root)).root;
     for (const part of path.resolve(p.root).slice(ancestor.length).split(path.sep).filter(Boolean)) {
       ancestor = path.join(ancestor, part);
-      if (fs.lstatSync(ancestor).isSymbolicLink()) throw Error('symlink refused: ' + ancestor);
+      if (fs.lstatSync(ancestor).isSymbolicLink()) throw refuse('symlink refused');
     }
     const root = fs.realpathSync(p.root), lexicalRoot = path.resolve(p.root), dir = path.resolve(p.path);
-    if (!inside(lexicalRoot, dir)) throw Error('path must be strictly inside its root: ' + p.path);
+    if (!inside(lexicalRoot, dir)) throw refuse('path must be strictly inside its root');
     const dev = fs.lstatSync(root).dev;
     let current = lexicalRoot, exists = true;
     for (const part of path.relative(lexicalRoot, dir).split(path.sep)) {
@@ -83,17 +88,17 @@ try {
       if (!exists) continue;
       try {
         const st = fs.lstatSync(current);
-        if (st.isSymbolicLink()) throw Error('symlink refused: ' + current);
-        if (st.dev !== dev) throw Error('mount point refused (different device): ' + current);
+        if (st.isSymbolicLink()) throw refuse('symlink refused');
+        if (st.dev !== dev) throw refuse('mount point refused (different device)');
       }
       catch(e) { if (e.code !== 'ENOENT') throw e; exists = false; }
-      if (exists && !inside(root, fs.realpathSync(current))) throw Error('path escapes root: ' + current);
+      if (exists && !inside(root, fs.realpathSync(current))) throw refuse('path escapes root');
     }
     // Also protect the OTHER configured root, even under unusual nested config.
     const canonical = path.join(root, path.relative(lexicalRoot, dir));
-    if (roots.some(r => canonical === r || inside(canonical, r))) throw Error('refusing to delete a configured root: ' + p.path);
+    if (roots.some(r => canonical === r || inside(canonical, r))) throw refuse('refusing to delete a configured root');
     if (exists) {
-      if (!fs.lstatSync(dir).isDirectory()) throw Error('not a directory: ' + dir);
+      if (!fs.lstatSync(dir).isDirectory()) throw refuse('not a directory');
       const fd = fs.openSync(dir, flags);
       try { p.recursive = Boolean(p.recursive && ownerMatches(fd, p.identities)); }
       finally { fs.closeSync(fd); }
@@ -103,6 +108,7 @@ try {
   });
   // Identity checks can downgrade a descendant after the plan was assembled.
   for (const p of checked) {
+    rootKind = p.kind === 'hand dir' ? 'hand dir' : 'workDir';
     if (checked.some(child => !child.recursive && (path.resolve(child.path) === path.resolve(p.path) ||
       inside(path.resolve(p.path), path.resolve(child.path))))) {
       p.recursive = false;
@@ -110,11 +116,13 @@ try {
     }
   }
   if (remove) {
+    stage = 'removal'; rootKind = undefined;
     if (checked.some(p => p.kept && checked.some(parent => parent.exists && !parent.kept &&
-      inside(path.resolve(parent.path), path.resolve(p.path))))) throw Error('kept directory nested in removal plan');
+      inside(path.resolve(parent.path), path.resolve(p.path))))) throw refuse('kept directory nested in removal plan');
     const unique = new Map(checked.map(p => [path.resolve(p.path), p]));
     // A nested path may appear in historical records; remove children first.
     for (const [dir, p] of [...unique].sort(([a], [b]) => b.length - a.length)) {
+      rootKind = p.kind === 'hand dir' ? 'hand dir' : 'workDir';
       if (p.exists && !p.kept) {
         try {
           if (checked.some(child => child.kept && inside(dir, path.resolve(child.path)))) { p.kept = true; continue; }
@@ -129,63 +137,176 @@ try {
     }
   }
   console.log(JSON.stringify({paths:checked, removed}));
-} catch(e) { console.log(JSON.stringify({error:e.message, removed})); }
+} catch(e) { console.log(JSON.stringify({error: {cause: e.causeClass || 'filesystem', errno: errno(e), stage, rootKind}, removed})); }
 `;
 
 export async function deletionPaths(host: AgentHost, cfg: SpawnerConfig, plan: DeletionPath[], remove = false): Promise<{
   paths?: CheckedDeletionPath[]; removed: string[]; error?: string;
 }> {
-  const { stdout } = await host.exec(cfg.nodeBin, ['-e', DELETE_PATHS_JS, JSON.stringify([plan, remove, [cfg.handsDir, cfg.workRoot ?? resolve(cfg.projectDir, 'hands')]])]);
-  return JSON.parse(stdout);
+  const { stdout } = await helperExec(() => host.exec(cfg.nodeBin, ['-e', DELETE_PATHS_JS, JSON.stringify([plan, remove, [cfg.handsDir, cfg.workRoot ?? resolve(cfg.projectDir, 'hands')]])]));
+  const result = JSON.parse(stdout);
+  if (result.error) {
+    // Validate even successful-exec error output before rendering it to Zulip.
+    const e = result.error;
+    const causes = ['filesystem', 'symlink refused', 'mount point refused (different device)',
+      'symlink refused during removal', 'mount point refused during removal (different device)',
+      'parent moved during removal', 'unsafe path', 'path must be strictly inside its root',
+      'path escapes root', 'refusing to delete a configured root', 'not a directory',
+      'kept directory nested in removal plan'];
+    const codes = ['EACCES','EPERM','ENOENT','ESRCH','EIO','ENOTDIR','EMFILE','ENFILE','EINVAL','ENOSYS','EOVERFLOW','ELOOP','ENXIO','ENOMEM','EBADF','EBUSY','ENOTEMPTY','EEXIST','UNATTESTED'];
+    const cause = causes.includes(e.cause) ? e.cause : 'helper-error';
+    const code = codes.includes(e.errno) ? e.errno : 'unexpected';
+    const stage = ['setup', 'preview', 'removal'].includes(e.stage) ? e.stage : 'unknown-stage';
+    const root = ['hand dir', 'workDir'].includes(e.rootKind) ? `; ${e.rootKind}` : '';
+    result.error = `${cause}; ${code}; ${stage}${root}`;
+  }
+  return result;
 }
 
-// tmux absence alone does not prove a hand stopped: a child can outlive it.
-// Linux /proc is inspected as the agents user, without exposing command lines
-// or environment (which may contain credentials). Fail closed on unreadable
-// same-user processes or unavailable /proc. No pid is persisted in old records.
+// tmux absence alone does not prove a hand stopped: children can outlive it.
 export const HAND_PROCESSES_JS = String.raw`
 const fs = require('node:fs'), path = require('node:path');
-const entries = JSON.parse(process.argv[1]), uid = fs.statSync('/proc/self').uid;
+const errno = e => ['EACCES','EPERM','ENOENT','ESRCH','EIO','ENOTDIR','EMFILE','ENFILE','EINVAL','ENOSYS','EOVERFLOW','ELOOP','ENXIO','ENOMEM','EBADF','EBUSY'].includes(e?.code) ? e.code : 'unexpected';
+const gone = e => e.code === 'ENOENT' || e.code === 'ESRCH';
+const diagnostics = [];
+let running = false, ambiguous = 0, stage = 'setup';
+try {
+const entries = JSON.parse(process.argv[1]), panes = JSON.parse(process.argv[2] || '[]');
+const uid = fs.statSync('/proc/self').uid;
 const dirs = [...new Set(entries.flatMap(e => [e.handDir, e.workDir].filter(Boolean)))];
 const sessions = entries.map(e => e.sessionId).filter(Boolean);
 const mentions = s => dirs.some(d => s.includes(d + path.sep) || s === d);
-let running = false, unreadable = false;
+function stat(pid) {
+  const raw = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+  const fields = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
+  const ppid = Number(fields[1]), start = fields[19];
+  if (!Number.isSafeInteger(ppid) || !/^\d+$/.test(start)) throw Error('stat-format');
+  return {ppid, start};
+}
+function otherPane(pid) {
+  // Diagnostic context only: panes can move between sessions and their PIDs
+  // can be reused. Membership never proves a different launch identity.
+  const chain = new Map();
+  try {
+    while (pid > 1 && chain.size < 256 && !chain.has(pid)) {
+      const st = stat(pid); chain.set(pid, st);
+      if (panes.some(p => p.pid === pid)) {
+        return [...chain].every(([id, old]) => { const now = stat(id); return old.start === now.start && old.ppid === now.ppid; });
+      }
+      pid = st.ppid;
+    }
+  } catch {} // Missing/hidden ancestry is not evidence of unrelatedness.
+  return false;
+}
+function hints(base) {
+  const result = {};
+  try {
+    const status = fs.readFileSync(base + '/status', 'utf8');
+    for (const key of ['Uid','Gid','NSpid','Dumpable']) {
+      const line = status.split('\n').find(l => l.startsWith(key + ':'));
+      const values = line?.slice(key.length + 1).trim().split(/\s+/);
+      if (values?.every(v => /^\d+$/.test(v))) result[key === 'NSpid' ? 'namespaceDepth' : key] = key === 'NSpid' ? values.length : values.map(Number);
+    }
+  } catch(e) { result.status = errno(e); }
+  try {
+    const groups = fs.readFileSync(base + '/cgroup', 'utf8').trim().split('\n');
+    // Never serialize cgroup paths: unit/container names can contain secrets.
+    result.cgroup = {entries: groups.length, unified: groups.some(l => l.startsWith('0::')), nonRoot: groups.some(l => !l.endsWith(':/'))};
+  } catch(e) { result.cgroup = errno(e); }
+  return result;
+}
+stage = 'proc-list';
 for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p) && +p !== process.pid)) {
   const base = '/proc/' + pid;
+  // Only absence of the tgid directory establishes disappearance. Field
+  // ENOENT (notably a pthread_exit leader's cwd) says nothing about workers.
   try {
+    stage = 'owner';
     if (fs.statSync(base).uid !== uid) continue;
-    const args = fs.readFileSync(base + '/cmdline', 'utf8').split('\0');
-    if (!args.some(Boolean)) continue; // zombie / kernel thread
-    if (args.some(a => sessions.includes(a) || mentions(a))) { running = true; break; }
-    const env = fs.readFileSync(base + '/environ', 'utf8').split('\0');
-    if (env.some(mentions)) { running = true; break; }
-    const cwd = fs.readlinkSync(base + '/cwd').replace(/ \(deleted\)$/, '');
-    if (dirs.some(d => cwd === d || cwd.startsWith(d + path.sep))) { running = true; break; }
-  } catch(e) {
-    if (e.code === 'EACCES' || e.code === 'EPERM') {
-      // Nondumpable helpers can become root-owned between inspection steps.
-      // Only a positively different owner is ignorable; ambiguity fails closed.
-      try { if (fs.statSync(base).uid !== uid) continue; }
-      catch(ownerError) { if (ownerError.code === 'ENOENT' || ownerError.code === 'ESRCH') continue; }
-      unreadable = true;
-    }
-    else if (e.code !== 'ENOENT' && e.code !== 'ESRCH') throw e;
+  } catch(e) { if (gone(e)) continue; throw e; }
+  const failures = [];
+  const read = (field, fn) => {
+    try { return fn(); }
+    catch(e) { failures.push({e, stage: field}); }
+  };
+  const before = read('stat', () => stat(pid));
+  const args = read('cmdline', () => fs.readFileSync(base + '/cmdline', 'utf8').split('\0'));
+  if (args?.some(a => sessions.includes(a) || mentions(a))) running = true;
+  function inspect(target) {
+    const env = read('environ', () => fs.readFileSync(target + '/environ', 'utf8').split('\0'));
+    const cwd = read('cwd', () => fs.readlinkSync(target + '/cwd').replace(/ \(deleted\)$/, ''));
+    if (env?.some(mentions) || cwd !== undefined && mentions(cwd)) running = true;
+  }
+  inspect(base);
+  const tasks = read('task-list', () => fs.readdirSync(base + '/task'));
+  if (tasks) {
+    if (!tasks.some(tid => /^\d+$/.test(tid))) failures.push({e: {}, stage: 'task-list'});
+    for (const tid of tasks.filter(tid => /^\d+$/.test(tid))) inspect(base + '/task/' + tid);
+  }
+  // Revalidate identity after all task reads. Reuse is ambiguity, not absence.
+  let disappeared = false;
+  read('owner', () => {
+    try { fs.statSync(base); }
+    catch(e) { if (gone(e)) { disappeared = true; return; } throw e; }
+  });
+  if (!disappeared) {
+    const after = read('stat', () => stat(pid));
+    if (before && after && before.start !== after.start) failures.push({e: {}, stage: 'stat'});
+  }
+  // Permission evidence is sticky, even if subsequent fields or the directory
+  // disappear. Do not reclassify a denied process by name, state or new owner.
+  const denied = failures.find(({e}) => e.code === 'EACCES' || e.code === 'EPERM');
+  if (failures.length && (!disappeared || denied)) {
+    const failure = denied || failures[0];
+    diagnostics.push({pid: +pid, errno: errno(failure.e), stage: failure.stage,
+      classification: 'ambiguous', otherPaneAncestry: otherPane(+pid), ...hints(base)});
+    ambiguous++;
   }
 }
-if (!running && unreadable) throw Error('cannot rule out a running hand: unreadable same-user process');
-console.log(JSON.stringify(running));
+if (diagnostics.length) console.log(JSON.stringify({running, error: !running && ambiguous ? 'unreadable-process' : undefined, ambiguous, unreadable: diagnostics.length, diagnostics}));
+else console.log(JSON.stringify(running));
+} catch(e) {
+  console.log(JSON.stringify({error: 'helper-error', errno: errno(e), stage, unreadable: diagnostics.length, diagnostics}));
+}
 `;
+
+/** Only these errors carry a deliberately secret-free message to Zulip. */
+export class ProcessLivenessError extends Error {}
+
+/** Shared secret-free classification for every delete/list helper execution. */
+async function helperExec<T>(exec: () => Promise<T>, stage = 'process'): Promise<T> {
+  try { return await exec(); }
+  catch (err) {
+    const e = err as {code?: unknown; stderr?: unknown};
+    const code = typeof e?.code === 'number' ? `exit-${e?.code}` : ['ENOENT','EACCES','EPERM'].includes(String(e?.code)) ? String(e?.code) : 'unknown';
+    const stderr = String(e?.stderr ?? '');
+    const stderrClass = /permission denied|operation not permitted/i.test(stderr) ? 'permission' : /not found|no such file/i.test(stderr) ? 'missing' : stderr ? 'present' : 'empty';
+    console.warn('[liveness] ' + JSON.stringify({error: 'exec', code, stderrClass}));
+    throw new ProcessLivenessError(`${stage} liveness check failed (exec ${code}; stderr ${stderrClass})`);
+  }
+}
 
 /** Reuse tmux's fail-closed absence check, then look for surviving processes. */
 export async function handStopped(host: AgentHost, tmux: Tmux, cfg: SpawnerConfig, entries: readonly BotEntry[]): Promise<boolean> {
   if (entries.some(e => ['alive', 'provisioning', 'cleanup'].includes(e.status))) return false;
-  try { if (await tmux.hasSession(entries[0].tmuxSession)) return false; }
-  catch { throw new Error('tmux liveness check failed'); }
-  let stdout: string;
-  try { ({ stdout } = await host.exec(cfg.nodeBin, ['-e', HAND_PROCESSES_JS,
-    JSON.stringify(entries.map(({ handDir, workDir, sessionId }) => ({ handDir, workDir, sessionId })))])); }
-  catch { throw new Error('process liveness check failed (unavailable /proc or unreadable agents-user process)'); }
-  const running: unknown = JSON.parse(stdout);
-  if (typeof running !== 'boolean') throw new Error('invalid process liveness response');
-  return !running;
+  if (await helperExec(() => tmux.hasSession(entries[0].tmuxSession), 'tmux')) return false;
+  const fail = (cause: string): never => { console.warn('[liveness] ' + cause); throw new ProcessLivenessError(`process liveness check failed (${cause})`); };
+  // Pane enumeration is optional diagnostic context, never deletion evidence.
+  const paneRoots = () => helperExec(() => tmux.otherPaneRoots(entries.map(e => e.tmuxSession))).catch(() => {
+    console.warn('[liveness] pane-evidence-unavailable');
+    return [];
+  });
+  const panes = await paneRoots();
+  const { stdout } = await helperExec(() => host.exec(cfg.nodeBin, ['-e', HAND_PROCESSES_JS,
+    JSON.stringify(entries.map(({ handDir, workDir, sessionId }) => ({ handDir, workDir, sessionId }))), JSON.stringify(panes)]));
+  let result;
+  try { result = JSON.parse(stdout); } catch { return fail('invalid-response'); }
+  if (typeof result === 'boolean') return !result;
+  if (!result || !Array.isArray(result.diagnostics)) return fail('invalid-response');
+  // Only the helper's explicitly projected fields are emitted; never stderr,
+  // Error.message, cmdline, environment, cwd or raw cgroup/status contents.
+  console.warn('[liveness] ' + JSON.stringify(result));
+  if (result.error) return fail(`${result.error}; ${result.errno ?? [...new Set(result.diagnostics.map((d: {errno: string}) => d.errno))].join('/')}; ${result.stage ?? 'process-scan'}; unreadable=${result.unreadable}`);
+  if (typeof result.running !== 'boolean') return fail('invalid-response');
+  return !result.running;
 }

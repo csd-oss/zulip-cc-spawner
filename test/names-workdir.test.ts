@@ -25,7 +25,7 @@ function fixture() {
   const launches: LaunchRequest[] = [];
   const cwds: string[] = [];
   const tmux = {
-    hasSession: async (s: string) => sessions.has(s), listSessions: async () => [...sessions],
+    otherPaneRoots: async () => [], hasSession: async (s: string) => sessions.has(s), listSessions: async () => [...sessions],
     killSession: async (s: string) => { sessions.delete(s); },
     capturePane: async () => '? for shortcuts', sessionUptime: async () => 1,
     newSession: async (s: string, cwd: string) => { cwds.push(cwd); sessions.add(s); },
