@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, openSync, readSync, closeSync, rmdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, openSync, readSync, closeSync, rmdirSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
@@ -76,7 +76,7 @@ test('new spawn is empty, private, trusted; revive retains cwd and transcript', 
   assert.match((await c.run('spawn opus-5-5 name=Scout')).content, /Spawned/);
   const e = c.registry.all()[0];
   assert.equal(e.workDir, join(c.cfg.projectDir, 'hands', e.tmuxSession));
-  assert.deepEqual(readdirSync(e.workDir!), []);
+  assert.deepEqual(readdirSync(e.workDir!), ['.cc-spawner-owner']);
   assert.equal(statSync(e.workDir!).mode & 0o777, 0o700);
   assert.equal(statSync(e.workDir!).uid, process.getuid!());
   const paths = handPaths(c.cfg.handsDir, e.tmuxSession, e.handDir);
@@ -97,7 +97,7 @@ test('new spawn is empty, private, trusted; revive retains cwd and transcript', 
   assert.equal(c.launches[1].resume, true);
   assert.equal(c.launches[1].sessionId, e.sessionId);
   assert.deepEqual(c.cwds, [e.workDir, e.workDir]);
-  assert.deepEqual(readdirSync(e.workDir!), []);
+  assert.deepEqual(readdirSync(e.workDir!), ['.cc-spawner-owner']);
   assert.equal(uploadRoot(), `work=${e.workDir}`, 'revival exports prior.workDir, not the current workRoot');
 });
 
@@ -198,10 +198,10 @@ test('trust merge serializes concurrent processes and replaces atomically, prese
   assert.equal(Object.keys(data.projects).length, 9);
   assert.equal(statSync(file).mode & 0o777, 0o600);
   data.projects[join(c.dir, 'work-0')].extra = true; writeFileSync(file, JSON.stringify(data));
-  await prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false);
+  await prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false, true, { ...statSync(join(c.dir, 'work-0')), nonce: readFileSync(join(c.dir, 'work-0', '.cc-spawner-owner'), 'utf8') });
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).projects[join(c.dir, 'work-0')].extra, true);
   writeFileSync(file, 'broken');
-  await assert.rejects(prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false));
+  await assert.rejects(prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false, true, statSync(join(c.dir, 'work-0'))));
   assert.equal(readFileSync(file, 'utf8'), 'broken');
 });
 
@@ -254,7 +254,7 @@ test('first trust failure stays fail-closed after JSON repair; manual empty-dir 
   const workDir = first.workDir!;
   assert.equal(first.status, 'failed');
   assert.equal(first.workDirReady, undefined);
-  assert.deepEqual(readdirSync(workDir), []);
+  assert.deepEqual(readdirSync(workDir), ['.cc-spawner-owner']);
   assert.equal(c.launches.length, 0);
 
   writeFileSync(file, '{}'); // isolated test config; real operators preserve keys
@@ -263,9 +263,10 @@ test('first trust failure stays fail-closed after JSON repair; manual empty-dir 
   assert.ok(retry.content.includes(workDir), 'action reply names the exact workspace');
   assert.match(retry.content, /Refusing to adopt it/);
   assert.equal(c.launches.length, 0);
-  assert.deepEqual(readdirSync(workDir), []);
+  assert.deepEqual(readdirSync(workDir), ['.cc-spawner-owner']);
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {});
 
+  unlinkSync(join(workDir, '.cc-spawner-owner')); // inspected failed-preparation marker only
   rmdirSync(workDir); // documented manual recovery, refuses nonempty directories
   assert.match((await c.run('spawn opus-5-5 name=retry')).content, /Spawned/);
   const recovered = c.registry.findAlive('retry')!;
@@ -273,7 +274,7 @@ test('first trust failure stays fail-closed after JSON repair; manual empty-dir 
   assert.equal(recovered.botEmail, first.botEmail);
   assert.equal(recovered.workDirReady, true);
   assert.equal(c.launches.length, 1);
-  assert.deepEqual(readdirSync(workDir), []);
+  assert.deepEqual(readdirSync(workDir), ['.cc-spawner-owner']);
 });
 
 for (const [effort, abbreviation] of [
@@ -293,4 +294,54 @@ for (const [effort, abbreviation] of [
 test('display length guard still enforces 49 including effort', () => {
   assert.equal(handName('a'.repeat(12), 'x'.repeat(24), 'label', 'medium').personaName.length, 49);
   assert.throws(() => handName('a'.repeat(12), 'x'.repeat(24), 'labels', 'medium'), /too long/);
+});
+
+test('refused foreign workspace survives delete confirm (review regression)', async () => {
+  const c = fixture();
+  mkdirSync(c.cfg.handsDir, { recursive: true });
+  const foreign = join(c.cfg.projectDir, 'hands', 'cc-old');
+  mkdirSync(foreign, { recursive: true }); writeFileSync(join(foreign, 'precious'), 'not yours');
+  assert.match((await c.run('spawn opus-5-5 name=old')).content, /failed.*Workspace already exists/s);
+  assert.equal(c.registry.all()[0].workDirReady, undefined);
+  const exec = c.host.exec.bind(c.host);
+  const { HAND_PROCESSES_JS } = await import('../src/delete-hand.js');
+  c.host.exec = async (cmd, args, opts) => args[1] === HAND_PROCESSES_JS
+    ? { stdout: 'false' } : exec(cmd, args, opts);
+  assert.match((await c.run('delete old')).content, /kept: not created by this hand/);
+  assert.match((await c.run('delete old confirm')).content, /Deleted.*kept: not created by this hand/s);
+  assert.equal(readFileSync(join(foreign, 'precious'), 'utf8'), 'not yours');
+});
+
+test('spawn records hand directory provenance without claiming a pre-existing directory', async () => {
+  for (const existing of [false, true]) {
+    const c = fixture();
+    const handDir = join(c.cfg.handsDir, 'cc-scout');
+    if (existing) { mkdirSync(handDir, { recursive: true }); writeFileSync(join(handDir, 'precious'), 'keep'); }
+    assert.match((await c.run('spawn opus-5-5 name=scout')).content, /Spawned/);
+    assert.equal(c.registry.all()[0].handDirReady, !existing);
+    await c.run('stop scout');
+    const { HAND_PROCESSES_JS } = await import('../src/delete-hand.js');
+    const exec = c.host.exec.bind(c.host);
+    c.host.exec = async (cmd, args, opts) => args[1] === HAND_PROCESSES_JS ? { stdout: 'false' } : exec(cmd, args, opts);
+    assert.match((await c.run('delete scout confirm')).content, /Deleted/);
+    if (existing) assert.equal(readFileSync(join(handDir, 'precious'), 'utf8'), 'keep');
+  }
+});
+
+test('failed hand-file write does not establish directory provenance', async () => {
+  const c = fixture();
+  const write = c.host.writeFile.bind(c.host);
+  c.host.writeFile = async (path, content, mode) => {
+    if (path.endsWith('/seed.md')) throw Error('simulated partial write');
+    return write(path, content, mode);
+  };
+  assert.match((await c.run('spawn opus-5-5 name=scout')).content, /failed.*simulated partial write/s);
+  const e = c.registry.all()[0];
+  assert.equal(e.workDirReady, true);
+  assert.equal(e.handDirReady, false);
+  const { HAND_PROCESSES_JS } = await import('../src/delete-hand.js');
+  const exec = c.host.exec.bind(c.host);
+  c.host.exec = async (cmd, args, opts) => args[1] === HAND_PROCESSES_JS ? { stdout: 'false' } : exec(cmd, args, opts);
+  assert.match((await c.run('delete scout confirm')).content, /Deleted.*kept: not created by this hand/s);
+  assert.ok(readFileSync(join(e.handDir, 'zuliprc'), 'utf8'));
 });

@@ -1,3 +1,4 @@
+import { PREPARE_HANDDIR_JS } from './directory-owner.js';
 /**
  * SpawnerActions — the core. The Zulip control surface builds an Invocation
  * and calls run(); the returned result is the reply.
@@ -14,6 +15,7 @@ import { isPlausibleMessageTime } from './activity-time.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { prepareWorkDir } from './workdir.js';
+import { deletionPaths, handStopped, type CheckedDeletionPath, type DeletionPath } from './delete-hand.js';
 import { handIdentityName, handName, modelDisplayName } from './names.js';
 import { isAllowed, type GroupCheck, type Invoker, type Where } from './auth.js';
 import {
@@ -136,7 +138,9 @@ export class SpawnerActions {
       case 'models':
         return { content: modelsListing() };
       case 'list':
-        return { content: this.list() };
+        return { content: cmd.stopped ? await this.listStopped() : this.list() };
+      case 'delete':
+        return { content: await this.deleteHand(inv, cmd.target, cmd.confirm) };
       case 'stop':
         return { content: await this.stop(inv, cmd.target) };
       case 'peek':
@@ -254,13 +258,15 @@ export class SpawnerActions {
       personaName,
       botUserId: 0,
       botEmail: '',
+      botCreatedBySpawner: prior?.botCreatedBySpawner,
       tmuxSession: shortName,
       streamName: prior?.streamName ?? where.streamName,
       streamId: prior?.streamId ?? where.streamId,
       topic: prior?.topic ?? where.topic,
       handDir: paths.dir,
+      handDirReady: false,
       workDir,
-      workDirReady: prior?.workDirReady,
+      workDirReady: undefined,
       nameScheme: prior ? prior.nameScheme : 'stable-v2',
       harness: engine === 'codex' ? 'cx' : prior ? prior.harness : 'cc',
       engine,
@@ -286,13 +292,19 @@ export class SpawnerActions {
       const { bot, created } = await this.d.provisioner.ensure(personaName, shortName, !prior);
       registry.update(entry, {
         botUserId: bot.userId, botEmail: bot.email,
+        botCreatedBySpawner: created || (prior?.botUserId === bot.userId && prior.botCreatedBySpawner === true),
         ...(!prior && created ? { spawnedBy: { userId: inv.invoker.userId, username: inv.invoker.name } } : {}),
       });
       if (!created && !prior) log(`${personaName}: reusing an existing bot ${bot.email} with no registry history`);
       await this.d.provisioner.subscribe(bot.userId, where.streamName);
       if (workDir) {
-        await prepareWorkDir(this.d.host, cfg, workDir, !prior?.workDirReady, engine === 'claude');
-        registry.update(entry, { workDirReady: true });
+        // A failed retry may not have reached preparation. Recover only this
+        // hand's same-path attestation; prepareWorkDir rechecks its identity.
+        const prepared = prior && [...registry.all()].reverse().find(e => e.tmuxSession === prior.tmuxSession &&
+          e.workDir === workDir && e.workDirReady && e.workDirIdentity);
+        const workDirIdentity = await prepareWorkDir(this.d.host, cfg, workDir,
+          !prepared && !prior?.workDirReady, engine === 'claude', prepared?.workDirIdentity);
+        registry.update(entry, { workDirReady: true, workDirIdentity });
       }
 
       const seedCtx = { personaName, streamName: where.streamName, topic: where.topic, realm: this.d.realm };
@@ -312,7 +324,15 @@ export class SpawnerActions {
         }
       }
       filesTouched = true;
+      await this.d.host.mkdirp(cfg.handsDir);
+      // New folders are attested privately and published with no-replace rename.
+      const { stdout: handDirCreated } = await this.d.host.exec(cfg.nodeBin, ['-e',
+        PREPARE_HANDDIR_JS,
+        paths.dir, JSON.stringify(prior?.handDirReady ? prior.handDirIdentity ?? null : null)]);
       await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir, workDir);
+
+      const handDirIdentity = handDirCreated.trim() ? JSON.parse(handDirCreated) ?? undefined : undefined;
+      registry.update(entry, { handDirReady: Boolean(handDirIdentity), handDirIdentity });
 
       const startOffset = canResume && engine !== 'codex' ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
       launched = true;
@@ -518,6 +538,110 @@ export class SpawnerActions {
       return `* **${e.personaName}** (${modelLabel(e)}) — ${home(e)}, tmux \`${e.tmuxSession}\`, idle ${formatIdle(idleMin)}${blocked}`;
     });
     return `${alive.length}/${this.d.config.maxSessions} hands:\n${lines.join('\n')}`;
+  }
+
+  private async listStopped(): Promise<string> {
+    const stopped: BotEntry[] = [];
+    const failures: string[] = [];
+    for (const entry of this.d.registry.currentHands()) {
+      const history = this.d.registry.all().filter(e => e.tmuxSession === entry.tmuxSession);
+      try {
+        if (await handStopped(this.d.host, this.d.tmux, this.d.config, history)) stopped.push(entry);
+      } catch (err) {
+        log(`list stopped liveness ${entry.tmuxSession}: ${JSON.stringify((err as Error).message)}`);
+        failures.push(`* Could not verify stopped hand **${entry.personaName}** (tmux \`${entry.tmuxSession}\`): ${(err as Error).message}`);
+      }
+    }
+    if (!stopped.length) return [failures.length ? 'No verified stopped hands.' : 'No stopped hands.', ...failures].join('\n');
+    return `${stopped.length} stopped hand(s):\n` + stopped.map(e =>
+      `* **${e.personaName}** (\`${e.friendlyName ?? e.suffix}\`, tmux \`${e.tmuxSession}\`) — creator: ${e.spawnedBy?.username || e.spawnedBy?.userId || 'unknown'}, home ${home(e)}${e.lastActivity ? `, last activity ${e.lastActivity}` : ''}`,
+    ).concat(failures).join('\n');
+  }
+
+  private async deleteHand(inv: Invocation, target: string, confirm = false): Promise<string> {
+    const { registry, config: cfg, host, tmux } = this.d;
+    const matches = registry.matchingHands(target);
+    if (!matches.length) return `Hand \`${target}\` not found.`;
+    if (matches.length !== 1) return 'Ambiguous hand name — use its bot email or tmux session; nothing was changed.';
+    const entry = matches[0];
+    if (!this.owns(inv, entry)) {
+      if (!entry.spawnedBy && cfg.ownerUserId == null) return 'Cannot delete this hand: creator unknown and no ownerUserId configured; nothing was changed.';
+      return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or ${this.ownerDescription()} may delete it, regardless of creatorOnlyControls.`;
+    }
+    const history = registry.all().filter(e => e.tmuxSession === entry.tmuxSession);
+    const plan: DeletionPath[] = [];
+    for (const e of history) {
+      for (const p of [
+        { kind: 'hand dir' as const, path: e.handDir, root: cfg.handsDir },
+        ...(e.workDir ? [{ kind: 'workDir' as const, path: e.workDir, root: cfg.workRoot ?? resolve(cfg.projectDir, 'hands') }] : []),
+      ]) {
+        if (!plan.some(x => x.kind === p.kind && x.path === p.path)) plan.push(p);
+      }
+    }
+    // Only this hand's positive, path-specific creation attestations qualify.
+    for (const p of plan) {
+      p.identities = history.flatMap(e => {
+        const identity = p.kind === 'hand dir' ? e.handDirIdentity : e.workDirIdentity;
+        const ready = p.kind === 'hand dir' ? e.handDirReady : e.workDirReady;
+        return ready && identity && (p.kind === 'hand dir' ? e.handDir : e.workDir) === p.path ? [identity] : [];
+      });
+      p.recursive = p.identities.length > 0;
+    }
+    // A proven historical parent must not recursively swallow an unproven
+    // child (or another spelling/kind of the same path), even if it gains data.
+    const unproven = plan.filter(p => !p.recursive);
+    for (const p of plan) {
+      if (unproven.some(child => resolve(child.path) === resolve(p.path) ||
+        resolve(child.path).startsWith(resolve(p.path) + '/'))) p.recursive = false;
+    }
+    // Do not remove a path still referenced by another identity.
+    if (registry.all().some(e => e.tmuxSession !== entry.tmuxSession && plan.some(p =>
+      [e.handDir, e.workDir].some(dir => dir && (resolve(dir) === resolve(p.path) || resolve(dir).startsWith(resolve(p.path) + '/') || resolve(p.path).startsWith(resolve(dir) + '/')))))) {
+      return 'Cannot delete: a directory is shared with another hand; nothing was changed.';
+    }
+    try {
+      const checked = await deletionPaths(host, cfg, plan);
+      if (checked.error) return `Cannot delete: ${checked.error}; nothing was changed.`;
+      if (!(await handStopped(host, tmux, cfg, history))) return 'Cannot delete: hand must be STOPPED (no live tmux session or running process); nothing was changed.';
+      const bots = [...new Set(history.filter(e => e.botCreatedBySpawner === true && e.botUserId > 0).map(e => e.botUserId))];
+      // Never deactivate an identity referenced by another hand.
+      if (registry.all().some(e => e.tmuxSession !== entry.tmuxSession && bots.includes(e.botUserId))) {
+        return 'Cannot delete: a bot is shared with another hand; nothing was changed.';
+      }
+      const previewFor = (paths: CheckedDeletionPath[]) => [
+        `* Registry: all ${history.length} entry/entries for tmux \`${entry.tmuxSession}\`.`,
+        ...paths.map(p => `* ${p.kind}: \`${p.path}\`${p.exists ? p.kept ? ' (kept: not created by this hand)' : p.recursive ? ' (remove directory and contents)' : ' (remove empty directory only)' : ' (already absent; nothing to remove)'}.`),
+        ...(!history.some(e => e.workDir) ? ['* workDir: not recorded; legacy projectDir is kept.'] : []),
+        bots.length ? `* Bot deactivation: ${bots.map(id => `user ${id}`).join(', ')} (recorded as spawner-created).` : '* Bot deactivation: none (no recorded spawner-created bot; existing bot kept).',
+      ].join('\n');
+      const preview = previewFor(checked.paths!);
+      if (!confirm) return `Dry-run for **${entry.personaName}** — would remove:\n${preview}\nNothing changed. Run \`delete ${entry.friendlyName ?? entry.suffix} confirm\` to proceed.`;
+
+      // Revalidate immediately before deletion; keep the registry on filesystem
+      // failure so a partial cleanup can be retried. Bot failure is non-fatal.
+      if (!(await handStopped(host, tmux, cfg, history))) return 'Cannot delete: hand is no longer stopped; nothing was changed.';
+      const cleanup = await deletionPaths(host, cfg, plan, true);
+      for (const path of cleanup.removed) log(`delete ${entry.tmuxSession}: removed directory ${JSON.stringify(path)}`);
+      if (cleanup.error) return `Deletion incomplete: ${cleanup.error}. Registry kept for retry; ${cleanup.removed.length} directory/directories removed.`;
+      for (const p of cleanup.paths!.filter(p => !p.exists)) log(`delete ${entry.tmuxSession}: directory already absent ${JSON.stringify(p.path)}`);
+      const warnings: string[] = [];
+      for (const botId of bots) {
+        try {
+          await this.d.provisioner.deactivate(botId);
+          log(`delete ${entry.tmuxSession}: deactivated bot ${botId}`);
+        } catch {
+          log(`delete ${entry.tmuxSession}: bot ${botId} deactivation failed; continuing local cleanup`);
+          warnings.push(`⚠️ Bot ${botId} deactivation failed; local cleanup still completed. Ask the owner to deactivate it manually.`);
+        }
+      }
+      if (!bots.length) log(`delete ${entry.tmuxSession}: kept bot (no recorded creation provenance)`);
+      const count = registry.removeHand(entry.tmuxSession);
+      log(`delete ${entry.tmuxSession}: removed ${count} registry entries`);
+      return `Deleted **${entry.personaName}**.\n${previewFor(cleanup.paths!)}${warnings.length ? '\n' + warnings.join('\n') : ''}`;
+    } catch (err) {
+      log(`delete ${entry.tmuxSession}: failed ${JSON.stringify((err as Error).message)}`);
+      return 'Could not complete deletion (path, liveness or registry check failed). Registry kept for retry; inspect logs before retrying.';
+    }
   }
 
   private async stop(inv: Invocation, target: string): Promise<string> {

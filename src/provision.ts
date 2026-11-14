@@ -66,6 +66,10 @@ export class Provisioner {
     }
   }
 
+  async deactivate(botUserId: number): Promise<void> {
+    await this.admin.deactivateBot(botUserId);
+  }
+
   async rename(botUserId: number, fullName: string): Promise<void> {
     await this.admin.updateBot(botUserId, fullName);
   }

@@ -215,6 +215,11 @@ export class ZulipClient {
     return this.call('POST', '/bots', { full_name: fullName, short_name: shortName, bot_type: 1 });
   }
 
+  /** Deactivate a bot owned by this account. */
+  deactivateBot(botId: number): Promise<unknown> {
+    return this.call('DELETE', `/bots/${botId}`);
+  }
+
   /** Change only the display name, never the bot's immutable email. */
   updateBot(botId: number, fullName: string): Promise<unknown> {
     return this.call('PATCH', `/bots/${botId}`, { full_name: fullName });

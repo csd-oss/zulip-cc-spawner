@@ -1,3 +1,4 @@
+import { DIRECTORY_OWNER_JS, type DirectoryIdentity } from './directory-owner.js';
 import { join } from 'node:path';
 import type { SpawnerConfig } from './config.js';
 import type { AgentHost } from './host.js';
@@ -5,24 +6,22 @@ import type { AgentHost } from './host.js';
 // Runs as the hand user, not the daemon. A separate lock directory serializes
 // cooperating spawns across processes; never unlink a potentially live lock.
 // Timeout fails closed (operator may remove a stale lock after checking owners).
-export const PREPARE_WORKDIR_JS = String.raw`
+export const PREPARE_WORKDIR_JS = DIRECTORY_OWNER_JS + String.raw`
 const fs = require('node:fs/promises'), path = require('node:path');
 (async () => {
   const [dir, file, fresh] = process.argv.slice(1);
   if (!path.isAbsolute(dir)) throw Error('workDir must be absolute');
   await fs.mkdir(path.dirname(dir), {recursive:true, mode:0o700});
-  if (fresh === 'yes') {
-    try { await fs.mkdir(dir, {mode:0o700}); }
-    catch(e) {
-      if (e.code === 'EEXIST') throw Error('Workspace already exists: ' + dir +
-        '. Refusing to adopt it. Inspect the failed preparation and follow README first-preparation recovery before retrying.');
-      throw e;
-    }
+  const expected = JSON.parse(process.argv[5] || 'null');
+  let identity;
+  try {
+    identity = fresh === 'yes' ? createOwnedDirectory(dir) : attestDirectory(dir, expected);
+  } catch(e) {
+    throw Error('Workspace preparation failed: ' + dir + '. Refusing to adopt it. ' + e.message);
   }
-  const st = await fs.lstat(dir);
-  if (!st.isDirectory() || st.isSymbolicLink()) throw Error('unsafe workDir');
-  await fs.chmod(dir, 0o700);
-  if (process.argv[4] === 'no-trust') return;
+  if (!identity)
+    throw Error('Workspace already exists: ' + dir + '. Refusing to adopt it: directory identity is unattested.');
+  if (process.argv[4] === 'no-trust') { console.log(JSON.stringify(identity)); return; }
   await fs.mkdir(path.dirname(file), {recursive:true, mode:0o700});
   const lock = file + '.spawner-lock';
   const deadline = Date.now() + 10000;
@@ -48,6 +47,7 @@ const fs = require('node:fs/promises'), path = require('node:path');
     try { await handle.writeFile(JSON.stringify(j, null, 2) + '\n'); await handle.sync(); }
     finally { await handle.close(); }
     await fs.rename(tmp, file);
+    console.log(JSON.stringify(identity));
   } finally {
     await fs.rm(tmp, {force:true});
     await fs.rmdir(lock);
@@ -55,6 +55,7 @@ const fs = require('node:fs/promises'), path = require('node:path');
 })().catch(e => { console.error(e.message); process.exitCode = 1; });
 `;
 
-export async function prepareWorkDir(host: AgentHost, cfg: SpawnerConfig, workDir: string, fresh: boolean, claudeTrust = true): Promise<void> {
-  await host.exec(cfg.nodeBin, ['-e', PREPARE_WORKDIR_JS, workDir, join(cfg.agentsHome, '.claude.json'), fresh ? 'yes' : 'no', claudeTrust ? 'trust' : 'no-trust']);
+export async function prepareWorkDir(host: AgentHost, cfg: SpawnerConfig, workDir: string, fresh: boolean, claudeTrust = true, identity?: DirectoryIdentity): Promise<DirectoryIdentity | undefined> {
+  const { stdout } = await host.exec(cfg.nodeBin, ['-e', PREPARE_WORKDIR_JS, workDir, join(cfg.agentsHome, '.claude.json'), fresh ? 'yes' : 'no', claudeTrust ? 'trust' : 'no-trust', JSON.stringify(identity ?? null)]);
+  return stdout.trim() ? JSON.parse(stdout) : undefined;
 }

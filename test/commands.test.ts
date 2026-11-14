@@ -168,3 +168,13 @@ test('peek here accepts either ordering and keeps DM as the default', () => {
   }
   assert.equal(parseCommand('peek').kind, 'help');
 });
+
+test('delete and list stopped grammar: explicit confirmation and no trailing conversation', () => {
+  assert.deepEqual(parseCommand('delete scout'), { kind: 'delete', target: 'scout' });
+  assert.deepEqual(parseCommand('delete scout confirm'), { kind: 'delete', target: 'scout', confirm: true });
+  assert.deepEqual(parseCommand('delete [cc-opus-5-5] Scout confirm'), { kind: 'delete', target: '[cc-opus-5-5] Scout', confirm: true });
+  assert.deepEqual(parseCommand('list stopped'), { kind: 'list', stopped: true });
+  for (const body of ['delete', 'delete scout please', 'delete scout confirm please', 'list stopped please', 'list running', 'forget scout']) {
+    assert.equal(parseCommand(body).kind, 'help', body);
+  }
+});

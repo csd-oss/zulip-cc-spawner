@@ -283,3 +283,15 @@ for (const dm of [false, true]) test(`peek here replies at invocation rather tha
     content: dm ? 'terminal tail' : '@_**Tester|1** terminal tail',
   }]);
 });
+
+for (const command of ['delete scout', 'delete scout confirm', 'list stopped']) test(`${command} replies at the invoking topic and DM`, async () => {
+  const s = setup();
+  s.zulip.batches.push([
+    { id: 1, type: 'message', message: msg(21, `@**CC Spawner** ${command}`, { subject: 'not-the-hand-home' }), flags: ['mentioned'] },
+    { id: 2, type: 'message', message: msg(22, command, { type: 'private', display_recipient: [{ id: 1, email: '', full_name: 'Tester' }, { id: 42, email: '', full_name: 'CC Spawner' }] }) },
+  ]);
+  await s.control.start();
+  try { await settle(); } finally { s.control.stop(); }
+  assert.equal(s.runs.length, 2);
+  assert.deepEqual(s.notifier.out.map(o => o.to), ['#cc-hands>not-the-hand-home', 'dm:1']);
+});

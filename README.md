@@ -19,12 +19,91 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 @**CC Spawner** rename scout Pathfinder                      # visible name only; follows creatorOnlyControls
 @**CC Spawner** models                                     # also: help models
 @**CC Spawner** list
+@**CC Spawner** list stopped                                 # creator, home, last activity
+@**CC Spawner** delete scout [confirm]                       # preview unless confirm; creator/owner only
 @**CC Spawner** stop scout                                   # alias: kill
 @**CC Spawner** peek scout [lines] [here]                    # terminal tail, DM unless here
 @**CC Spawner** answer scout 2 | 1,3 | yes | text: … | esc   # a hand blocked on a dialog
 @**CC Spawner** press scout 1 enter                          # raw keys, the escape hatch
 @**CC Spawner** rescan
 ```
+
+`list stopped` shows each stopped hand once, with display/short name, creator
+(username or user id; unknown for old records), home topic and last activity when
+recorded. A failed liveness check is reported per hand (tmux or process check);
+other verified stopped hands remain listed. `list` still shows only running hands.
+
+`delete <hand>` previews **all launch records** for that hand, its hand directory,
+recorded work directory/directories and bot deactivation, without changing anything.
+Use `delete <hand> confirm` to permanently remove them. Short names, rename aliases,
+display names, bot emails and tmux sessions resolve as for `rename`. Only the
+recorded creator or configured `ownerUserId` can delete, **regardless of
+`creatorOnlyControls`**; a hand with no creator requires a configured owner.
+Normal caller/stream allow-lists still apply. Replies go to the invoking topic/DM.
+
+Deletion requires stopped registry records, no live tmux session and no surviving
+hand process. It reuses tmux's absence checks and inspects Linux `/proc` as the
+agents user (session ids, command/environment paths and working directories);
+unavailable/unreadable liveness information fails closed for processes owned by
+the agents user or whose ownership cannot be established. Processes whose
+`/proc/<pid>` is owned by another uid are ignored, including root-owned
+nondumpable helpers. Known limitation (LOW-2): long-lived shared daemons that
+inherit a hand's environment/cwd (e.g. a Codex daemon or local tmux server)
+can keep that hand classified as running after its session stops. This is
+intentionally fail-closed; shared-process attribution is not resolved here.
+
+Both directory paths
+must be strictly inside `handsDir` / `workRoot` (default `projectDir/hands`), with
+no `..` or symlinks, including links within the trees. Roots and directories shared
+with another registered hand are protected. Traversal and removal refuse paths
+whose device differs from their configured root's device (including nested
+mounts); same-device bind mounts cannot be distinguished by this device check.
+Legacy hands without a recorded
+`workDir` keep `projectDir`. Missing directories are reported as already absent;
+other filesystem failures keep the registry for retry after inspection.
+
+Recursive deletion requires a path-specific creation attestation for this hand:
+the directory's `{dev, ino, nonce}`, plus its own readiness flag.
+New folders are created under random names inside `<root>/.cc-spawner-staging/`,
+never at their final path. This private directory must be owned by the agents user,
+mode 0700, and on the same filesystem as the destination parent (checked via
+`st_dev`). It is spawner infrastructure, **not a workspace**: hands must not write
+there. Do not share it with other applications. As with the registry, malicious
+code running as the same Unix user is outside this isolation boundary.
+After exclusive mkdir there, the agents user opens it with O_DIRECTORY|O_NOFOLLOW,
+fstats it, and requires an empty directory owned by that user. It exclusively
+creates a mode-0600 `.cc-spawner-owner` containing a random 256-bit nonce through
+the directory fd. Publication uses Linux `renameat2(RENAME_NOREPLACE)` via a
+local **Python 3 + libc renameat2** helper (stdlib `ctypes`; no packages). Node
+has no native binding; ordinary rename could overwrite an empty foreign folder,
+so there is no fallback. Missing helper/kernel support fails spawn closed.
+Inherited directory fds anchor the move. The open fd's device/inode must match
+the final path afterward; failed publication records no ownership and cleans
+only the private staging entry, never an unverified public replacement.
+Revival and cleanup require both the opened directory identity
+and marker nonce to match; inode reuse alone grants no authority.
+The hidden marker is metadata, not a workspace input or credential: leave it in
+place. It does not change the workspace cwd, uploads, trust settings or transcript
+paths. Git may show it as untracked; add `.cc-spawner-owner` to the workspace's
+`.git/info/exclude` after initializing a repository if desired. Ordinary spawn → stop → delete removes it with both folders.
+Status, the other directory's flag, and readiness alone
+never prove ownership. Rename/rehome/revival cannot mint an attestation for an
+existing directory. Workspace revival refuses to adopt an unattested directory;
+an existing unattested hand directory stays explicitly unproven.
+Moved-aside originals are never searched for or removed.
+
+All existing hands from before this change lack attestations: their non-empty
+directories are kept and require manual cleanup. Unattested or identity-mismatched
+directories are only eligible for non-recursive rmdir when empty; otherwise
+preview and result report **kept: not created by this hand**. A failed file write
+never establishes hand-directory readiness.
+
+Only bots positively recorded with `botCreatedBySpawner: true` are deactivated;
+old/adopted bots without this provenance are kept (the preview says so). New
+spawns record provenance and revivals preserve it. If bot deactivation fails,
+local cleanup still completes and the reply asks for manual deactivation. Deleting
+again reports **not found**. Transcripts outside these directories and global CLI
+configuration are not removed. This is not `stop`: deletion removes revival history.
 
 `peek <hand> [lines]` DMs the terminal tail to you (default 20 lines, range
 1–400). Add `here` before or after the line count to reply in the stream and
@@ -194,7 +273,7 @@ assumes Claude uses the normal agentsHome configuration, not an overridden
 ### First-preparation recovery (manual, fail closed)
 
 A failed first preparation (invalid `.claude.json`, lock timeout, or a crash)
-can leave an empty workspace **before** `workDirReady` is persisted. Repairing
+can leave a workspace containing only its owner marker **before** `workDirReady` is persisted. Repairing
 the JSON or removing the lock alone does not fix this: the retry deliberately
 refuses the existing directory, naming its absolute path in the error.
 
@@ -213,7 +292,10 @@ refuses the existing directory, naming its absolute path in the error.
 3. As the hand user, inspect the **exact workspace path named in the error**:
    check its owner and use `ls -ld -- '<workDir>'` and
    `ls -la -- '<workDir>'` to include hidden files. It must be a real directory,
-   not a symlink, owned by the hand user and completely empty. For example,
+   not a symlink and owned by the hand user. If its only entry is the regular
+   `.cc-spawner-owner` file from this failed preparation, inspect and remove that
+   file manually first. Never remove other contents to force recovery. The
+   directory must then be completely empty. For example,
    after the history/session checks above:
    ```sh
    workdir='/absolute/path/from/the/error'  # replace with the verified path

@@ -1,3 +1,4 @@
+import { type DirectoryIdentity } from './directory-owner.js';
 /**
  * Persistent registry of spawned hands — ~/.cc-spawner/registry.json.
  * Atomic writes (tmp + rename). Stopped entries are kept as history; reviving
@@ -30,6 +31,8 @@ export interface BotEntry {
    *  back). 0/'' while provisioning has not created or found it yet. */
   botUserId: number;
   botEmail: string;
+  /** Positive provenance only; absent on old/adopted records. Never infer ownership. */
+  botCreatedBySpawner?: boolean;
   tmuxSession: string;
   /** Home: the stream + topic it was spawned in. Stream id survives renames. */
   streamName: string;
@@ -37,10 +40,15 @@ export interface BotEntry {
   topic: string;
   /** Per-hand files: zuliprc, bridge config, seed, zulip_mcp state. */
   handDir: string;
+  /** True only after writing files into a directory exclusively created by us. */
+  handDirReady?: boolean;
+  /** Exclusive-creation identity; absent on all pre-attestation records. */
+  handDirIdentity?: DirectoryIdentity;
   /** Absent on legacy hands: retain config.projectDir. */
   workDir?: string;
   /** Set only after exclusive workspace creation and trust preparation succeed. */
   workDirReady?: boolean;
+  workDirIdentity?: DirectoryIdentity;
   nameScheme?: 'bracket-v1' | 'stable-v2';
   harness?: string;
   engine?: 'claude' | 'codex';
@@ -131,7 +139,7 @@ export class Registry {
   }
 
   /** Latest launch per stable identity, without mutating historical records. */
-  private currentHands(): BotEntry[] {
+  currentHands(): BotEntry[] {
     return [...new Map(this.entries.map((e) => [e.tmuxSession, e])).values()];
   }
 
@@ -187,6 +195,15 @@ export class Registry {
   add(entry: BotEntry): void {
     this.entries.push(entry);
     this.save();
+  }
+
+  /** Remove every launch for one stable hand, using the usual atomic save. */
+  removeHand(tmuxSession: string): number {
+    const previous = this.entries;
+    this.entries = previous.filter(e => e.tmuxSession !== tmuxSession);
+    try { this.save(); }
+    catch (err) { this.entries = previous; throw err; }
+    return previous.length - this.entries.length;
   }
 
   update(entry: BotEntry, patch: Partial<BotEntry>): void {
