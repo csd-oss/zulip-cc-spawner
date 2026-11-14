@@ -101,7 +101,7 @@ Legacy hands without a recorded
 `workDir` keep `projectDir`. Missing directories are reported as already absent;
 other filesystem failures keep the registry for retry after inspection.
 
-Recursive deletion requires a path-specific creation attestation for this hand:
+Ordinary recursive deletion requires a path-specific creation attestation for this hand:
 the directory's `{dev, ino, nonce}`, plus its own readiness flag.
 New folders are created under random names inside `<root>/.cc-spawner-staging/`,
 never at their final path. This private directory must be owned by the agents user,
@@ -504,3 +504,47 @@ Existing `bracket-v1` and `Claude-Code-*` identities keep their old email, tmux,
 handDir and workDir. Exact historical names still resolve; changed models use a
 unique historical suffix. Ambiguous distinct historical identities are refused
 rather than guessed, and unmarked bracket-name collisions stay fail-closed.
+
+### Legacy cleanup and stopped-hand inventory
+
+`delete <hand> confirm force-legacy` is **configured `ownerUserId` only** (the
+normal caller/stream allow-lists still apply). It does not immediately delete:
+it previews exact directory paths and bot user IDs, then supplies a separate
+`delete <tmux-name> confirm force-legacy <token>` command. The token expires in
+five minutes, is single-use, and is invalidated by registry/configuration or
+directory-identity changes. A restart loses pending confirmations. An ordinary
+delete confirmation does not authorize this override.
+
+This override is only for histories without directory attestations. It never
+creates ownership markers or changes provenance. It recursively removes only
+the exact `<handsDir>/<tmux-name>` and recorded `<workRoot>/<tmux-name>` paths.
+Nonstandard historical paths are refused, not guessed. A missing legacy workDir
+means shared `projectDir`: it is shown and kept. Configured roots, paths overlapping
+another registered hand's explicit handDir/workDir, shared
+bots, symlinks and mount boundaries are refused. Refusals show the proposed paths,
+bot IDs and reason; no registry removal or bot deactivation occurs. Both canonical
+paths and filesystem identities are checked for aliases. The strict PR #11
+liveness checks still apply, including processes whose cwd is exactly the implicit
+projectDir (not unrelated descendants). The implicit projectDir remains a protected
+root, never a removal target.
+As with ordinary deletion, this is not isolation against a privileged actor
+concurrently changing mounts/filesystems or starting new processes. Bot API
+failure is reported for manual retry; filesystem failure retains the registry.
+
+`list stopped [mine|by=<user-id>|by=unknown] [by size]` shows work-dir sizes.
+Examples: `list stopped mine by size`, `list stopped by=9`, and
+`list stopped by size by=unknown`. Filters use the current record's recorded
+creator, never an inferred reviver; unknown creators are excluded from `mine`
+and numeric filters. User IDs, not ambiguous display names, are accepted.
+
+Sizes are **apparent regular-file bytes**, including hidden files, deduplicating
+hardlinks within each workDir (not allocated disk usage). Legacy projectDir is
+labelled shared. Measurement runs as the agents user, does not follow symlinks
+at any path component, and stays on the starting device. It streams directory
+entries and stops at 10,000 entries, 100 levels or roughly 100 ms per unique path,
+with a two-second aggregate scan budget and a three-second worker watchdog.
+Unreadable, missing, changing or budget-exhausted paths show a partial/unknown
+lower bound, never a falsely exact zero. `by size` sorts measured bytes descending;
+partial results may underestimate large repositories. Duplicate paths are scanned
+once per listing. Existing strict stopped/liveness verification is unchanged and
+can add its own latency; the size scan does not weaken it.

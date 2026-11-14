@@ -1,3 +1,4 @@
+import { workdirSizes } from './workdir-size.js';
 import { PREPARE_HANDDIR_JS } from './directory-owner.js';
 /**
  * SpawnerActions — the core. The Zulip control surface builds an Invocation
@@ -100,6 +101,7 @@ function formatDuration(seconds: number): string {
 const home = (e: Pick<BotEntry, 'streamName' | 'topic'>) => `#${e.streamName} > ${e.topic}`;
 
 export class SpawnerActions {
+  private legacyDeletes = new Map<string, { token: string; signature: string; expires: number }>();
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly d: ActionDeps) {}
@@ -138,9 +140,9 @@ export class SpawnerActions {
       case 'models':
         return { content: modelsListing() };
       case 'list':
-        return { content: cmd.stopped ? await this.listStopped() : this.list() };
+        return { content: cmd.stopped ? await this.listStopped(cmd.bySize, cmd.creator === 'mine' ? inv.invoker.userId : cmd.creator) : this.list() };
       case 'delete':
-        return { content: await this.deleteHand(inv, cmd.target, cmd.confirm) };
+        return { content: await this.deleteHand(inv, cmd.target, cmd.confirm, cmd.forceLegacy, cmd.legacyToken) };
       case 'stop':
         return { content: await this.stop(inv, cmd.target) };
       case 'peek':
@@ -540,10 +542,11 @@ export class SpawnerActions {
     return `${alive.length}/${this.d.config.maxSessions} hands:\n${lines.join('\n')}`;
   }
 
-  private async listStopped(): Promise<string> {
+  private async listStopped(bySize = false, creator?: number | 'unknown'): Promise<string> {
     const stopped: BotEntry[] = [];
     const failures: string[] = [];
     for (const entry of this.d.registry.currentHands()) {
+      if (creator !== undefined && (creator === 'unknown' ? entry.spawnedBy !== undefined : entry.spawnedBy?.userId !== creator)) continue;
       const history = this.d.registry.all().filter(e => e.tmuxSession === entry.tmuxSession);
       try {
         if (await handStopped(this.d.host, this.d.tmux, this.d.config, history)) stopped.push(entry);
@@ -554,22 +557,31 @@ export class SpawnerActions {
       }
     }
     if (!stopped.length) return [failures.length ? 'No verified stopped hands.' : 'No stopped hands.', ...failures].join('\n');
+    const sizes = await workdirSizes(this.d.host, this.d.config, stopped.map(e => e.workDir ?? this.d.config.projectDir));
+    const sizeMap = new Map(stopped.map((e, i) => [e, sizes[i]]));
+    if (bySize) stopped.sort((a, b) => sizeMap.get(b)!.bytes - sizeMap.get(a)!.bytes);
     return `${stopped.length} stopped hand(s):\n` + stopped.map(e =>
-      `* **${e.personaName}** (\`${e.friendlyName ?? e.suffix}\`, tmux \`${e.tmuxSession}\`) — creator: ${e.spawnedBy?.username || e.spawnedBy?.userId || 'unknown'}, home ${home(e)}${e.lastActivity ? `, last activity ${e.lastActivity}` : ''}`,
+      `* **${e.personaName}** (\`${e.friendlyName ?? e.suffix}\`, tmux \`${e.tmuxSession}\`) — creator: ${e.spawnedBy?.username || e.spawnedBy?.userId || 'unknown'}, home ${home(e)}, work-dir size: ${sizeMap.get(e)!.partial ? '≥' : ''}${sizeMap.get(e)!.bytes} bytes${sizeMap.get(e)!.partial ? ' (partial/unknown)' : ''}${!e.workDir ? ' (shared projectDir)' : ''}${e.lastActivity ? `, last activity ${e.lastActivity}` : ''}`,
     ).concat(failures).join('\n');
   }
 
-  private async deleteHand(inv: Invocation, target: string, confirm = false): Promise<string> {
+  private async deleteHand(inv: Invocation, target: string, confirm = false, forceLegacy = false, legacyToken?: string): Promise<string> {
     const { registry, config: cfg, host, tmux } = this.d;
     const matches = registry.matchingHands(target);
     if (!matches.length) return `Hand \`${target}\` not found.`;
     if (matches.length !== 1) return 'Ambiguous hand name — use its bot email or tmux session; nothing was changed.';
     const entry = matches[0];
+    if (forceLegacy && inv.invoker.userId !== cfg.ownerUserId) return 'Only the configured owner may use force-legacy.';
     if (!this.owns(inv, entry)) {
       if (!entry.spawnedBy && cfg.ownerUserId == null) return 'Cannot delete this hand: creator unknown and no ownerUserId configured; nothing was changed.';
       return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or ${this.ownerDescription()} may delete it, regardless of creatorOnlyControls.`;
     }
     const history = registry.all().filter(e => e.tmuxSession === entry.tmuxSession);
+    if (forceLegacy && history.some(e => e.handDirIdentity || e.workDirIdentity)) return 'force-legacy is only for pre-attestation hands; use ordinary delete.';
+    const references = registry.all().filter(e => e.tmuxSession !== entry.tmuxSession)
+      .flatMap(e => [e.handDir, ...(e.workDir ? [e.workDir] : []), ...(e.seedFile?.startsWith('/') ? [e.seedFile] : [])]);
+    // Implicit legacy cwd is a protected root, not an exclusive subtree.
+    // deletionPaths already protects projectDir itself and its ancestors.
     const plan: DeletionPath[] = [];
     for (const e of history) {
       for (const p of [
@@ -579,6 +591,16 @@ export class SpawnerActions {
         if (!plan.some(x => x.kind === p.kind && x.path === p.path)) plan.push(p);
       }
     }
+    const rawPreview = [
+      ...plan.map(p => `* ${p.kind}: ${JSON.stringify(p.path)}`),
+      ...history.filter(e => !e.workDir).map(() => `* workDir: ${JSON.stringify(cfg.projectDir)} (kept: legacy shared projectDir)`),
+      `* Bot ids: ${[...new Set(history.map(e => e.botUserId))].join(', ')}`,
+    ].join('\n');
+    if (forceLegacy && plan.some(p => !entry.tmuxSession || /[\/]/.test(entry.tmuxSession) ||
+      p.path !== resolve(p.root, entry.tmuxSession))) {
+      return `Force-legacy refused: path outside the hand's named subtree; nothing changed.
+${rawPreview}`;
+    }
     // Only this hand's positive, path-specific creation attestations qualify.
     for (const p of plan) {
       p.identities = history.flatMap(e => {
@@ -586,7 +608,8 @@ export class SpawnerActions {
         const ready = p.kind === 'hand dir' ? e.handDirReady : e.workDirReady;
         return ready && identity && (p.kind === 'hand dir' ? e.handDir : e.workDir) === p.path ? [identity] : [];
       });
-      p.recursive = p.identities.length > 0;
+      p.recursive = forceLegacy || p.identities.length > 0;
+      p.legacy = forceLegacy;
     }
     // A proven historical parent must not recursively swallow an unproven
     // child (or another spelling/kind of the same path), even if it gains data.
@@ -598,30 +621,49 @@ export class SpawnerActions {
     // Do not remove a path still referenced by another identity.
     if (registry.all().some(e => e.tmuxSession !== entry.tmuxSession && plan.some(p =>
       [e.handDir, e.workDir].some(dir => dir && (resolve(dir) === resolve(p.path) || resolve(dir).startsWith(resolve(p.path) + '/') || resolve(p.path).startsWith(resolve(dir) + '/')))))) {
-      return 'Cannot delete: a directory is shared with another hand; nothing was changed.';
+      return `Cannot delete: a directory is shared with another hand; nothing was changed.
+${rawPreview}`;
     }
     try {
-      const checked = await deletionPaths(host, cfg, plan);
-      if (checked.error) return `Cannot delete: ${checked.error}; nothing was changed.`;
+      const checked = await deletionPaths(host, cfg, plan, false, references);
+      if (checked.error) return `Cannot delete: ${checked.error}; nothing was changed.
+${rawPreview}`;
       if (!(await handStopped(host, tmux, cfg, history))) return 'Cannot delete: hand must be STOPPED (no live tmux session or running process); nothing was changed.';
-      const bots = [...new Set(history.filter(e => e.botCreatedBySpawner === true && e.botUserId > 0).map(e => e.botUserId))];
+      const bots = [...new Set(history.filter(e => (forceLegacy || e.botCreatedBySpawner === true) && Number.isSafeInteger(e.botUserId) && e.botUserId > 0).map(e => e.botUserId))];
       // Never deactivate an identity referenced by another hand.
       if (registry.all().some(e => e.tmuxSession !== entry.tmuxSession && bots.includes(e.botUserId))) {
-        return 'Cannot delete: a bot is shared with another hand; nothing was changed.';
+        return `Cannot delete: a bot is shared with another hand; nothing was changed.
+${rawPreview}`;
       }
       const previewFor = (paths: CheckedDeletionPath[]) => [
         `* Registry: all ${history.length} entry/entries for tmux \`${entry.tmuxSession}\`.`,
-        ...paths.map(p => `* ${p.kind}: \`${p.path}\`${p.exists ? p.kept ? ' (kept: not created by this hand)' : p.recursive ? ' (remove directory and contents)' : ' (remove empty directory only)' : ' (already absent; nothing to remove)'}.`),
-        ...(!history.some(e => e.workDir) ? ['* workDir: not recorded; legacy projectDir is kept.'] : []),
-        bots.length ? `* Bot deactivation: ${bots.map(id => `user ${id}`).join(', ')} (recorded as spawner-created).` : '* Bot deactivation: none (no recorded spawner-created bot; existing bot kept).',
+        ...paths.map(p => `* ${p.kind}: ${JSON.stringify(p.path)}${p.exists ? p.kept ? ' (kept: not created by this hand)' : p.recursive ? ' (remove directory and contents)' : ' (remove empty directory only)' : ' (already absent; nothing to remove)'}.`),
+        ...(!history.every(e => e.workDir) ? [`* workDir: ${JSON.stringify(cfg.projectDir)} (not recorded; legacy projectDir is kept).`] : []),
+        bots.length ? `* Bot deactivation: ${bots.map(id => `user ${id}`).join(', ')} (${forceLegacy ? 'explicit legacy override' : 'recorded as spawner-created'}).` : '* Bot deactivation: none (no recorded spawner-created bot; existing bot kept).',
       ].join('\n');
       const preview = previewFor(checked.paths!);
+      if (forceLegacy) {
+        const key = `${inv.invoker.userId}:${entry.tmuxSession}`;
+        const signature = JSON.stringify([history, [...new Set(references)].sort(),
+          [...new Set(registry.all().filter(e => e.tmuxSession !== entry.tmuxSession).map(e => e.botUserId))].sort((a, b) => a - b),
+          cfg.projectDir, cfg.handsDir, cfg.workRoot, checked.paths, bots]);
+        const pending = this.legacyDeletes.get(key);
+        this.legacyDeletes.delete(key);
+        if (!legacyToken || !pending || pending.token !== legacyToken ||
+            pending.expires < Date.now() || pending.signature !== signature) {
+          const token = randomBytes(12).toString('hex');
+          this.legacyDeletes.set(key, { token, signature, expires: Date.now() + 5 * 60_000 });
+          return `Force-legacy preview (no ownership attestation created):
+${preview}
+Nothing changed. Confirm within 5 minutes with \`delete ${entry.tmuxSession} confirm force-legacy ${token}\`.`;
+        }
+      }
       if (!confirm) return `Dry-run for **${entry.personaName}** — would remove:\n${preview}\nNothing changed. Run \`delete ${entry.friendlyName ?? entry.suffix} confirm\` to proceed.`;
 
       // Revalidate immediately before deletion; keep the registry on filesystem
       // failure so a partial cleanup can be retried. Bot failure is non-fatal.
       if (!(await handStopped(host, tmux, cfg, history))) return 'Cannot delete: hand is no longer stopped; nothing was changed.';
-      const cleanup = await deletionPaths(host, cfg, plan, true);
+      const cleanup = await deletionPaths(host, cfg, forceLegacy ? checked.paths! : plan, true, references);
       for (const path of cleanup.removed) log(`delete ${entry.tmuxSession}: removed directory ${JSON.stringify(path)}`);
       if (cleanup.error) return `Deletion incomplete: ${cleanup.error}. Registry kept for retry; ${cleanup.removed.length} directory/directories removed.`;
       for (const p of cleanup.paths!.filter(p => !p.exists)) log(`delete ${entry.tmuxSession}: directory already absent ${JSON.stringify(p.path)}`);

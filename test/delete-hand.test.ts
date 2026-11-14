@@ -198,7 +198,7 @@ test('delete: ambiguous names, wrong mention id and normal authorization refuse'
 test('delete: shared paths and shared bots are refused', async () => {
   const f = fixture(); const e = f.add(); const other = f.add({ suffix: 'other', friendlyName: 'Other', nameAliases: [], personaName: 'Other', tmuxSession: 'other', botUserId: 43 });
   assert.match((await f.run('delete cc-scout confirm')).content, /directory is shared/);
-  f.registry.update(other, { handDir: join(f.config.handsDir, 'other'), workDir: undefined, botUserId: 42 });
+  f.registry.update(other, { handDir: join(f.config.handsDir, 'other'), workDir: join(f.config.workRoot ?? join(f.config.projectDir, 'hands'), 'other'), botUserId: 42 });
   assert.match((await f.run('delete cc-scout confirm')).content, /bot is shared/); assert.ok(existsSync(e.handDir));
 });
 
@@ -787,4 +787,126 @@ test('pthread_exit leader cannot hide a live worker or permit deletion', { timeo
     }
     rmSync(f.dir, {recursive: true, force: true});
   }
+});
+
+function legacy(f: ReturnType<typeof fixture>, patch: Partial<BotEntry> = {}) {
+  return f.add({ handDirReady: false, workDirReady: false, botCreatedBySpawner: undefined, ...patch });
+}
+async function forcePreview(f: ReturnType<typeof fixture>) {
+  const reply = (await f.run('delete scout confirm force-legacy', 9)).content;
+  assert.match(reply, /Force-legacy preview/);
+  const command = reply.match(/delete cc-scout confirm force-legacy [a-f0-9]+/)![0];
+  return { reply, command };
+}
+
+test('force legacy requires owner and separate single-use preview; deletes real nonempty dirs without markers', async () => {
+  const f = fixture(); const e = legacy(f);
+  assert.match((await f.run('delete scout confirm force-legacy')).content, /configured owner/);
+  const { reply, command } = await forcePreview(f);
+  assert.ok(reply.includes(e.handDir)); assert.ok(reply.includes(e.workDir!)); assert.match(reply, /user 42/);
+  assert.ok(existsSync(e.handDir)); assert.equal(existsSync(join(e.handDir, '.cc-spawner-owner')), false);
+  assert.match((await f.run(command, 9)).content, /Deleted/);
+  assert.equal(existsSync(e.handDir), false); assert.equal(existsSync(e.workDir!), false);
+  assert.deepEqual(f.deactivated, [42]); assert.equal(f.registry.all().length, 0);
+  assert.match((await f.run(command, 9)).content, /not found/);
+});
+
+test('force legacy retains implicit projectDir and detects real process there', async () => {
+  const f = fixture(); const e = legacy(f, { workDir: undefined });
+  const { reply, command } = await forcePreview(f);
+  assert.match(reply, /projectDir is kept/);
+  const child = spawn(process.execPath, ['-e', "console.log('ready'); setInterval(() => {}, 1000)"], { cwd: f.config.projectDir, stdio: ['ignore', 'pipe', 'pipe'] });
+  try { await once(child.stdout!, 'data'); assert.equal(await handStopped(new LocalHost(), f.tmux, f.config, [e]), false); }
+  finally { child.kill(); await once(child, 'exit'); }
+  assert.match((await f.run(command, 9)).content, /Deleted/); assert.ok(existsSync(f.config.projectDir));
+});
+
+test('force legacy re-previews replacement inode and registry changes, and liveness still blocks', async () => {
+  const f = fixture(); const e = legacy(f);
+  const { command } = await forcePreview(f);
+  renameSync(e.handDir, e.handDir + '.old'); mkdirSync(e.handDir); writeFileSync(join(e.handDir, 'new'), 'new');
+  assert.match((await f.run(command, 9)).content, /Force-legacy preview/);
+  assert.ok(existsSync(join(e.handDir, 'new')));
+  const next = await forcePreview(f);
+  f.registry.update(e, { botUserId: 43 });
+  assert.match((await f.run(next.command, 9)).content, /Force-legacy preview/);
+  const again = await forcePreview(f); f.state.process = true;
+  assert.match((await f.run(again.command, 9)).content, /STOPPED/);
+  assert.deepEqual(f.deactivated, []);
+});
+
+for (const mode of ['root', 'foreign', 'symlink', 'shared', 'bot', 'canonical'] as const) test('force legacy refuses ' + mode, async () => {
+  const f = fixture(); const e = legacy(f);
+  if (mode === 'root') f.registry.update(e, { handDir: f.config.handsDir });
+  if (mode === 'foreign') f.registry.update(e, { handDir: join(f.config.handsDir, 'foreign') });
+  if (mode === 'symlink') symlinkSync(f.dir, join(e.handDir, 'link'));
+  if (['shared', 'bot', 'canonical'].includes(mode)) {
+    let workDir: string | undefined = join(f.config.projectDir, 'other-work');
+    if (mode === 'shared') workDir = join(e.workDir!, 'nested');
+    if (mode === 'canonical') { workDir = join(f.dir, 'alias'); symlinkSync(e.workDir!, workDir); }
+    legacy(f, { suffix: 'other', friendlyName: 'Other', tmuxSession: 'cc-other', handDir: join(f.config.handsDir, 'cc-other'), workDir, botUserId: mode === 'bot' ? 42 : 43 });
+  }
+  const reply = (await f.run('delete scout confirm force-legacy', 9)).content;
+  assert.doesNotMatch(reply, /Force-legacy preview/); assert.match(reply, /refused|shared|subtree/);
+  assert.ok(existsSync(join(f.config.handsDir, 'cc-scout', 'keep'))); assert.deepEqual(f.deactivated, []);
+});
+
+test('list stopped size sort and creator filters combine; unknown does not mean mine', async () => {
+  const f = fixture(); legacy(f);
+  const other = legacy(f, { suffix: 'other', friendlyName: 'Other', personaName: 'Other', tmuxSession: 'cc-other', handDir: join(f.config.handsDir, 'cc-other'), workDir: join(f.config.projectDir, 'other-work'), spawnedBy: undefined });
+  writeFileSync(join(other.workDir!, 'big'), Buffer.alloc(1000));
+  const sorted = (await f.run('list stopped by size')).content;
+  assert.ok(sorted.indexOf('**Other**') < sorted.indexOf('**[cc-opus')); assert.match(sorted, /1008 bytes/);
+  assert.doesNotMatch((await f.run('list stopped mine by size')).content, /\*\*Other\*\*/);
+  assert.doesNotMatch((await f.run('list stopped by size by=unknown')).content, /Pathfinder/);
+  assert.match((await f.run('list stopped by=1')).content, /Pathfinder/);
+});
+
+test('force legacy token expires and cannot cross owners or authorize new shared references', async () => {
+  const f = fixture(); const e = legacy(f);
+  const first = await forcePreview(f);
+  assert.match((await f.run(first.command, 1)).content, /configured owner/);
+  const now = Date.now;
+  try {
+    Date.now = () => now() + 6 * 60_000;
+    assert.match((await f.run(first.command, 9)).content, /Force-legacy preview/);
+  } finally { Date.now = now; }
+  const second = await forcePreview(f);
+  legacy(f, { suffix: 'other', friendlyName: 'Other', tmuxSession: 'cc-other', handDir: join(f.config.handsDir, 'cc-other'), workDir: e.workDir, botUserId: 43 });
+  assert.match((await f.run(second.command, 9)).content, /shared/);
+  assert.ok(existsSync(e.handDir)); assert.deepEqual(f.deactivated, []);
+});
+
+test('force legacy protects projectDir nested inside a planned hand directory', async () => {
+  const dir = tmp(); const handsDir = join(dir, 'hand-files');
+  const f = fixture({ handsDir, projectDir: join(handsDir, 'cc-scout', 'project'), workRoot: join(dir, 'work') });
+  const e = legacy(f);
+  mkdirSync(f.config.projectDir, { recursive: true }); writeFileSync(join(f.config.projectDir, 'sentinel'), 'keep');
+  assert.match((await f.run('delete scout confirm force-legacy', 9)).content, /configured root/);
+  assert.ok(existsSync(join(e.handDir, 'keep'))); assert.equal(readFileSync(join(f.config.projectDir, 'sentinel'), 'utf8'), 'keep');
+  assert.deepEqual(f.deactivated, []);
+});
+
+for (const force of [false, true]) test('implicit projectDir does not share another hand subtree, force=' + force, async () => {
+  const f = fixture({ workRoot: undefined });
+  const e = force ? legacy(f) : f.add();
+  const other = legacy(f, { suffix: 'other', friendlyName: 'Other', tmuxSession: 'cc-other',
+    handDir: join(f.config.handsDir, 'cc-other'), workDir: undefined, botUserId: 43 });
+  const command = force ? (await forcePreview(f)).command : 'delete scout confirm';
+  assert.match((await f.run(command, 9)).content, /Deleted/);
+  assert.equal(existsSync(e.workDir!), false);
+  assert.ok(existsSync(other.handDir)); assert.ok(existsSync(f.config.projectDir));
+  assert.deepEqual(f.deactivated, [42]);
+});
+
+test('force legacy token ignores unrelated activity but binds reference changes', async () => {
+  const f = fixture(); legacy(f);
+  const other = legacy(f, { suffix: 'other', friendlyName: 'Other', tmuxSession: 'cc-other',
+    handDir: join(f.config.handsDir, 'cc-other'), workDir: undefined, botUserId: 43 });
+  const first = await forcePreview(f);
+  f.registry.update(other, { seedFile: join(f.config.projectDir, 'new-seed') });
+  assert.match((await f.run(first.command, 9)).content, /Force-legacy preview/);
+  const next = await forcePreview(f);
+  f.registry.update(other, { lastActivity: new Date().toISOString() });
+  assert.match((await f.run(next.command, 9)).content, /Deleted/);
 });

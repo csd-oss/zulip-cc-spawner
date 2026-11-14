@@ -172,3 +172,29 @@ for (const mode of ['field-missing', 'task-missing', 'task-list-denied', 'task-d
     assert.doesNotMatch(output, /PRIVATE/);
   });
 }
+
+test('implicit legacy projectDir matches exact cwd, not unrelated descendant cwd, argv or env', async () => {
+  for (const exact of [false, true]) {
+    const host = { exec: async (_cmd: string, args: string[]) => {
+      let stdout = '';
+      const fs = {
+        statSync: () => ({ uid: 123 }),
+        readdirSync: () => ['20'],
+        readlinkSync: () => exact ? '/project' : '/project/hands/other',
+        readFileSync: (p: string) => {
+          if (p.endsWith('/stat')) {
+            const fields = Array(20).fill('0'); fields[0] = 'S'; fields[1] = '1'; fields[19] = '100';
+            return '20 (node) ' + fields.join(' ');
+          }
+          return p.endsWith('/environ') ? 'PWD=/project/hands/other\0' : '/project/hands/other/script\0';
+        },
+      };
+      runInNewContext(args[1], { require: (n: string) => n === 'node:fs' ? fs : path,
+        process: { pid: 999, argv: ['node', ...args.slice(2)] },
+        console: { log: (s: string) => { stdout = s; } } });
+      return { stdout };
+    } } as unknown as AgentHost;
+    assert.equal(await handStopped(host, tmux, { ...cfg, projectDir: '/project' },
+      [{ ...entries[0], workDir: undefined }]), !exact);
+  }
+});
