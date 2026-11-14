@@ -30,7 +30,8 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 
 `list stopped` shows each stopped hand once, with display/short name, creator
 (username or user id; unknown for old records), home topic and last activity when
-recorded. `list` still shows only running hands.
+recorded. A failed liveness check is reported per hand (tmux or process check);
+other verified stopped hands remain listed. `list` still shows only running hands.
 
 `delete <hand>` previews **all launch records** for that hand, its hand directory,
 recorded work directory/directories and bot deactivation, without changing anything.
@@ -43,12 +44,38 @@ Normal caller/stream allow-lists still apply. Replies go to the invoking topic/D
 Deletion requires stopped registry records, no live tmux session and no surviving
 hand process. It reuses tmux's absence checks and inspects Linux `/proc` as the
 agents user (session ids, command/environment paths and working directories);
-unavailable/unreadable liveness information fails closed. Both directory paths
+unavailable/unreadable liveness information fails closed for processes owned by
+the agents user or whose ownership cannot be established. Processes whose
+`/proc/<pid>` is owned by another uid are ignored, including root-owned
+nondumpable helpers. Known limitation (LOW-2): long-lived shared daemons that
+inherit a hand's environment/cwd (e.g. a Codex daemon or local tmux server)
+can keep that hand classified as running after its session stops. This is
+intentionally fail-closed; shared-process attribution is not resolved here.
+
+Both directory paths
 must be strictly inside `handsDir` / `workRoot` (default `projectDir/hands`), with
 no `..` or symlinks, including links within the trees. Roots and directories shared
-with another registered hand are protected. Legacy hands without a recorded
+with another registered hand are protected. Traversal and removal refuse paths
+whose device differs from their configured root's device (including nested
+mounts); same-device bind mounts cannot be distinguished by this device check.
+Legacy hands without a recorded
 `workDir` keep `projectDir`. Missing directories are reported as already absent;
 other filesystem failures keep the registry for retry after inspection.
+
+Recursive workspace deletion requires a history record for that exact path with
+`workDirReady === true`; a stopped status alone is not workspace provenance.
+Hand directories have a separate `handDirReady` flag, set only after
+`writeHandFiles` succeeds in an exclusively spawner-created directory; an
+explicit false is never upgraded merely by launching in a pre-existing directory.
+For old hand-directory records without this flag, `workDirReady === true` or
+status `alive`/`reaped` counts as evidence of a successful launch (the latter
+is the persisted state after leaving alive). Failed/provisioning/cleanup alone
+are not proof. Provenance is matched by path across the hand's history, not
+borrowed from another historical directory.
+Unproven directories are removed only with non-recursive `rmdir` when empty.
+Non-empty ones survive registry deletion and are reported in both preview and
+result as **kept: not created by this hand**. A failed file write never establishes
+hand-directory provenance.
 
 Only bots positively recorded with `botCreatedBySpawner: true` are deactivated;
 old/adopted bots without this provenance are kept (the preview says so). New

@@ -51,7 +51,7 @@ function fixture(overrides: Parameters<typeof testConfig>[1] = {}) {
       streamName: 'cc-hands', streamId: 7, topic: 'home topic', model: 'claude-opus-5-5',
       sessionId: 'session-id', spawnedBy: { userId: 1, username: 'Creator' },
       spawnedAt: '2026-11-10T00:00:00Z', lastActivity: '2026-11-11T01:02:03Z',
-      status: 'reaped', seedFile: 'unused', ...patch,
+      status: 'reaped', seedFile: 'unused', workDirReady: true, handDirReady: true, ...patch,
     };
     for (const path of [entry.handDir, entry.workDir].filter((x): x is string => Boolean(x))) {
       mkdirSync(path, { recursive: true }); writeFileSync(join(path, 'keep'), 'contents');
@@ -266,19 +266,20 @@ test('delete: stopped status is rechecked at confirmation before any mutation', 
   assert.match((await f.run('delete scout confirm')).content, /no longer stopped/); f.unchanged(e, before);
 });
 
-for (const mode of ['absent', 'command', 'environment', 'cwd', 'zombie', 'other-user', 'disappeared', 'unreadable', 'unreadable-with-live-match']) test(`process scanner snapshot: ${mode}`, () => {
+for (const mode of ['absent', 'command', 'environment', 'cwd', 'zombie', 'other-user', 'disappeared', 'unreadable', 'unreadable-with-live-match', 'root-owned-unreadable', 'ownership-changed']) test(`process scanner snapshot: ${mode}`, () => {
   const args = [{ handDir: '/hands/scout', workDir: '/work/scout', sessionId: 'session' }];
   const missing = () => { throw Object.assign(Error('gone'), { code: 'ESRCH' }); };
   let stdout = '';
+  let ownerChecks = 0;
   const fs = {
-    statSync(p: string) { if (mode === 'disappeared' && p !== '/proc/self') return missing(); return { uid: mode === 'other-user' && p !== '/proc/self' ? 2 : 1 }; },
+    statSync(p: string) { if (mode === 'disappeared' && p !== '/proc/self') return missing(); return { uid: p !== '/proc/self' && (mode === 'other-user' || mode === 'root-owned-unreadable' || mode === 'ownership-changed' && ++ownerChecks > 1) ? 0 : 1 }; },
     readdirSync() { return mode === 'unreadable-with-live-match' ? ['123', '124', '999'] : ['123', '999']; },
     readFileSync(p: string) {
       if (p.endsWith('/cmdline')) {
         if (p.includes('/124/') || mode === 'command') return 'claude\0--resume\0session\0';
         return mode === 'zombie' ? '' : 'unrelated\0';
       }
-      if (mode.startsWith('unreadable')) throw Object.assign(Error('unreadable'), { code: 'EACCES' });
+      if (mode.startsWith('unreadable') || mode === 'root-owned-unreadable' || mode === 'ownership-changed') throw Object.assign(Error('unreadable'), { code: 'EACCES' });
       return mode === 'environment' ? 'MCPL_BRIDGE_CONFIG=/hands/scout/bridge.json\0' : 'UNRELATED=secret-not-to-print\0';
     },
     readlinkSync() { return mode === 'cwd' ? '/work/scout/subdir' : '/elsewhere'; },
@@ -333,4 +334,107 @@ test('delete: failed provisioning with no bot is locally deletable by owner', as
   const f = fixture(); const e = f.add({ status: 'failed', spawnedBy: undefined, botUserId: 0, botEmail: '', botCreatedBySpawner: undefined });
   assert.match((await f.run('delete scout confirm', 9)).content, /Deleted/);
   assert.equal(existsSync(e.handDir), false); assert.deepEqual(f.deactivated, []);
+});
+
+for (const kind of ['handDir', 'workDir'] as const) for (const empty of [false, true]) test(`delete: unproven ${kind}, empty=${empty}, is never recursively removed`, async () => {
+  const f = fixture();
+  const e = f.add({ status: 'failed', workDirReady: undefined, handDirReady: undefined });
+  if (empty) rmSync(join(e[kind]!, 'keep'));
+  const preview = await f.run('delete scout');
+  assert.match(preview.content, empty ? /remove empty directory only/ : /kept: not created by this hand/);
+  assert.ok(existsSync(e[kind]!));
+  const result = await f.run('delete scout confirm');
+  assert.match(result.content, /Deleted/);
+  assert.equal(existsSync(e[kind]!), !empty);
+  if (!empty) {
+    assert.match(result.content, /kept: not created by this hand/);
+    assert.equal(readFileSync(join(e[kind]!, 'keep'), 'utf8'), 'contents');
+  }
+});
+
+test('delete: historical readiness is path-specific and explicit false hand provenance wins over legacy inference', async () => {
+  const f = fixture();
+  const old = f.add();
+  const recent = f.add({ status: 'failed', workDirReady: undefined, handDirReady: undefined });
+  const foreign = f.add({ handDir: join(f.config.handsDir, 'foreign'), workDir: join(f.dir, 'hands', 'foreign'),
+    status: 'reaped', workDirReady: undefined, handDirReady: false });
+  const result = await f.run('delete scout confirm');
+  assert.match(result.content, /Deleted/);
+  assert.equal(existsSync(old.handDir), false);
+  assert.equal(existsSync(recent.workDir!), false);
+  assert.ok(existsSync(foreign.handDir)); assert.ok(existsSync(foreign.workDir!));
+});
+
+test('delete: old launched hand dir is inferred only when no flag; old workspace still needs readiness', async () => {
+  const f = fixture(); const e = f.add({ handDirReady: undefined, workDirReady: undefined });
+  assert.match((await f.run('delete scout confirm')).content, /kept: not created by this hand/);
+  assert.equal(existsSync(e.handDir), false); assert.ok(existsSync(e.workDir!));
+});
+
+test('list stopped: failed hand names and check stages do not hide verified stopped hands', async () => {
+  const f = fixture(); f.add();
+  const other = f.add({ suffix: 'other', personaName: 'Other', tmuxSession: 'cc-other',
+    handDir: join(f.config.handsDir, 'cc-other'), workDir: join(f.dir, 'hands', 'cc-other') });
+  f.tmux.hasSession = async s => { if (s === other.tmuxSession) throw Error('private diagnostic'); return false; };
+  let result = await f.run('list stopped');
+  assert.match(result.content, /1 stopped hand/);
+  assert.match(result.content, /Could not verify stopped hand \*\*Other\*\*.*tmux liveness check failed/);
+  assert.doesNotMatch(result.content, /private diagnostic/);
+  f.state.failProcess = true;
+  result = await f.run('list stopped');
+  assert.match(result.content, /process liveness check failed/);
+});
+
+for (const duringRemoval of [false, true]) test(`delete refuses a different device ${duringRemoval ? 'during removal' : 'in preview'}`, async () => {
+  const f = fixture(); const e = f.add();
+  const nested = join(e.workDir!, 'mount'); mkdirSync(nested); writeFileSync(join(nested, 'precious'), 'keep');
+  const exec = f.host.exec.bind(f.host);
+  f.host.exec = async (cmd, args, opts) => {
+    if (args[1] === DELETE_PATHS_JS) {
+      const hook = `const f=require('node:fs'), old=f.lstatSync;
+        f.lstatSync=function(p,...rest) {
+          const st=old.call(this,p,...rest);
+          if (${duringRemoval ? "String(p).startsWith('/proc/self/fd/') && String(p).endsWith('/mount')" : 'p === ' + JSON.stringify(nested)}) {
+            Object.defineProperty(st,'dev',{value:st.dev+1});
+          }
+          return st;
+        };\n`;
+      return exec(cmd, ['-e', hook + args[1], ...args.slice(2)], opts);
+    }
+    return exec(cmd, args, opts);
+  };
+  const result = await f.run('delete scout' + (duringRemoval ? ' confirm' : ''));
+  assert.match(result.content, /mount point refused.*different device/);
+  assert.equal(readFileSync(join(nested, 'precious'), 'utf8'), 'keep');
+  assert.equal(f.registry.all().length, 1);
+});
+
+test('delete: empty unproven directory gaining data at rmdir is kept and reported', async () => {
+  const f = fixture(); const e = f.add({ status: 'failed', handDirReady: false });
+  rmSync(join(e.handDir, 'keep'));
+  const exec = f.host.exec.bind(f.host);
+  f.host.exec = async (cmd, args, opts) => {
+    if (args[1] === DELETE_PATHS_JS && JSON.parse(args[2])[1]) {
+      const hook = `const f=require('node:fs'), old=f.rmdirSync;
+        f.rmdirSync=function(p,...rest) {
+          if (f.realpathSync(p) === ${JSON.stringify(e.handDir)}) f.writeFileSync(p+'/precious','keep');
+          return old.call(this,p,...rest);
+        };\n`;
+      return exec(cmd, ['-e', hook + args[1], ...args.slice(2)], opts);
+    }
+    return exec(cmd, args, opts);
+  };
+  const result = await f.run('delete scout confirm');
+  assert.match(result.content, /Deleted.*kept: not created by this hand/s);
+  assert.equal(readFileSync(join(e.handDir, 'precious'), 'utf8'), 'keep');
+});
+
+test('delete: proven historical parent cannot swallow an unproven child', async () => {
+  const f = fixture(); const parent = f.add();
+  const child = f.add({ handDir: join(parent.handDir, 'foreign'), handDirReady: false, status: 'failed' });
+  for (const suffix of ['', ' confirm']) {
+    assert.match((await f.run('delete scout' + suffix)).content, /kept: not created by this hand/);
+    assert.equal(readFileSync(join(child.handDir, 'keep'), 'utf8'), 'contents');
+  }
+  assert.ok(existsSync(parent.handDir));
 });

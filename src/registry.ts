@@ -39,6 +39,8 @@ export interface BotEntry {
   topic: string;
   /** Per-hand files: zuliprc, bridge config, seed, zulip_mcp state. */
   handDir: string;
+  /** True only after writing files into a directory exclusively created by us. */
+  handDirReady?: boolean;
   /** Absent on legacy hands: retain config.projectDir. */
   workDir?: string;
   /** Set only after exclusive workspace creation and trust preparation succeed. */

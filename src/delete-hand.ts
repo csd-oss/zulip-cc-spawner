@@ -5,8 +5,8 @@ import type { AgentHost } from './host.js';
 import type { BotEntry } from './registry.js';
 import type { Tmux } from './tmux.js';
 
-export interface DeletionPath { kind: 'hand dir' | 'workDir'; path: string; root: string }
-export interface CheckedDeletionPath extends DeletionPath { exists: boolean }
+export interface DeletionPath { kind: 'hand dir' | 'workDir'; path: string; root: string; recursive?: boolean }
+export interface CheckedDeletionPath extends DeletionPath { exists: boolean; kept?: boolean }
 
 // Validate the ENTIRE plan before removing anything. Never follow a symlink,
 // including an intermediate component or a link inside the directory tree.
@@ -26,26 +26,32 @@ try {
     }
   }
   const roots = protectedRoots.map(p => canonical(path.resolve(p)));
-  function tree(p) {
+  function tree(p, dev) {
     const st = fs.lstatSync(p);
     if (st.isSymbolicLink()) throw Error('symlink refused: ' + p);
-    if (st.isDirectory()) for (const name of fs.readdirSync(p)) tree(path.join(p, name));
+    if (st.dev !== dev) throw Error('mount point refused (different device): ' + p);
+    if (st.isDirectory()) for (const name of fs.readdirSync(p)) tree(path.join(p, name), dev);
   }
   // Anchor each traversal in an open directory fd. O_NOFOLLOW applies at
   // EVERY level, not just the top-level hand path; a concurrent link swap
   // must fail, never turn recursive removal into traversal outside the root.
   const flags = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
-  function removeAt(parent, name) {
+  function removeAt(parent, name, dev, recursive) {
     const target = '/proc/self/fd/' + parent + '/' + name;
     const st = fs.lstatSync(target);
     if (st.isSymbolicLink()) throw Error('symlink refused during removal: ' + name);
+    if (st.dev !== dev) throw Error('mount point refused during removal (different device): ' + name);
+    if (!recursive) { fs.rmdirSync(target); return; }
     if (!st.isDirectory()) { fs.unlinkSync(target); return; }
     const fd = fs.openSync(target, flags);
-    try { for (const child of fs.readdirSync('/proc/self/fd/' + fd)) removeAt(fd, child); }
+    try {
+      if (fs.fstatSync(fd).dev !== dev) throw Error('mount point refused during removal (different device): ' + name);
+      for (const child of fs.readdirSync('/proc/self/fd/' + fd)) removeAt(fd, child, dev, true);
+    }
     finally { fs.closeSync(fd); }
     fs.rmdirSync(target);
   }
-  function removeDir(dir) {
+  function removeDir(dir, dev, recursive) {
     let fd = fs.openSync(path.parse(dir).root, flags);
     try {
       const parts = dir.slice(path.parse(dir).root.length).split(path.sep);
@@ -54,7 +60,7 @@ try {
         fs.closeSync(fd); fd = next;
       }
       if (fs.realpathSync('/proc/self/fd/' + fd) !== path.dirname(dir)) throw Error('parent moved during removal');
-      removeAt(fd, parts[parts.length - 1]);
+      removeAt(fd, parts[parts.length - 1], dev, recursive);
     } finally { fs.closeSync(fd); }
   }
   const checked = plan.map(p => {
@@ -66,11 +72,16 @@ try {
     }
     const root = fs.realpathSync(p.root), lexicalRoot = path.resolve(p.root), dir = path.resolve(p.path);
     if (!inside(lexicalRoot, dir)) throw Error('path must be strictly inside its root: ' + p.path);
+    const dev = fs.lstatSync(root).dev;
     let current = lexicalRoot, exists = true;
     for (const part of path.relative(lexicalRoot, dir).split(path.sep)) {
       current = path.join(current, part);
       if (!exists) continue;
-      try { if (fs.lstatSync(current).isSymbolicLink()) throw Error('symlink refused: ' + current); }
+      try {
+        const st = fs.lstatSync(current);
+        if (st.isSymbolicLink()) throw Error('symlink refused: ' + current);
+        if (st.dev !== dev) throw Error('mount point refused (different device): ' + current);
+      }
       catch(e) { if (e.code !== 'ENOENT') throw e; exists = false; }
       if (exists && !inside(root, fs.realpathSync(current))) throw Error('path escapes root: ' + current);
     }
@@ -79,15 +90,23 @@ try {
     if (roots.some(r => canonical === r || inside(canonical, r))) throw Error('refusing to delete a configured root: ' + p.path);
     if (exists) {
       if (!fs.lstatSync(dir).isDirectory()) throw Error('not a directory: ' + dir);
-      tree(dir);
+      if (p.recursive) tree(dir, dev);
     }
-    return {...p, exists};
+    return {...p, exists, dev, kept: exists && !p.recursive && fs.readdirSync(dir).length > 0};
   });
   if (remove) {
+    if (checked.some(p => p.kept && checked.some(parent => parent.exists && !parent.kept &&
+      inside(path.resolve(parent.path), path.resolve(p.path))))) throw Error('kept directory nested in removal plan');
     const unique = new Map(checked.map(p => [path.resolve(p.path), p]));
     // A nested path may appear in historical records; remove children first.
     for (const [dir, p] of [...unique].sort(([a], [b]) => b.length - a.length)) {
-      if (p.exists) { removeDir(dir); removed.push(dir); }
+      if (p.exists && !p.kept) {
+        try { removeDir(dir, p.dev, Boolean(p.recursive)); removed.push(dir); }
+        catch(e) {
+          if (!p.recursive && (e.code === 'ENOTEMPTY' || e.code === 'EEXIST')) p.kept = true;
+          else throw e;
+        }
+      }
     }
   }
   console.log(JSON.stringify({paths:checked, removed}));
@@ -113,8 +132,8 @@ const sessions = entries.map(e => e.sessionId).filter(Boolean);
 const mentions = s => dirs.some(d => s.includes(d + path.sep) || s === d);
 let running = false, unreadable = false;
 for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p) && +p !== process.pid)) {
+  const base = '/proc/' + pid;
   try {
-    const base = '/proc/' + pid;
     if (fs.statSync(base).uid !== uid) continue;
     const args = fs.readFileSync(base + '/cmdline', 'utf8').split('\0');
     if (!args.some(Boolean)) continue; // zombie / kernel thread
@@ -124,7 +143,13 @@ for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p) && +p !== 
     const cwd = fs.readlinkSync(base + '/cwd').replace(/ \(deleted\)$/, '');
     if (dirs.some(d => cwd === d || cwd.startsWith(d + path.sep))) { running = true; break; }
   } catch(e) {
-    if (e.code === 'EACCES' || e.code === 'EPERM') unreadable = true;
+    if (e.code === 'EACCES' || e.code === 'EPERM') {
+      // Nondumpable helpers can become root-owned between inspection steps.
+      // Only a positively different owner is ignorable; ambiguity fails closed.
+      try { if (fs.statSync(base).uid !== uid) continue; }
+      catch(ownerError) { if (ownerError.code === 'ENOENT' || ownerError.code === 'ESRCH') continue; }
+      unreadable = true;
+    }
     else if (e.code !== 'ENOENT' && e.code !== 'ESRCH') throw e;
   }
 }
@@ -135,9 +160,12 @@ console.log(JSON.stringify(running));
 /** Reuse tmux's fail-closed absence check, then look for surviving processes. */
 export async function handStopped(host: AgentHost, tmux: Tmux, cfg: SpawnerConfig, entries: readonly BotEntry[]): Promise<boolean> {
   if (entries.some(e => ['alive', 'provisioning', 'cleanup'].includes(e.status))) return false;
-  if (await tmux.hasSession(entries[0].tmuxSession)) return false;
-  const { stdout } = await host.exec(cfg.nodeBin, ['-e', HAND_PROCESSES_JS,
-    JSON.stringify(entries.map(({ handDir, workDir, sessionId }) => ({ handDir, workDir, sessionId })))]);
+  try { if (await tmux.hasSession(entries[0].tmuxSession)) return false; }
+  catch { throw new Error('tmux liveness check failed'); }
+  let stdout: string;
+  try { ({ stdout } = await host.exec(cfg.nodeBin, ['-e', HAND_PROCESSES_JS,
+    JSON.stringify(entries.map(({ handDir, workDir, sessionId }) => ({ handDir, workDir, sessionId })))])); }
+  catch { throw new Error('process liveness check failed (unavailable /proc or unreadable agents-user process)'); }
   const running: unknown = JSON.parse(stdout);
   if (typeof running !== 'boolean') throw new Error('invalid process liveness response');
   return !running;

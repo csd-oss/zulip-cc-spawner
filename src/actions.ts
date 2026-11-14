@@ -14,7 +14,7 @@ import { isPlausibleMessageTime } from './activity-time.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { prepareWorkDir } from './workdir.js';
-import { deletionPaths, handStopped, type DeletionPath } from './delete-hand.js';
+import { deletionPaths, handStopped, type CheckedDeletionPath, type DeletionPath } from './delete-hand.js';
 import { handIdentityName, handName, modelDisplayName } from './names.js';
 import { isAllowed, type GroupCheck, type Invoker, type Where } from './auth.js';
 import {
@@ -263,6 +263,7 @@ export class SpawnerActions {
       streamId: prior?.streamId ?? where.streamId,
       topic: prior?.topic ?? where.topic,
       handDir: paths.dir,
+      handDirReady: prior ? prior.handDirReady : false,
       workDir,
       workDirReady: prior?.workDirReady,
       nameScheme: prior ? prior.nameScheme : 'stable-v2',
@@ -317,7 +318,14 @@ export class SpawnerActions {
         }
       }
       filesTouched = true;
+      await this.d.host.mkdirp(cfg.handsDir);
+      // mkdir without recursive is an exclusive creation claim, not an exists check.
+      const { stdout: handDirCreated } = await this.d.host.exec(cfg.nodeBin, ['-e',
+        "const fs=require('node:fs'); try { fs.mkdirSync(process.argv[1], {mode:0o700}); console.log(true); } catch(e) { if(e.code!=='EEXIST') throw e; console.log(false); }",
+        paths.dir]);
       await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir, workDir);
+
+      registry.update(entry, { handDirReady: handDirCreated.trim() === 'true' ? true : entry.handDirReady });
 
       const startOffset = canResume && engine !== 'codex' ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
       launched = true;
@@ -527,19 +535,20 @@ export class SpawnerActions {
 
   private async listStopped(): Promise<string> {
     const stopped: BotEntry[] = [];
+    const failures: string[] = [];
     for (const entry of this.d.registry.currentHands()) {
       const history = this.d.registry.all().filter(e => e.tmuxSession === entry.tmuxSession);
       try {
         if (await handStopped(this.d.host, this.d.tmux, this.d.config, history)) stopped.push(entry);
       } catch (err) {
         log(`list stopped liveness ${entry.tmuxSession}: ${JSON.stringify((err as Error).message)}`);
-        return 'Could not verify stopped hands (tmux/process liveness check failed); no stopped listing is available.';
+        failures.push(`* Could not verify stopped hand **${entry.personaName}** (tmux \`${entry.tmuxSession}\`): ${(err as Error).message}`);
       }
     }
-    if (!stopped.length) return 'No stopped hands.';
+    if (!stopped.length) return [failures.length ? 'No verified stopped hands.' : 'No stopped hands.', ...failures].join('\n');
     return `${stopped.length} stopped hand(s):\n` + stopped.map(e =>
       `* **${e.personaName}** (\`${e.friendlyName ?? e.suffix}\`, tmux \`${e.tmuxSession}\`) — creator: ${e.spawnedBy?.username || e.spawnedBy?.userId || 'unknown'}, home ${home(e)}${e.lastActivity ? `, last activity ${e.lastActivity}` : ''}`,
-    ).join('\n');
+    ).concat(failures).join('\n');
   }
 
   private async deleteHand(inv: Invocation, target: string, confirm = false): Promise<string> {
@@ -562,6 +571,23 @@ export class SpawnerActions {
         if (!plan.some(x => x.kind === p.kind && x.path === p.path)) plan.push(p);
       }
     }
+    // Workspace ownership always needs positive preparation evidence. For old
+    // hand dirs only, reaped means previously alive; explicit false opts out of
+    // this migration inference. Never transfer evidence between historical paths.
+    for (const p of plan) {
+      const records = history.filter(e => (p.kind === 'hand dir' ? e.handDir : e.workDir) === p.path);
+      p.recursive = p.kind === 'workDir'
+        ? records.some(e => e.workDirReady === true)
+        : records.some(e => e.handDirReady === true ||
+          (e.handDirReady === undefined && (e.workDirReady === true || e.status === 'reaped' || e.status === 'alive')));
+    }
+    // A proven historical parent must not recursively swallow an unproven
+    // child (or another spelling/kind of the same path), even if it gains data.
+    const unproven = plan.filter(p => !p.recursive);
+    for (const p of plan) {
+      if (unproven.some(child => resolve(child.path) === resolve(p.path) ||
+        resolve(child.path).startsWith(resolve(p.path) + '/'))) p.recursive = false;
+    }
     // Do not remove a path still referenced by another identity.
     if (registry.all().some(e => e.tmuxSession !== entry.tmuxSession && plan.some(p =>
       [e.handDir, e.workDir].some(dir => dir && (resolve(dir) === resolve(p.path) || resolve(dir).startsWith(resolve(p.path) + '/') || resolve(p.path).startsWith(resolve(dir) + '/')))))) {
@@ -576,12 +602,13 @@ export class SpawnerActions {
       if (registry.all().some(e => e.tmuxSession !== entry.tmuxSession && bots.includes(e.botUserId))) {
         return 'Cannot delete: a bot is shared with another hand; nothing was changed.';
       }
-      const preview = [
+      const previewFor = (paths: CheckedDeletionPath[]) => [
         `* Registry: all ${history.length} entry/entries for tmux \`${entry.tmuxSession}\`.`,
-        ...checked.paths!.map(p => `* ${p.kind}: \`${p.path}\`${p.exists ? ' (remove directory and contents)' : ' (already absent; nothing to remove)'}.`),
+        ...paths.map(p => `* ${p.kind}: \`${p.path}\`${p.exists ? p.kept ? ' (kept: not created by this hand)' : p.recursive ? ' (remove directory and contents)' : ' (remove empty directory only)' : ' (already absent; nothing to remove)'}.`),
         ...(!history.some(e => e.workDir) ? ['* workDir: not recorded; legacy projectDir is kept.'] : []),
         bots.length ? `* Bot deactivation: ${bots.map(id => `user ${id}`).join(', ')} (recorded as spawner-created).` : '* Bot deactivation: none (no recorded spawner-created bot; existing bot kept).',
       ].join('\n');
+      const preview = previewFor(checked.paths!);
       if (!confirm) return `Dry-run for **${entry.personaName}** — would remove:\n${preview}\nNothing changed. Run \`delete ${entry.friendlyName ?? entry.suffix} confirm\` to proceed.`;
 
       // Revalidate immediately before deletion; keep the registry on filesystem
@@ -604,7 +631,7 @@ export class SpawnerActions {
       if (!bots.length) log(`delete ${entry.tmuxSession}: kept bot (no recorded creation provenance)`);
       const count = registry.removeHand(entry.tmuxSession);
       log(`delete ${entry.tmuxSession}: removed ${count} registry entries`);
-      return `Deleted **${entry.personaName}**.\n${preview}${warnings.length ? '\n' + warnings.join('\n') : ''}`;
+      return `Deleted **${entry.personaName}**.\n${previewFor(cleanup.paths!)}${warnings.length ? '\n' + warnings.join('\n') : ''}`;
     } catch (err) {
       log(`delete ${entry.tmuxSession}: failed ${JSON.stringify((err as Error).message)}`);
       return 'Could not complete deletion (path, liveness or registry check failed). Registry kept for retry; inspect logs before retrying.';

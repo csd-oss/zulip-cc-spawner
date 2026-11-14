@@ -294,3 +294,53 @@ test('display length guard still enforces 49 including effort', () => {
   assert.equal(handName('a'.repeat(12), 'x'.repeat(24), 'label', 'medium').personaName.length, 49);
   assert.throws(() => handName('a'.repeat(12), 'x'.repeat(24), 'labels', 'medium'), /too long/);
 });
+
+test('refused foreign workspace survives delete confirm (review regression)', async () => {
+  const c = fixture();
+  mkdirSync(c.cfg.handsDir, { recursive: true });
+  const foreign = join(c.cfg.projectDir, 'hands', 'cc-old');
+  mkdirSync(foreign, { recursive: true }); writeFileSync(join(foreign, 'precious'), 'not yours');
+  assert.match((await c.run('spawn opus-5-5 name=old')).content, /failed.*Workspace already exists/s);
+  assert.equal(c.registry.all()[0].workDirReady, undefined);
+  const exec = c.host.exec.bind(c.host);
+  const { HAND_PROCESSES_JS } = await import('../src/delete-hand.js');
+  c.host.exec = async (cmd, args, opts) => args[1] === HAND_PROCESSES_JS
+    ? { stdout: 'false' } : exec(cmd, args, opts);
+  assert.match((await c.run('delete old')).content, /kept: not created by this hand/);
+  assert.match((await c.run('delete old confirm')).content, /Deleted.*kept: not created by this hand/s);
+  assert.equal(readFileSync(join(foreign, 'precious'), 'utf8'), 'not yours');
+});
+
+test('spawn records hand directory provenance without claiming a pre-existing directory', async () => {
+  for (const existing of [false, true]) {
+    const c = fixture();
+    const handDir = join(c.cfg.handsDir, 'cc-scout');
+    if (existing) { mkdirSync(handDir, { recursive: true }); writeFileSync(join(handDir, 'precious'), 'keep'); }
+    assert.match((await c.run('spawn opus-5-5 name=scout')).content, /Spawned/);
+    assert.equal(c.registry.all()[0].handDirReady, !existing);
+    await c.run('stop scout');
+    const { HAND_PROCESSES_JS } = await import('../src/delete-hand.js');
+    const exec = c.host.exec.bind(c.host);
+    c.host.exec = async (cmd, args, opts) => args[1] === HAND_PROCESSES_JS ? { stdout: 'false' } : exec(cmd, args, opts);
+    assert.match((await c.run('delete scout confirm')).content, /Deleted/);
+    if (existing) assert.equal(readFileSync(join(handDir, 'precious'), 'utf8'), 'keep');
+  }
+});
+
+test('failed hand-file write does not establish directory provenance', async () => {
+  const c = fixture();
+  const write = c.host.writeFile.bind(c.host);
+  c.host.writeFile = async (path, content, mode) => {
+    if (path.endsWith('/seed.md')) throw Error('simulated partial write');
+    return write(path, content, mode);
+  };
+  assert.match((await c.run('spawn opus-5-5 name=scout')).content, /failed.*simulated partial write/s);
+  const e = c.registry.all()[0];
+  assert.equal(e.workDirReady, true);
+  assert.equal(e.handDirReady, false);
+  const { HAND_PROCESSES_JS } = await import('../src/delete-hand.js');
+  const exec = c.host.exec.bind(c.host);
+  c.host.exec = async (cmd, args, opts) => args[1] === HAND_PROCESSES_JS ? { stdout: 'false' } : exec(cmd, args, opts);
+  assert.match((await c.run('delete scout confirm')).content, /Deleted.*kept: not created by this hand/s);
+  assert.ok(readFileSync(join(e.handDir, 'zuliprc'), 'utf8'));
+});
