@@ -1,7 +1,8 @@
 import { PREPARE_WORKDIR_JS } from '../src/workdir.js';
 import { PREPARE_HANDDIR_JS } from '../src/directory-owner.js';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, rmSync, rmdirSync, lstatSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, rmSync, rmdirSync, lstatSync, openSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
@@ -97,11 +98,7 @@ for (const kind of ['workDir', 'handDir'] as const) test('creation swap never at
  f.host.exec=async(cmd,args,opts)=>{
   if (!injected && args[1]===(kind==='workDir'?PREPARE_WORKDIR_JS:PREPARE_HANDDIR_JS)) {
    injected=true;
-   const hook=kind==='workDir'?
-    `const F=require('node:fs/promises'), S=require('node:fs'), mkdir=F.mkdir;F.mkdir=async function(p,...rest){const r=await mkdir.call(this,p,...rest);if(p===${JSON.stringify(p)}){S.renameSync(p,p+'.retired');S.renameSync(${JSON.stringify(foreign)},p);}return r;};
-`:
-    `const F=require('node:fs'), mkdir=F.mkdirSync;F.mkdirSync=function(p,...rest){const r=mkdir.call(this,p,...rest);if(p===${JSON.stringify(p)}){F.renameSync(p,p+'.retired');F.renameSync(${JSON.stringify(foreign)},p);}return r;};
-`;
+   const hook=`const C=require('node:child_process'), F=require('node:fs'), move=C.execFileSync;C.execFileSync=function(...args){F.renameSync(${JSON.stringify(foreign)},${JSON.stringify(p)});return move.apply(this,args);};\n`;
    return exec(cmd,['-e',hook+args[1],...args.slice(2)],opts);
   }
   return exec(cmd,args,opts);
@@ -110,10 +107,11 @@ for (const kind of ['workDir', 'handDir'] as const) test('creation swap never at
  assert.ok(injected);
  const e=f.registry.all()[0];
  assert.equal(e[kind==='handDir'?'handDirIdentity':'workDirIdentity'],undefined);
- assert.notEqual(lstatSync(p).ino,lstatSync(p+'.retired').ino);
+ assert.equal(existsSync(join(root,'.cc-spawner-staging')),true);
+ assert.deepEqual(readdirSync(join(root,'.cc-spawner-staging')),[]);
  assert.match(await f.run('delete scout confirm'),/kept: not created/);
  assert.equal(readFileSync(join(p,'precious'),'utf8'),'foreign');
- assert.ok(existsSync(p+'.retired'));
+ assert.equal(existsSync(join(p,'.cc-spawner-owner')),false);
 });
 
 for (const kind of ['workDir', 'handDir'] as const) test('inode reuse cannot authorize precious without nonce: ' + kind, async (t) => {
@@ -159,4 +157,66 @@ test('marker leaves workspace usable and ordinary lifecycle deletes both folders
  assert.equal(readFileSync(join(e.workDir!,'project.txt'),'utf8'),'normal workspace use');
  await f.run('stop scout'); assert.match(await f.run('delete scout confirm'),/Deleted/);
  assert.equal(existsSync(e.workDir!),false); assert.equal(existsSync(e.handDir),false);
+});
+
+// Real empty foreign folders and pre-existing files, not forged identity/nonce.
+// The former mkdir-at-final gap is now a competing arrival during private mkdir.
+for (const kind of ['workDir','handDir'] as const)
+for (const arrival of ['after-spawn','after-empty-check'] as const)
+test('empty replacement preserves preexisting-precious: '+kind+' '+arrival, async () => {
+ const f=fixture(), root=kind==='handDir'?f.config.handsDir:join(f.dir,'hands');
+ const p=join(root,'cc-scout'), foreign=join(root,'preexisting-empty');
+ mkdirSync(foreign);
+ const held=openSync(foreign,'r'), original=lstatSync(foreign);
+ const source=join(root,'preexisting-precious'); writeFileSync(source,'foreign before spawn');
+ const exec=f.host.exec.bind(f.host); let injected=false;
+ f.host.exec=async(cmd,args,opts)=>{
+  if (!injected && args[1]===(kind==='workDir'?PREPARE_WORKDIR_JS:PREPARE_HANDDIR_JS)) {
+   injected=true;
+   const hook=`const F=require('node:fs'), mkdir=F.mkdirSync, read=F.readdirSync;
+let staged;
+F.mkdirSync=function(x,...rest){const result=mkdir.call(this,x,...rest);
+ if(typeof x==='string' && /^\\/proc\\/self\\/fd\\/\\d+\\/[a-f0-9]{64}$/.test(x)) {
+  staged=F.realpathSync(x);F.renameSync(${JSON.stringify(foreign)},${JSON.stringify(p)});
+ }return result;};
+F.readdirSync=function(x,...rest){const result=read.call(this,x,...rest);
+ if(${JSON.stringify(arrival)}==='after-empty-check' && staged && F.realpathSync(x)===staged && result.length===0)
+  F.renameSync(${JSON.stringify(source)},${JSON.stringify(join(p,'preexisting-precious'))});
+ return result;};\n`;
+   return exec(cmd,['-e',hook+args[1],...args.slice(2)],opts);
+  }
+  return exec(cmd,args,opts);
+ };
+ try {
+  assert.match(await f.run('spawn opus-5-5 name=scout'),/failed/); assert.ok(injected);
+  assert.equal(lstatSync(p).ino,original.ino);
+  assert.equal(f.registry.all()[0][kind==='workDir'?'workDirIdentity':'handDirIdentity'],undefined);
+  assert.equal(existsSync(join(p,'.cc-spawner-owner')),false);
+  if(arrival==='after-spawn') renameSync(source,'/proc/self/fd/'+held+'/preexisting-precious');
+  await f.run('stop scout'); await f.run('delete scout confirm');
+  assert.equal(readFileSync(join(p,'preexisting-precious'),'utf8'),'foreign before spawn');
+  assert.deepEqual(readdirSync(join(root,'.cc-spawner-staging')),[]);
+ } finally { closeSync(held); }
+});
+
+for (const kind of ['workDir','handDir'] as const)
+for (const failure of ['helper','post-move-swap','staging-mode','staging-device'] as const)
+test('private publication fails closed: '+kind+' '+failure, () => {
+ const root=tmp('staging-failure-'), p=join(root,'new-hand');
+ const stage=join(root,'.cc-spawner-staging');
+ if(failure==='staging-mode') mkdirSync(stage,{mode:0o755});
+ const hook=failure==='helper' ?
+  `require('node:child_process').execFileSync=function(){throw Error('helper unavailable');};` :
+ failure==='post-move-swap' ?
+  `const C=require('node:child_process'), F=require('node:fs'), move=C.execFileSync;
+C.execFileSync=function(...args){const result=move.apply(this,args);F.renameSync(${JSON.stringify(p)},${JSON.stringify(p+'.retired')});F.mkdirSync(${JSON.stringify(p)});F.writeFileSync(${JSON.stringify(join(p,'preexisting-precious'))},'foreign');return result;};` :
+ failure==='staging-device' ?
+  `const F=require('node:fs'), stat=F.fstatSync;F.fstatSync=function(fd){const result=stat.call(this,fd);if(F.realpathSync('/proc/self/fd/'+fd)===${JSON.stringify(stage)})result.dev++;return result;};` : '';
+ const args=kind==='workDir' ? [PREPARE_WORKDIR_JS,p,join(root,'claude.json'),'yes','no-trust','null'] : [PREPARE_HANDDIR_JS,p,'null'];
+ assert.throws(()=>execFileSync(process.execPath,['-e',hook+args[0],...args.slice(1)],{stdio:'pipe'}));
+ assert.deepEqual(readdirSync(stage),[]);
+ if(failure==='post-move-swap') {
+  assert.equal(readFileSync(join(p,'preexisting-precious'),'utf8'),'foreign');
+  assert.equal(existsSync(join(p,'.cc-spawner-owner')),false);
+ } else assert.equal(existsSync(p),false);
 });

@@ -64,14 +64,28 @@ other filesystem failures keep the registry for retry after inspection.
 
 Recursive deletion requires a path-specific creation attestation for this hand:
 the directory's `{dev, ino, nonce}`, plus its own readiness flag.
-After exclusive mkdir, the agents user opens it with O_DIRECTORY|O_NOFOLLOW,
+New folders are created under random names inside `<root>/.cc-spawner-staging/`,
+never at their final path. This private directory must be owned by the agents user,
+mode 0700, and on the same filesystem as the destination parent (checked via
+`st_dev`). It is spawner infrastructure, **not a workspace**: hands must not write
+there. Do not share it with other applications. As with the registry, malicious
+code running as the same Unix user is outside this isolation boundary.
+After exclusive mkdir there, the agents user opens it with O_DIRECTORY|O_NOFOLLOW,
 fstats it, and requires an empty directory owned by that user. It exclusively
 creates a mode-0600 `.cc-spawner-owner` containing a random 256-bit nonce through
-the directory fd. Revival and cleanup require both the opened directory identity
+the directory fd. Publication uses Linux `renameat2(RENAME_NOREPLACE)` via a
+local **Python 3 + libc renameat2** helper (stdlib `ctypes`; no packages). Node
+has no native binding; ordinary rename could overwrite an empty foreign folder,
+so there is no fallback. Missing helper/kernel support fails spawn closed.
+Inherited directory fds anchor the move. The open fd's device/inode must match
+the final path afterward; failed publication records no ownership and cleans
+only the private staging entry, never an unverified public replacement.
+Revival and cleanup require both the opened directory identity
 and marker nonce to match; inode reuse alone grants no authority.
 The hidden marker is metadata, not a workspace input or credential: leave it in
 place. It does not change the workspace cwd, uploads, trust settings or transcript
-paths, and ordinary spawn → stop → delete removes it with both folders.
+paths. Git may show it as untracked; add `.cc-spawner-owner` to the workspace's
+`.git/info/exclude` after initializing a repository if desired. Ordinary spawn → stop → delete removes it with both folders.
 Status, the other directory's flag, and readiness alone
 never prove ownership. Rename/rehome/revival cannot mint an attestation for an
 existing directory. Workspace revival refuses to adopt an unattested directory;

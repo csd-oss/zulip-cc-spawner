@@ -325,7 +325,7 @@ export class SpawnerActions {
       }
       filesTouched = true;
       await this.d.host.mkdirp(cfg.handsDir);
-      // mkdir without recursive is an exclusive creation claim, not an exists check.
+      // New folders are attested privately and published with no-replace rename.
       const { stdout: handDirCreated } = await this.d.host.exec(cfg.nodeBin, ['-e',
         PREPARE_HANDDIR_JS,
         paths.dir, JSON.stringify(prior?.handDirReady ? prior.handDirIdentity ?? null : null)]);

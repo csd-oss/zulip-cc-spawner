@@ -12,16 +12,13 @@ const fs = require('node:fs/promises'), path = require('node:path');
   const [dir, file, fresh] = process.argv.slice(1);
   if (!path.isAbsolute(dir)) throw Error('workDir must be absolute');
   await fs.mkdir(path.dirname(dir), {recursive:true, mode:0o700});
-  if (fresh === 'yes') {
-    try { await fs.mkdir(dir, {mode:0o700}); }
-    catch(e) {
-      if (e.code === 'EEXIST') throw Error('Workspace already exists: ' + dir +
-        '. Refusing to adopt it. Inspect the failed preparation and follow README first-preparation recovery before retrying.');
-      throw e;
-    }
-  }
   const expected = JSON.parse(process.argv[5] || 'null');
-  const identity = attestDirectory(dir, fresh === 'yes', expected);
+  let identity;
+  try {
+    identity = fresh === 'yes' ? createOwnedDirectory(dir) : attestDirectory(dir, expected);
+  } catch(e) {
+    throw Error('Workspace preparation failed: ' + dir + '. Refusing to adopt it. ' + e.message);
+  }
   if (!identity)
     throw Error('Workspace already exists: ' + dir + '. Refusing to adopt it: directory identity is unattested.');
   if (process.argv[4] === 'no-trust') { console.log(JSON.stringify(identity)); return; }
