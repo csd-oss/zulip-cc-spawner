@@ -20,11 +20,17 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 @**CC Spawner** models                                     # also: help models
 @**CC Spawner** list
 @**CC Spawner** stop scout                                   # alias: kill
-@**CC Spawner** peek scout [lines]                           # terminal tail, by DM
+@**CC Spawner** peek scout [lines] [here]                    # terminal tail, DM unless here
 @**CC Spawner** answer scout 2 | 1,3 | yes | text: … | esc   # a hand blocked on a dialog
 @**CC Spawner** press scout 1 enter                          # raw keys, the escape hatch
 @**CC Spawner** rescan
 ```
+
+`peek <hand> [lines]` DMs the terminal tail to you (default 20 lines, range
+1–400). Add `here` before or after the line count to reply in the stream and
+topic where you issued the command, **not** the hand's home topic. Privacy
+trade-off: the screen becomes visible to everyone in that topic and may contain
+sensitive terminal output. In a DM, `here` replies in that DM instead.
 
 - **Models** are explicit versions (`opus-5-5`, `sonnet-5-5`, `fable-5-1`, `haiku-4-5`, … or a full
   id). Bare `opus`/`sonnet` are refused so launches do not silently change meaning after a CLI upgrade. **Effort** (`low`…`max`, `ultracode`) is validated per model and kept across

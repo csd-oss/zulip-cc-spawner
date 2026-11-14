@@ -263,3 +263,23 @@ test('a bot gets an answer for a rejected command (so it can correct itself), no
   assert.equal(s.runs[0].cmd.kind, 'help');
   assert.match(String((s.runs[0].cmd as { error?: string }).error), /no effort setting/);
 });
+
+for (const dm of [false, true]) test(`peek here replies at invocation rather than home or private delivery (dm=${dm})`, async () => {
+  const s = setup();
+  s.setResult({ content: 'terminal tail', private: false });
+  const message = dm
+    ? msg(21, 'peek scout here 20', { type: 'private', display_recipient: [
+      { id: 1, email: '', full_name: 'Tester' }, { id: 9, email: '', full_name: 'Other' },
+      { id: 42, email: '', full_name: 'CC Spawner' },
+    ] })
+    : msg(21, '@**CC Spawner** peek scout 20 here', { display_recipient: 'elsewhere', stream_id: 8, subject: 'invoking-topic' });
+  s.zulip.batches.push([{ id: 1, type: 'message', message, flags: ['mentioned'] }]);
+  await s.control.start();
+  await settle();
+  s.control.stop();
+  assert.deepEqual(s.runs[0].cmd, { kind: 'peek', target: 'scout', lines: 20, here: true });
+  assert.deepEqual(s.notifier.out, [{
+    to: dm ? 'dm:1,9' : '#elsewhere>invoking-topic',
+    content: dm ? 'terminal tail' : '@_**Tester|1** terminal tail',
+  }]);
+});

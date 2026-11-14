@@ -140,7 +140,7 @@ export class SpawnerActions {
       case 'stop':
         return { content: await this.stop(inv, cmd.target) };
       case 'peek':
-        return this.peek(cmd.target, cmd.lines);
+        return this.peek(cmd.target, cmd.lines, cmd.here);
       case 'answer':
         return { content: await this.answer(inv, cmd.target, cmd.spec) };
       case 'press':
@@ -532,13 +532,13 @@ export class SpawnerActions {
     return `Stopped **${entry.personaName}**. Identity and conversation kept — \`spawn ${entry.model} name=${entry.friendlyName ?? entry.suffix}\` revives it.`;
   }
 
-  /** The terminal tail, always delivered by DM (it may show anything the hand typed). */
-  private async peek(target: string, wantLines?: number): Promise<ActionResult> {
+  /** Private by default; explicit here uses the ordinary invocation reply route. */
+  private async peek(target: string, wantLines?: number, here = false): Promise<ActionResult> {
     const entry = this.d.registry.findAlive(target);
-    if (!entry) return { content: `No running hand matches \`${target}\` — try \`list\`.`, private: true };
+    if (!entry) return { content: `No running hand matches \`${target}\` — try \`list\`.`, private: !here };
     const tmux = this.d.tmux;
     if (!(await tmux.hasSession(entry.tmuxSession))) {
-      return { content: `**${entry.personaName}**'s tmux session is gone — it'll be marked reaped on the next sweep.`, private: true };
+      return { content: `**${entry.personaName}**'s tmux session is gone — it'll be marked reaped on the next sweep.`, private: !here };
     }
     const want = wantLines ?? PEEK_DEFAULT_LINES;
     const pane = await tmux.capturePane(entry.tmuxSession, want > 30 ? want + 50 : 0);
@@ -555,7 +555,7 @@ export class SpawnerActions {
       `**${entry.personaName}** (${modelLabel(entry)}) — tmux \`${entry.tmuxSession}\`, home ${home(entry)}`,
       `up ${uptime === undefined ? '?' : formatDuration(uptime)} · last public activity ${formatIdle(idleMin)} ago · spawned by ${entry.spawnedBy?.username ?? 'unknown'}`,
     ].join('\n');
-    return { private: true, content: `${header}\n\`\`\`text\n${tail.replace(/```/g, "'''")}\n\`\`\`${note}` };
+    return { private: !here, content: `${header}\n\`\`\`text\n${tail.replace(/```/g, "'''")}\n\`\`\`${note}` };
   }
 
   /** Deliver an answer into a blocked dialog. Pending state is cleared by the

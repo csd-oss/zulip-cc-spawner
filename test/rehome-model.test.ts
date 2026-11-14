@@ -996,3 +996,42 @@ for (const creatorOnlyControls of [false, true]) for (const denial of ['user', '
     }
   });
 }
+
+for (const where of [elsewhere, { kind: 'dm', userIds: [1, 9] } as Where]) {
+  test(`peek here uses invocation reply routing in ${where.kind}; default remains private`, async () => {
+    const f = live();
+    f.state.panes = ['top\nsecond\nlast ``` fence\n'];
+    const privateResult = await f.run('peek scout 2', where);
+    assert.equal(privateResult.private, true);
+    for (const command of ['peek scout 2 here', 'peek scout here 2']) {
+      const result = await f.run(command, where);
+      assert.equal(result.private, false); // Control replies to inv.where, never postHome.
+      assert.equal(result.content, privateResult.content);
+      assert.match(result.content, /second\nlast ''' fence/);
+      assert.doesNotMatch(result.content, /\nsecond\n.*top/);
+    }
+    assert.deepEqual(f.posts, []); // No direct post to the hand's home.
+  });
+}
+
+test('peek here preserves default/bounded tails and rejects invalid or unauthorized requests before capture', async t => {
+  const f = live();
+  const captures: number[] = [];
+  t.mock.method(f.tmux, 'capturePane', async (_session: string, history?: number) => {
+    captures.push(history!);
+    return Array.from({ length: 450 }, (_, i) => `row ${i + 1}`).join('\n');
+  });
+  for (const [args, count, history] of [['here', 20, 0], ['here 1', 1, 0], ['400 here', 400, 450]] as const) {
+    const result = await f.run(`peek scout ${args}`, elsewhere);
+    assert.equal(result.private, false);
+    const tail = result.content.split('```text\n')[1].split('\n```')[0];
+    assert.equal(tail.split('\n').length, count);
+    assert.equal(captures.at(-1), history);
+  }
+  const before = captures.length;
+  for (const args of ['here 0', '401 here', 'here 2.5', 'here unknown', '20 here unknown']) {
+    assert.match((await f.run(`peek scout ${args}`, elsewhere)).content, /lines|peek takes/);
+  }
+  assert.match((await f.run('peek scout here', elsewhere, 99)).content, /Not authorized/);
+  assert.equal(captures.length, before);
+});
