@@ -218,7 +218,7 @@ export class SpawnerActions {
     if (prior && (prior.engine ?? inferEngine(prior.model)) !== engine) {
       return 'Cannot change engine: Claude and Codex sessions are incompatible. Spawn a new hand with a different name instead.';
     }
-    if (prior && (modelChange && !this.owns(inv, prior) || rehome && !this.canControl(inv, prior))) return this.ownerRefusal(prior);
+    if (prior && (modelChange || rehome) && !this.canControl(inv, prior)) return this.ownerRefusal(prior);
 
     // Effort is not part of the identity: kept from the prior launch unless
     // overridden; `effort=default` clears it.
@@ -390,7 +390,7 @@ export class SpawnerActions {
   }
 
   /** Adopted hands with no creator and no configured owner retain collaborative
-   * legacy controls even in strict mode. This never grants rename/model powers. */
+   * controls even in strict mode, including rename/model changes. */
   private canControl(inv: Invocation, entry: BotEntry): boolean {
     return !this.d.config.creatorOnlyControls || this.owns(inv, entry) ||
       (!entry.spawnedBy && this.d.config.ownerUserId == null);
@@ -402,7 +402,7 @@ export class SpawnerActions {
   }
 
   private ownerRefusal(entry: BotEntry): string {
-    return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or ${this.ownerDescription()} may rehome or change its model, send raw keys, or answer permission prompts.`;
+    return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or ${this.ownerDescription()} may rename it, rehome or change its model, send raw keys, or answer permission prompts when creatorOnlyControls is enabled.`;
   }
 
   private async rename(inv: Invocation, target: string, friendly: string): Promise<string> {
@@ -411,7 +411,7 @@ export class SpawnerActions {
     if (!matches.length) return `No hand matches \`${target}\` — try \`list\`.`;
     if (matches.length !== 1) return 'Ambiguous hand name — use its bot email or tmux session; nothing was changed.';
     const entry = matches[0];
-    if (!this.owns(inv, entry)) return `Only this hand's creator (user ${entry.spawnedBy?.userId ?? 'unknown'}) or ${this.ownerDescription()} may rename it.`;
+    if (!this.canControl(inv, entry)) return this.ownerRefusal(entry);
     if (entry.status === 'provisioning') return 'Cannot rename a hand while it is provisioning — try again after startup.';
     if (!entry.botUserId) return 'Cannot rename a hand without a provisioned Zulip bot.';
     let fullName: string;
@@ -460,7 +460,7 @@ export class SpawnerActions {
   private async model(inv: Invocation, cmd: Command & { kind: 'model' }): Promise<string> {
     const entry = this.d.registry.findAlive(cmd.target);
     if (!entry) return `No running hand matches \`${cmd.target}\` — try \`list\`.`;
-    if (!this.owns(inv, entry)) return this.ownerRefusal(entry);
+    if (!this.canControl(inv, entry)) return this.ownerRefusal(entry);
     const engine = entry.engine ?? inferEngine(entry.model);
     if (cmd.model && inferEngine(cmd.model) !== engine) return 'Cannot change engine: Claude and Codex sessions are incompatible; spawn a new hand instead.';
     if (entry.pendingQuestion) return 'Answer or dismiss the pending question before changing model.';
@@ -479,7 +479,7 @@ export class SpawnerActions {
           `Model menu for **${entry.personaName}** (current: \`${entry.model}\`). ${cmd.model ? 'Requested model not on screen. ' : ''}Menu closed while waiting.`,
           ...options.map(o => `${o.number}. ${o.label}`),
           result.menu.more ? '↓ More entries exist below the visible list; no off-screen choice was guessed.' : '',
-          `Creator/owner: mention the spawner with \`answer ${entry.friendlyName ?? entry.suffix} <number>\` (or a bare number here) within 5 minutes. \`esc\` cancels.`,
+          `${this.d.config.creatorOnlyControls && (entry.spawnedBy || this.d.config.ownerUserId != null) ? 'Creator/owner' : 'Any allowed caller'}: mention the spawner with \`answer ${entry.friendlyName ?? entry.suffix} <number>\` (or a bare number here) within 5 minutes. \`esc\` cancels.`,
         ].filter(Boolean).join('\n'));
         return `Model menu posted to ${home(entry)}; no switch yet.`;
       }
@@ -499,7 +499,7 @@ export class SpawnerActions {
       this.d.registry.update(entry, { pendingModelMenu: undefined });
       return 'Model menu snapshot expired; run `model <hand>` again.';
     }
-    if (!this.owns(inv, entry)) return this.ownerRefusal(entry);
+    if (!this.canControl(inv, entry)) return this.ownerRefusal(entry);
     if (/^(esc|escape|cancel)$/i.test(spec.trim())) {
       this.d.registry.update(entry, { pendingModelMenu: undefined });
       return 'Model choice cancelled (terminal menu already closed).';

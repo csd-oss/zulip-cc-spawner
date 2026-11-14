@@ -191,8 +191,8 @@ test('Codex stopped model-change resumes id, passes model and effort every time;
   assert.equal(args[0], 'resume'); assert.ok(args.includes('--model=gpt-6.1-terra')); assert.ok(args.includes(e.sessionId));
 });
 
-function live(engine: 'claude' | 'codex' = 'claude') {
-  const f = fixture();
+function live(engine: 'claude' | 'codex' = 'claude', overrides: Partial<SpawnerConfig> = {}) {
+  const f = fixture(overrides);
   const e = f.prior({ status: 'alive', ...(engine === 'codex' ? { engine, harness: 'cx', personaName: '[cx-gpt-6-sol] Scout', model: 'gpt-6-sol', tmuxSession: 'cx-scout' } : {}) });
   f.state.running = true;
   f.state.panes = engine === 'claude' ? ['? for shortcuts', CLAUDE_CONFIRM, CLAUDE_CHANGED] : ['Ask Codex to do anything', CODEX_MODELS, CODEX_REASONING, CODEX_CHANGED];
@@ -315,7 +315,7 @@ for (const answer of ['answer scout 1', '1']) {
     assert.equal(f.e.pendingModelMenu, undefined);
   });
 
-  for (const user of [1, 2, 9]) test(`model-only snapshot remains owner/creator-only: user ${user}, ${answer}`, async () => {
+  for (const user of [1, 2, 9]) test(`strict-mode model-only snapshot remains owner/creator-only: user ${user}, ${answer}`, async () => {
     const f = await closedModelSnapshot();
     const before = f.keys.length;
     if (user === 2) {
@@ -596,12 +596,12 @@ for (const user of [2, 9, 10]) test(`rename respects configured owner and creato
   const result = await f.run('rename scout Pathfinder', home, user);
   if (user === 10) assert.match(result.content, /Renamed/);
   else {
-    assert.equal(result.content, "Only this hand's creator (user 1) or the owner (user 10) may rename it.");
+    assert.match(result.content, /Only this hand's creator \(user 1\) or the owner \(user 10\) may rename it.*creatorOnlyControls is enabled/);
     assert.deepEqual(e, before); assert.deepEqual(f.renames, []);
   }
 });
 
-test('unknown historical creator does not become the caller; only owner may rename', async () => {
+test('strict mode: unknown historical creator stays unknown; only owner may rename', async () => {
   const f = fixture(); const e = f.prior({ spawnedBy: undefined });
   assert.match((await f.run('rename scout Pathfinder')).content, /creator \(user unknown\)/);
   assert.match((await f.run('rename scout Pathfinder', home, 9)).content, /Renamed/);
@@ -791,11 +791,10 @@ for (const creatorOnlyControls of [undefined, false, true]) for (const ownerUser
     await f.run('stop scout');
     assert.match((await f.run('spawn sonnet-5-5 name=scout', elsewhere, 2)).content, restricted ? /Only this hand's creator/ : /Revived/);
     assert.equal(f.registry.all().at(-1)!.spawnedBy?.userId, 1);
-    // The new features are never made collaborative by this flag.
-    assert.match((await f.run(`rename ${e.botEmail} Guide`, home, 2)).content, /Only this hand's creator/);
-    if (!restricted) assert.match((await f.run('model scout opus-5-5', home, 2)).content, /Only this hand's creator/);
+    // Rename/model now follow the same policy as the legacy controls.
+    assert.match((await f.run(`rename ${e.botEmail} Guide`, home, 2)).content, restricted ? /Only this hand's creator/ : /Renamed/);
     await f.run('stop scout');
-    assert.match((await f.run('spawn opus-5-5 name=scout', home, 2)).content, /Only this hand's creator/);
+    assert.match((await f.run('spawn opus-5-5 name=scout', home, 2)).content, restricted ? /Only this hand's creator/ : /Revived/);
   });
 }
 
@@ -818,8 +817,10 @@ for (const ownerUserId of [undefined, null]) test(`adopted hand with no creator/
   await f.run('stop scout');
   assert.match((await f.run('spawn sonnet-5-5 name=scout', elsewhere, 2)).content, /Revived/);
   assert.equal(f.registry.alive()[0].spawnedBy, undefined);
-  assert.match((await f.run('rename scout Guide', home, 2)).content, /creator.*unknown.*not configured/);
-  assert.match((await f.run('model scout opus-5-5', home, 2)).content, /creator.*unknown.*not configured/);
+  assert.match((await f.run('rename scout Guide', home, 2)).content, /Renamed/);
+  f.state.escaped = false; f.state.capture = 0; f.state.panes = ['? for shortcuts', CLAUDE_CONFIRM, CLAUDE_CHANGED];
+  assert.match((await f.run('model scout opus-5-5', home, 2)).content, /without stopping/);
+  assert.equal(f.registry.alive()[0].spawnedBy, undefined);
 });
 
 for (const personaName of ['Claude-Code-sonnet-5-5-scout', '[cc-sonnet-5-5] Scout', '[cc-sonnet-5-5/h] Scout']) {
@@ -858,14 +859,17 @@ test('rename hints use current friendly name for stop, press and questions', asy
   assert.match((await f.run('stop Guide')).content, /name=Guide/);
 });
 
-test('collaborative legacy controls never open model-menu answers to noncreators', async () => {
+test('collaborative controls open model-menu answers to allowed noncreators', async () => {
   const f = live('codex'); f.config.creatorOnlyControls = false;
   f.state.panes = ['Ask Codex to do anything', CODEX_MODELS];
   assert.match((await f.run('model scout')).content, /menu posted/);
   const before = f.keys.length;
-  assert.match((await f.run('answer scout 6', home, 2)).content, /Only this hand's creator/);
-  assert.equal(f.keys.length, before); assert.deepEqual(f.renames, []);
-  assert.equal(f.e.model, 'gpt-6-sol');
+  assert.match(f.posts[0].content, /Any allowed caller: mention/);
+  f.state.capture = 0; f.state.panes = ['Ask Codex to do anything', CODEX_MODELS, CODEX_REASONING, CODEX_CHANGED];
+  assert.match((await f.run('answer scout 6', home, 2)).content, /without stopping/);
+  assert.ok(f.keys.length > before); assert.equal(f.renames.length, 1);
+  assert.equal(f.e.model, 'gpt-6.1-terra');
+  assert.equal(f.e.spawnedBy?.userId, 1);
 });
 
 for (const overlap of ['session', 'alias']) test(`a running renamed hand's ${overlap} cannot block another hand's exact revival`, async t => {
@@ -926,3 +930,69 @@ for (const stage of ['confirm', 'success']) test(`Claude 2.1.323 end-to-end: mis
   assert.deepEqual(f.renames, []);
   assert.deepEqual(f.keys, stage === 'confirm' ? [['Enter'], ['Escape']] : [['Enter'], ['1'], ['Escape']]);
 });
+// Omitted flag/owner values exercise the runtime defaults as well as explicit
+// false/null. Every operation gets a fresh identity so no earlier success can
+// accidentally authorize a later operation or mask a model-changing revival.
+for (const creatorOnlyControls of [undefined, false, true]) for (const ownerUserId of [undefined, null, 10]) {
+  for (const adopted of [false, true]) for (const user of [1, 2, 10]) {
+    test(`rename/model policy: strict=${creatorOnlyControls}, owner=${ownerUserId}, adopted=${adopted}, caller=${user}`, async () => {
+      const config = { creatorOnlyControls, ownerUserId };
+      const spawnedBy = adopted ? undefined : { userId: 1, username: 'Creator' };
+      const allowed = !creatorOnlyControls || (!adopted && user === 1) || user === ownerUserId || (adopted && ownerUserId == null);
+      for (const operation of ['rename', 'model', 'answer', 'shortcut', 'cancel', 'revive', 'rehome']) {
+        const revival = operation === 'revive' || operation === 'rehome';
+        const f = revival ? fixture(config) : live('claude', config);
+        const e = revival ? f.prior({ spawnedBy }) : f.registry.alive()[0];
+        f.registry.update(e, { spawnedBy });
+        if (['answer', 'shortcut', 'cancel'].includes(operation)) {
+          f.registry.update(e, { pendingModelMenu: {
+            options: [{ number: 2, label: 'Opus 5.5', model: 'claude-opus-5-5' }],
+            postedAt: new Date().toISOString(),
+          } });
+        }
+        const before = structuredClone(f.registry.all());
+        const command = operation === 'rename' ? 'rename scout Guide'
+          : operation === 'model' ? 'model scout opus-5-5'
+          : operation === 'answer' ? 'answer scout 2'
+          : operation === 'shortcut' ? '2'
+          : operation === 'cancel' ? 'answer scout esc'
+          : 'spawn opus-5-5 name=scout';
+        const result = await f.run(command, operation === 'rehome' ? elsewhere : home, user);
+        if (!allowed) {
+          assert.match(result.content, /Only this hand's creator.*creatorOnlyControls is enabled/, operation);
+          assert.deepEqual(f.registry.all(), before, operation);
+          assert.deepEqual(f.keys, [], operation); assert.deepEqual(f.texts, [], operation);
+          assert.deepEqual(f.renames, [], operation); assert.deepEqual(f.launches, [], operation);
+          assert.deepEqual(f.subscriptions, [], operation);
+        } else {
+          assert.match(result.content, operation === 'rename' ? /Renamed/ : operation === 'cancel' ? /cancelled/ : revival ? /Revived/ : /without stopping/, operation);
+          const current = f.registry.alive()[0];
+          if (!['rename', 'cancel'].includes(operation)) assert.equal(current.model, 'claude-opus-5-5', operation);
+          if (operation === 'rehome') assert.equal(current.streamId, elsewhere.streamId);
+          if (operation === 'cancel') assert.equal(current.pendingModelMenu, undefined);
+          assert.deepEqual(current.spawnedBy, spawnedBy, operation);
+          const persisted = new Registry(join(f.dir, 'registry.json')); persisted.load();
+          assert.deepEqual(persisted.alive()[0].spawnedBy, spawnedBy, operation);
+          if (adopted) assert.ok(f.registry.all().every(entry => entry.spawnedBy === undefined), operation);
+        }
+      }
+    });
+  }
+}
+
+for (const creatorOnlyControls of [false, true]) for (const denial of ['user', 'stream', 'owner']) {
+  test(`rename/model cannot bypass ${denial} allow-list (strict=${creatorOnlyControls})`, async () => {
+    const f = live('claude', { creatorOnlyControls, ownerUserId: 10, allowedStreams: ['cc-hands'] });
+    f.e.pendingModelMenu = { options: [{ number: 2, label: 'Opus 5.5', model: 'claude-opus-5-5' }], postedAt: '2000-01-01T00:00:00Z' };
+    const user = denial === 'owner' ? 10 : denial === 'user' ? 99 : 1;
+    if (denial === 'owner') f.config.allowedUsers = [1, 2];
+    const where = denial === 'stream' ? elsewhere : home;
+    const before = structuredClone(f.registry.all());
+    for (const command of ['rename scout Guide', 'model scout opus-5-5', 'answer scout 2', '2', 'spawn opus-5-5 name=scout']) {
+      assert.match((await f.run(command, where, user)).content, /Not authorized:.*allow-listed/);
+      assert.deepEqual(f.registry.all(), before);
+      assert.deepEqual(f.keys, []); assert.deepEqual(f.texts, []); assert.deepEqual(f.renames, []);
+      assert.deepEqual(f.launches, []); assert.deepEqual(f.subscriptions, []);
+    }
+  });
+}

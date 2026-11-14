@@ -16,7 +16,7 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 ```
 @**CC Spawner** spawn opus-5-5 [name=scout] [effort=high]   # home = this stream + topic
 @**CC Spawner** model scout [opus-5-5] [effort=medium]    # live switch; omit model to list
-@**CC Spawner** rename scout Pathfinder                      # visible name only; creator/owner
+@**CC Spawner** rename scout Pathfinder                      # visible name only; follows creatorOnlyControls
 @**CC Spawner** models                                     # also: help models
 @**CC Spawner** list
 @**CC Spawner** stop scout                                   # alias: kill
@@ -38,14 +38,14 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
   A same-engine model change is allowed; Claude↔Codex is refused (start a new hand instead).
   An unchanged model/effort revival leaves the bot's display name untouched, including legacy names.
   Model/effort display-name changes keep the previous full name as an alias.
-  Changing model requires the original creator (`spawnedBy`) or configured `ownerUserId`.
-  Changing home (including topic) is collaborative unless `creatorOnlyControls` is true.
+  Changing model or home (including topic) follows `creatorOnlyControls`: any allowed caller
+  by default; creator/owner in strict mode (with the adopted-hand exception below).
   Revival never transfers authorship to the reviver; ordinary command allow-lists still apply.
 - **Blocked hands**: a question dialog or permission prompt is posted in the hand's topic; answer
   with `answer`, or in that topic simply `@**CC Spawner** yes` / `2` / `esc`.
 - **Answers**: AskUserQuestion remains collaborative for allowed users. Tool permission
   prompts and raw keys are collaborative by default, restricted with `creatorOnlyControls: true`.
-  Model-menu answers always require the hand’s creator or configured owner.
+  Model-menu answers also follow `creatorOnlyControls` (open to allowed callers by default).
 - **Raw keys** (in streams and DMs; optionally creator/owner-only): `press` uses the `space` keyword for spaces; literal text starting with
   `-` or `--` works too, e.g. `press scout /codex:review space --base space main enter`.
   Sends are sequential, not atomic; on failure the reply lists the completed keys and recovery options.
@@ -146,8 +146,9 @@ local compatibility budgets; actual Zulip server limits are **GUESS**, not
 verified against a live server. Full bracket names, legacy names, short names,
 and suffixes work with stop/peek/answer.
 
-`rename <hand> <new-friendly-name>` works on running or stopped hands, only for
-its original creator or the configured owner. Names use 1–24 ASCII letters,
+`rename <hand> <new-friendly-name>` works on running or stopped hands and follows
+`creatorOnlyControls`: any allowed caller by default, creator/owner in strict mode
+(with the adopted-hand exception below). Names use 1–24 ASCII letters,
 digits or hyphens; the whole persona must fit 49 characters. It PATCHes only
 the Zulip full name: bot email, tmux session, handDir, workDir,
 `ZULIP_SESSION_ID`, and conversation id never change. Provisioning hands and
@@ -293,24 +294,25 @@ Codex spawn/revive snapshots an inclusive home-topic message-ID boundary: catch-
 ## Control configuration and upgrade notes
 
 - `creatorOnlyControls` is a boolean, default **false**: any caller allowed to use the
-  spawner may `press`, answer permission prompts, and revive into another topic/stream,
-  as in upstream b4bc984f. Set **true** to restrict those controls to creator/owner.
+  spawner may `rename`, switch models live, answer model menus, `press`, answer permission
+  prompts, and revive with another model or home topic/stream. Set **true** to restrict
+  those controls to creator/owner (with the adopted-hand exception below).
 - `ownerUserId` is optional: omitted or `null` means **no owner**, never implicit user 9.
   Set a positive Zulip user ID explicitly if an operator needs owner powers.
   Upgrading from the earlier PR #8 build: set `creatorOnlyControls: true` and an explicit
   `ownerUserId` to retain its restrictive policy; allow-lists still apply to the owner.
-- `rename` and model changes (including model-menu answers and revival with a different
-  model) always require the creator or configured owner, regardless of the flag.
+- Upgrade note: rename/model now follow `creatorOnlyControls`, too. They are open to
+  allowed callers by default; enable strict mode to retain creator/owner-only controls.
 - Adopted hands without `spawnedBy` never acquire the reviver as creator. With no owner
-  configured, their legacy controls (press, permission answers, same-model rehome) remain
-  collaborative **even in strict mode**, so they are not stranded. Rename/model changes
-  require configuring an owner first. With an owner configured and strict mode enabled,
+  configured, all these controls (including rename/model) remain collaborative **even
+  in strict mode**, so they are not stranded. With an owner configured and strict mode enabled,
   only that owner may use their restricted controls. No registry authorship is fabricated.
 
 ## Live model switching
 
-`model <hand> [<model>] [effort=...]` works without stopping a live hand, with the
-creator/owner authorization regardless of `creatorOnlyControls`. Use an explicit version/id or a
+`model <hand> [<model>] [effort=...]` works without stopping a live hand and follows
+`creatorOnlyControls`: any allowed caller by default, creator/owner in strict mode
+(with the adopted-hand exception above). Use an explicit version/id or a
 supported Claude alias. The session, Zulip bot, workspace and persona are kept.
 After a confirmed change the admin client PATCHes `/bots/<id>` with `full_name`;
 rename failure is a warning, not a model rollback.
@@ -329,8 +331,8 @@ rename failure is a warning, not a model rollback.
   to the hand's **home topic**. A ↓ is reported as more off-screen entries, not
   treated as a complete inventory. The menu is closed immediately; reply via
   `answer <hand> <number>` or a bare spawner-mentioned number in that home topic.
-  Only creator/owner may choose a model; any authorized caller can retire an
-  expired snapshot after five minutes. A pending terminal question takes
+  Model-menu answers follow `creatorOnlyControls`, just like `model`; any authorized
+  caller can retire an expired snapshot after five minutes. A pending terminal question takes
   precedence over (and discards) the closed model snapshot when answered;
   ordinary questions remain collaborative; permission prompts follow `creatorOnlyControls`.
   The
