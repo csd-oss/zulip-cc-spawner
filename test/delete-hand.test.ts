@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as pathModule from 'node:path';
 import { runInNewContext } from 'node:vm';
@@ -55,6 +55,13 @@ function fixture(overrides: Parameters<typeof testConfig>[1] = {}) {
     };
     for (const path of [entry.handDir, entry.workDir].filter((x): x is string => Boolean(x))) {
       mkdirSync(path, { recursive: true }); writeFileSync(join(path, 'keep'), 'contents');
+    }
+    for (const kind of ['handDir', 'workDir'] as const) {
+      const dir = entry[kind];
+      if (dir && entry[kind === 'handDir' ? 'handDirReady' : 'workDirReady']) {
+        const { dev, ino } = lstatSync(dir);
+        entry[kind === 'handDir' ? 'handDirIdentity' : 'workDirIdentity'] = { dev, ino };
+      }
     }
     registry.add(entry);
     return entry;
@@ -365,10 +372,10 @@ test('delete: historical readiness is path-specific and explicit false hand prov
   assert.ok(existsSync(foreign.handDir)); assert.ok(existsSync(foreign.workDir!));
 });
 
-test('delete: old launched hand dir is inferred only when no flag; old workspace still needs readiness', async () => {
+test('delete: legacy launched hand has no deletion authority from status or readiness', async () => {
   const f = fixture(); const e = f.add({ handDirReady: undefined, workDirReady: undefined });
   assert.match((await f.run('delete scout confirm')).content, /kept: not created by this hand/);
-  assert.equal(existsSync(e.handDir), false); assert.ok(existsSync(e.workDir!));
+  assert.ok(existsSync(e.handDir)); assert.ok(existsSync(e.workDir!));
 });
 
 test('list stopped: failed hand names and check stages do not hide verified stopped hands', async () => {
@@ -437,4 +444,28 @@ test('delete: proven historical parent cannot swallow an unproven child', async 
     assert.equal(readFileSync(join(child.handDir, 'keep'), 'utf8'), 'contents');
   }
   assert.ok(existsSync(parent.handDir));
+});
+
+for (const stage of ['lstat', 'open'] as const) test('delete: identity replacement at removal ' + stage + ' is kept', async () => {
+  const f = fixture(); const e = f.add();
+  const exec = f.host.exec.bind(f.host);
+  f.host.exec = async (cmd, args, opts) => {
+    if (args[1] === DELETE_PATHS_JS && JSON.parse(args[2])[1]) {
+      const hook = `const f=require('node:fs'), original=f.${stage === 'open' ? 'openSync' : 'lstatSync'};
+        let replaced=false;
+        f.${stage === 'open' ? 'openSync' : 'lstatSync'}=function(p,...rest) {
+          if(!replaced && typeof p==='string' && p.startsWith('/proc/self/fd/') &&
+             p.endsWith('/cc-scout') && f.realpathSync(p)===${JSON.stringify(e.handDir)}) {
+            replaced=true; f.renameSync(p,${JSON.stringify(e.handDir + '.retired')});
+            f.mkdirSync(p); f.writeFileSync(p+'/precious','foreign');
+          }
+          return original.call(this,p,...rest);
+        };\n`;
+      return exec(cmd, ['-e', hook + args[1], ...args.slice(2)], opts);
+    }
+    return exec(cmd, args, opts);
+  };
+  assert.match((await f.run('delete scout confirm')).content, /kept: not created by this hand/);
+  assert.equal(readFileSync(join(e.handDir, 'precious'), 'utf8'), 'foreign');
+  assert.equal(readFileSync(join(e.handDir + '.retired', 'keep'), 'utf8'), 'contents');
 });

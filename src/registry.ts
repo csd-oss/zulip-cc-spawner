@@ -41,10 +41,13 @@ export interface BotEntry {
   handDir: string;
   /** True only after writing files into a directory exclusively created by us. */
   handDirReady?: boolean;
+  /** Exclusive-creation identity; absent on all pre-attestation records. */
+  handDirIdentity?: { dev: number; ino: number };
   /** Absent on legacy hands: retain config.projectDir. */
   workDir?: string;
   /** Set only after exclusive workspace creation and trust preparation succeed. */
   workDirReady?: boolean;
+  workDirIdentity?: { dev: number; ino: number };
   nameScheme?: 'bracket-v1' | 'stable-v2';
   harness?: string;
   engine?: 'claude' | 'codex';

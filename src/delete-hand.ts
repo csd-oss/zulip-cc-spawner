@@ -5,7 +5,7 @@ import type { AgentHost } from './host.js';
 import type { BotEntry } from './registry.js';
 import type { Tmux } from './tmux.js';
 
-export interface DeletionPath { kind: 'hand dir' | 'workDir'; path: string; root: string; recursive?: boolean }
+export interface DeletionPath { kind: 'hand dir' | 'workDir'; path: string; root: string; recursive?: boolean; identities?: { dev: number; ino: number }[] }
 export interface CheckedDeletionPath extends DeletionPath { exists: boolean; kept?: boolean }
 
 // Validate the ENTIRE plan before removing anything. Never follow a symlink,
@@ -36,22 +36,25 @@ try {
   // EVERY level, not just the top-level hand path; a concurrent link swap
   // must fail, never turn recursive removal into traversal outside the root.
   const flags = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
-  function removeAt(parent, name, dev, recursive) {
+  const matches = (st, identities) => identities?.some(id => id.dev === st.dev && id.ino === st.ino);
+  function removeAt(parent, name, dev, recursive, identities) {
     const target = '/proc/self/fd/' + parent + '/' + name;
     const st = fs.lstatSync(target);
     if (st.isSymbolicLink()) throw Error('symlink refused during removal: ' + name);
     if (st.dev !== dev) throw Error('mount point refused during removal (different device): ' + name);
+    if (recursive && identities && !matches(st, identities)) throw Object.assign(Error('directory identity changed'), {code:'UNATTESTED'});
     if (!recursive) { fs.rmdirSync(target); return; }
     if (!st.isDirectory()) { fs.unlinkSync(target); return; }
     const fd = fs.openSync(target, flags);
     try {
       if (fs.fstatSync(fd).dev !== dev) throw Error('mount point refused during removal (different device): ' + name);
+      if (identities && !matches(fs.fstatSync(fd), identities)) throw Object.assign(Error('directory identity changed'), {code:'UNATTESTED'});
       for (const child of fs.readdirSync('/proc/self/fd/' + fd)) removeAt(fd, child, dev, true);
     }
     finally { fs.closeSync(fd); }
     fs.rmdirSync(target);
   }
-  function removeDir(dir, dev, recursive) {
+  function removeDir(dir, dev, recursive, identities) {
     let fd = fs.openSync(path.parse(dir).root, flags);
     try {
       const parts = dir.slice(path.parse(dir).root.length).split(path.sep);
@@ -60,7 +63,7 @@ try {
         fs.closeSync(fd); fd = next;
       }
       if (fs.realpathSync('/proc/self/fd/' + fd) !== path.dirname(dir)) throw Error('parent moved during removal');
-      removeAt(fd, parts[parts.length - 1], dev, recursive);
+      removeAt(fd, parts[parts.length - 1], dev, recursive, identities);
     } finally { fs.closeSync(fd); }
   }
   const checked = plan.map(p => {
@@ -90,10 +93,19 @@ try {
     if (roots.some(r => canonical === r || inside(canonical, r))) throw Error('refusing to delete a configured root: ' + p.path);
     if (exists) {
       if (!fs.lstatSync(dir).isDirectory()) throw Error('not a directory: ' + dir);
+      p.recursive = Boolean(p.recursive && matches(fs.lstatSync(dir), p.identities));
       if (p.recursive) tree(dir, dev);
     }
     return {...p, exists, dev, kept: exists && !p.recursive && fs.readdirSync(dir).length > 0};
   });
+  // Identity checks can downgrade a descendant after the plan was assembled.
+  for (const p of checked) {
+    if (checked.some(child => !child.recursive && (path.resolve(child.path) === path.resolve(p.path) ||
+      inside(path.resolve(p.path), path.resolve(child.path))))) {
+      p.recursive = false;
+      p.kept = p.exists && fs.readdirSync(p.path).length > 0;
+    }
+  }
   if (remove) {
     if (checked.some(p => p.kept && checked.some(parent => parent.exists && !parent.kept &&
       inside(path.resolve(parent.path), path.resolve(p.path))))) throw Error('kept directory nested in removal plan');
@@ -101,9 +113,13 @@ try {
     // A nested path may appear in historical records; remove children first.
     for (const [dir, p] of [...unique].sort(([a], [b]) => b.length - a.length)) {
       if (p.exists && !p.kept) {
-        try { removeDir(dir, p.dev, Boolean(p.recursive)); removed.push(dir); }
+        try {
+          if (checked.some(child => child.kept && inside(dir, path.resolve(child.path)))) { p.kept = true; continue; }
+          removeDir(dir, p.dev, Boolean(p.recursive), p.identities); removed.push(dir);
+        }
         catch(e) {
-          if (!p.recursive && (e.code === 'ENOTEMPTY' || e.code === 'EEXIST')) p.kept = true;
+          if (e.code === 'UNATTESTED') { p.recursive = false; p.kept = true; }
+          else if (!p.recursive && (e.code === 'ENOTEMPTY' || e.code === 'EEXIST')) p.kept = true;
           else throw e;
         }
       }

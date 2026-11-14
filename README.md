@@ -62,20 +62,21 @@ Legacy hands without a recorded
 `workDir` keep `projectDir`. Missing directories are reported as already absent;
 other filesystem failures keep the registry for retry after inspection.
 
-Recursive workspace deletion requires a history record for that exact path with
-`workDirReady === true`; a stopped status alone is not workspace provenance.
-Hand directories have a separate `handDirReady` flag, set only after
-`writeHandFiles` succeeds in an exclusively spawner-created directory; an
-explicit false is never upgraded merely by launching in a pre-existing directory.
-For old hand-directory records without this flag, `workDirReady === true` or
-status `alive`/`reaped` counts as evidence of a successful launch (the latter
-is the persisted state after leaving alive). Failed/provisioning/cleanup alone
-are not proof. Provenance is matched by path across the hand's history, not
-borrowed from another historical directory.
-Unproven directories are removed only with non-recursive `rmdir` when empty.
-Non-empty ones survive registry deletion and are reported in both preview and
-result as **kept: not created by this hand**. A failed file write never establishes
-hand-directory provenance.
+Recursive deletion requires a path-specific creation attestation for this hand:
+the directory's `{dev, ino}`, recorded on exclusive creation, plus its own
+`handDirReady` or `workDirReady` flag. The current directory must match that
+identity on lstat before reuse or cleanup (and on the opened directory before
+recursive removal). Status, the other directory's flag, and readiness alone
+never prove ownership. Rename/rehome/revival cannot mint an attestation for an
+existing directory. Workspace revival refuses to adopt an unattested directory;
+an existing unattested hand directory stays explicitly unproven.
+Moved-aside originals are never searched for or removed.
+
+All existing hands from before this change lack attestations: their non-empty
+directories are kept and require manual cleanup. Unattested or identity-mismatched
+directories are only eligible for non-recursive rmdir when empty; otherwise
+preview and result report **kept: not created by this hand**. A failed file write
+never establishes hand-directory readiness.
 
 Only bots positively recorded with `botCreatedBySpawner: true` are deactivated;
 old/adopted bots without this provenance are kept (the preview says so). New

@@ -263,9 +263,9 @@ export class SpawnerActions {
       streamId: prior?.streamId ?? where.streamId,
       topic: prior?.topic ?? where.topic,
       handDir: paths.dir,
-      handDirReady: prior ? prior.handDirReady : false,
+      handDirReady: false,
       workDir,
-      workDirReady: prior?.workDirReady,
+      workDirReady: undefined,
       nameScheme: prior ? prior.nameScheme : 'stable-v2',
       harness: engine === 'codex' ? 'cx' : prior ? prior.harness : 'cc',
       engine,
@@ -297,8 +297,13 @@ export class SpawnerActions {
       if (!created && !prior) log(`${personaName}: reusing an existing bot ${bot.email} with no registry history`);
       await this.d.provisioner.subscribe(bot.userId, where.streamName);
       if (workDir) {
-        await prepareWorkDir(this.d.host, cfg, workDir, !prior?.workDirReady, engine === 'claude');
-        registry.update(entry, { workDirReady: true });
+        // A failed retry may not have reached preparation. Recover only this
+        // hand's same-path attestation; prepareWorkDir rechecks its identity.
+        const prepared = prior && [...registry.all()].reverse().find(e => e.tmuxSession === prior.tmuxSession &&
+          e.workDir === workDir && e.workDirReady && e.workDirIdentity);
+        const workDirIdentity = await prepareWorkDir(this.d.host, cfg, workDir,
+          !prepared && !prior?.workDirReady, engine === 'claude', prepared?.workDirIdentity);
+        registry.update(entry, { workDirReady: true, workDirIdentity });
       }
 
       const seedCtx = { personaName, streamName: where.streamName, topic: where.topic, realm: this.d.realm };
@@ -321,11 +326,12 @@ export class SpawnerActions {
       await this.d.host.mkdirp(cfg.handsDir);
       // mkdir without recursive is an exclusive creation claim, not an exists check.
       const { stdout: handDirCreated } = await this.d.host.exec(cfg.nodeBin, ['-e',
-        "const fs=require('node:fs'); try { fs.mkdirSync(process.argv[1], {mode:0o700}); console.log(true); } catch(e) { if(e.code!=='EEXIST') throw e; console.log(false); }",
-        paths.dir]);
+        "const fs=require('node:fs'); let created=false; try { fs.mkdirSync(process.argv[1], {mode:0o700}); created=true; } catch(e) { if(e.code!=='EEXIST') throw e; } const st=fs.lstatSync(process.argv[1]), old=JSON.parse(process.argv[2]); if(!st.isDirectory() || st.isSymbolicLink()) throw Error('unsafe handDir'); console.log(JSON.stringify(created || (old && old.dev===st.dev && old.ino===st.ino) ? {dev:st.dev,ino:st.ino} : null));",
+        paths.dir, JSON.stringify(prior?.handDirReady ? prior.handDirIdentity ?? null : null)]);
       await writeHandFiles(this.d.host, cfg, shortName, where.streamName, this.d.provisioner.credsFor(bot), seed, prior?.handDir, workDir);
 
-      registry.update(entry, { handDirReady: handDirCreated.trim() === 'true' ? true : entry.handDirReady });
+      const handDirIdentity = handDirCreated.trim() ? JSON.parse(handDirCreated) ?? undefined : undefined;
+      registry.update(entry, { handDirReady: Boolean(handDirIdentity), handDirIdentity });
 
       const startOffset = canResume && engine !== 'codex' ? (await this.d.host.size(this.d.watcher.transcriptPath(sessionId, workDir))) ?? 0 : 0;
       launched = true;
@@ -571,15 +577,14 @@ export class SpawnerActions {
         if (!plan.some(x => x.kind === p.kind && x.path === p.path)) plan.push(p);
       }
     }
-    // Workspace ownership always needs positive preparation evidence. For old
-    // hand dirs only, reaped means previously alive; explicit false opts out of
-    // this migration inference. Never transfer evidence between historical paths.
+    // Only this hand's positive, path-specific creation attestations qualify.
     for (const p of plan) {
-      const records = history.filter(e => (p.kind === 'hand dir' ? e.handDir : e.workDir) === p.path);
-      p.recursive = p.kind === 'workDir'
-        ? records.some(e => e.workDirReady === true)
-        : records.some(e => e.handDirReady === true ||
-          (e.handDirReady === undefined && (e.workDirReady === true || e.status === 'reaped' || e.status === 'alive')));
+      p.identities = history.flatMap(e => {
+        const identity = p.kind === 'hand dir' ? e.handDirIdentity : e.workDirIdentity;
+        const ready = p.kind === 'hand dir' ? e.handDirReady : e.workDirReady;
+        return ready && identity && (p.kind === 'hand dir' ? e.handDir : e.workDir) === p.path ? [identity] : [];
+      });
+      p.recursive = p.identities.length > 0;
     }
     // A proven historical parent must not recursively swallow an unproven
     // child (or another spelling/kind of the same path), even if it gains data.

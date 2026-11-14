@@ -21,8 +21,12 @@ const fs = require('node:fs/promises'), path = require('node:path');
   }
   const st = await fs.lstat(dir);
   if (!st.isDirectory() || st.isSymbolicLink()) throw Error('unsafe workDir');
+  const expected = JSON.parse(process.argv[5] || 'null');
+  if (fresh !== 'yes' && (!expected || st.dev !== expected.dev || st.ino !== expected.ino))
+    throw Error('Workspace already exists: ' + dir + '. Refusing to adopt it: directory identity is unattested.');
+  const identity = {dev:st.dev, ino:st.ino};
   await fs.chmod(dir, 0o700);
-  if (process.argv[4] === 'no-trust') return;
+  if (process.argv[4] === 'no-trust') { console.log(JSON.stringify(identity)); return; }
   await fs.mkdir(path.dirname(file), {recursive:true, mode:0o700});
   const lock = file + '.spawner-lock';
   const deadline = Date.now() + 10000;
@@ -48,6 +52,7 @@ const fs = require('node:fs/promises'), path = require('node:path');
     try { await handle.writeFile(JSON.stringify(j, null, 2) + '\n'); await handle.sync(); }
     finally { await handle.close(); }
     await fs.rename(tmp, file);
+    console.log(JSON.stringify(identity));
   } finally {
     await fs.rm(tmp, {force:true});
     await fs.rmdir(lock);
@@ -55,6 +60,7 @@ const fs = require('node:fs/promises'), path = require('node:path');
 })().catch(e => { console.error(e.message); process.exitCode = 1; });
 `;
 
-export async function prepareWorkDir(host: AgentHost, cfg: SpawnerConfig, workDir: string, fresh: boolean, claudeTrust = true): Promise<void> {
-  await host.exec(cfg.nodeBin, ['-e', PREPARE_WORKDIR_JS, workDir, join(cfg.agentsHome, '.claude.json'), fresh ? 'yes' : 'no', claudeTrust ? 'trust' : 'no-trust']);
+export async function prepareWorkDir(host: AgentHost, cfg: SpawnerConfig, workDir: string, fresh: boolean, claudeTrust = true, identity?: { dev: number; ino: number }): Promise<{ dev: number; ino: number } | undefined> {
+  const { stdout } = await host.exec(cfg.nodeBin, ['-e', PREPARE_WORKDIR_JS, workDir, join(cfg.agentsHome, '.claude.json'), fresh ? 'yes' : 'no', claudeTrust ? 'trust' : 'no-trust', JSON.stringify(identity ?? null)]);
+  return stdout.trim() ? JSON.parse(stdout) : undefined;
 }

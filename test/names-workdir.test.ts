@@ -198,10 +198,10 @@ test('trust merge serializes concurrent processes and replaces atomically, prese
   assert.equal(Object.keys(data.projects).length, 9);
   assert.equal(statSync(file).mode & 0o777, 0o600);
   data.projects[join(c.dir, 'work-0')].extra = true; writeFileSync(file, JSON.stringify(data));
-  await prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false);
+  await prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false, true, statSync(join(c.dir, 'work-0')));
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).projects[join(c.dir, 'work-0')].extra, true);
   writeFileSync(file, 'broken');
-  await assert.rejects(prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false));
+  await assert.rejects(prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false, true, statSync(join(c.dir, 'work-0'))));
   assert.equal(readFileSync(file, 'utf8'), 'broken');
 });
 

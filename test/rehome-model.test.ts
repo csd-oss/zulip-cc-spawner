@@ -1,6 +1,6 @@
 import { claude323Replay } from './model-replay.js';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { SpawnerActions } from '../src/actions.js';
@@ -72,6 +72,11 @@ function fixture(overrides: Partial<SpawnerConfig> = {}) {
       ...patch,
     };
     mkdirSync(e.workDir ?? config.projectDir, { recursive: true });
+    // Model a current, attested workspace for these revival/control fixtures.
+    if (e.workDir && e.workDirReady) {
+      const { dev, ino } = lstatSync(e.workDir);
+      e.workDirIdentity = { dev, ino };
+    }
     writeFileSync(join(e.workDir ?? config.projectDir, 'keep.txt'), 'work');
     if (e.engine !== 'codex') {
       const path = watcher.transcriptPath(e.sessionId, e.workDir);
