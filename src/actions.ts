@@ -316,11 +316,33 @@ export class SpawnerActions {
       if (workDir) {
         // A failed retry may not have reached preparation. Recover only this
         // hand's same-path attestation; prepareWorkDir rechecks its identity.
-        const prepared = prior && [...registry.all()].reverse().find(e => e.tmuxSession === prior.tmuxSession &&
-          e.workDir === workDir && e.workDirReady && e.workDirIdentity);
-        const workDirIdentity = await prepareWorkDir(this.d.host, cfg, workDir,
-          !prepared && !prior?.workDirReady, engine === 'claude', prepared?.workDirIdentity);
-        registry.update(entry, { workDirReady: true, workDirIdentity });
+        const sameDir = prior ? registry.all().filter(e => e.tmuxSession === prior.tmuxSession && e.workDir === workDir) : [];
+        const prepared = [...sameDir].reverse().find(e => e.workDirReady && (e.workDirIdentity || e.workDirAdoption));
+        const trust = engine === 'claude';
+        if (prepared?.workDirIdentity) {
+          registry.update(entry, { workDirReady: true, workDirIdentity: await prepareWorkDir(this.d.host, cfg, workDir, { kind: 'attest', identity: prepared.workDirIdentity }, trust) });
+        } else if (prepared?.workDirAdoption) {
+          registry.update(entry, { workDirReady: true, workDirAdoption: await prepareWorkDir(this.d.host, cfg, workDir, { kind: 'attest', identity: prepared.workDirAdoption }, trust) });
+        } else if (prior && sameDir.some(e => e.workDirReady === true) && !sameDir.some(e => e.workDirIdentity || e.workDirAdoption)) {
+          // Pre-attestation hand: its own history prepared exactly this path.
+          // Adopt it under new-hand safety checks. The adoption identity is
+          // kept apart from workDirIdentity: it guards later revivals against
+          // a swapped folder but never authorizes ordinary recursive delete.
+          const references = this.otherHandPaths(prior.tmuxSession);
+          const workRoot = resolve(cfg.workRoot ?? resolve(cfg.projectDir, 'hands'));
+          if (/[\/]/.test(prior.tmuxSession) || workDir !== resolve(workRoot, prior.tmuxSession)) {
+            throw new Error(`Workspace already exists: ${workDir}. Refusing to adopt it: a pre-attestation workspace is adopted only at <workRoot>/${prior.tmuxSession}.`);
+          }
+          if (references.some(r => resolve(r) === workDir || resolve(r).startsWith(workDir + '/') || workDir.startsWith(resolve(r) + '/'))) {
+            throw new Error(`Workspace already exists: ${workDir}. Refusing to adopt it: directory shared with another hand.`);
+          }
+          const workDirAdoption = await prepareWorkDir(this.d.host, cfg, workDir, { kind: 'adopt-legacy', name: prior.tmuxSession, references }, trust);
+          if (!workDirAdoption?.nonce) throw new Error(`Workspace already exists: ${workDir}. Refusing to adopt it: adoption was not attested.`);
+          log(`${personaName}: adopted pre-attestation workspace ${JSON.stringify(workDir)} (continuity only; not a creation attestation)`);
+          registry.update(entry, { workDirReady: true, workDirAdoption });
+        } else {
+          registry.update(entry, { workDirReady: true, workDirIdentity: await prepareWorkDir(this.d.host, cfg, workDir, prior?.workDirReady ? { kind: 'attest' } : { kind: 'fresh' }, trust) });
+        }
       }
 
       const seedCtx = { personaName, streamName: where.streamName, topic: where.topic, realm: this.d.realm };
@@ -419,6 +441,12 @@ export class SpawnerActions {
       this.d.codexWake?.ready(entry);
       return `Spawn of **${personaName}** failed: ${message}${kept}${rollbackWarning}`;
     }
+  }
+
+  /** Recorded paths of every OTHER hand identity (deduplicated). */
+  private otherHandPaths(tmuxSession: string): string[] {
+    return [...new Set(this.d.registry.all().filter(e => e.tmuxSession !== tmuxSession)
+      .flatMap(e => [e.handDir, ...(e.workDir ? [e.workDir] : []), ...(e.seedFile?.startsWith('/') ? [e.seedFile] : [])]))];
   }
 
   private owns(inv: Invocation, entry: BotEntry): boolean {
@@ -605,8 +633,7 @@ export class SpawnerActions {
     }
     const history = registry.all().filter(e => e.tmuxSession === entry.tmuxSession);
     if (forceLegacy && history.some(e => e.handDirIdentity || e.workDirIdentity)) return 'force-legacy is only for pre-attestation hands; use ordinary delete.';
-    const references = registry.all().filter(e => e.tmuxSession !== entry.tmuxSession)
-      .flatMap(e => [e.handDir, ...(e.workDir ? [e.workDir] : []), ...(e.seedFile?.startsWith('/') ? [e.seedFile] : [])]);
+    const references = this.otherHandPaths(entry.tmuxSession);
     // Implicit legacy cwd is a protected root, not an exclusive subtree.
     // deletionPaths already protects projectDir itself and its ancestors.
     const plan: DeletionPath[] = [];

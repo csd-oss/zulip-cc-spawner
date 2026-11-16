@@ -189,7 +189,7 @@ test('trust merge serializes concurrent processes and replaces atomically, prese
   writeFileSync(file, original);
   const fd = openSync(file, 'r');
   try {
-    await Promise.all(Array.from({ length: 8 }, (_, i) => prepareWorkDir(c.host, c.cfg, join(c.dir, `work-${i}`), true)));
+    await Promise.all(Array.from({ length: 8 }, (_, i) => prepareWorkDir(c.host, c.cfg, join(c.dir, `work-${i}`), { kind: 'fresh' })));
     const buf = Buffer.alloc(original.length); readSync(fd, buf, 0, buf.length, 0);
     assert.equal(buf.toString(), original, 'old open inode was not modified in place');
   } finally { closeSync(fd); }
@@ -198,10 +198,10 @@ test('trust merge serializes concurrent processes and replaces atomically, prese
   assert.equal(Object.keys(data.projects).length, 9);
   assert.equal(statSync(file).mode & 0o777, 0o600);
   data.projects[join(c.dir, 'work-0')].extra = true; writeFileSync(file, JSON.stringify(data));
-  await prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false, true, { ...statSync(join(c.dir, 'work-0')), nonce: readFileSync(join(c.dir, 'work-0', '.cc-spawner-owner'), 'utf8') });
+  await prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), { kind: 'attest', identity: { ...statSync(join(c.dir, 'work-0')), nonce: readFileSync(join(c.dir, 'work-0', '.cc-spawner-owner'), 'utf8') } }, true);
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).projects[join(c.dir, 'work-0')].extra, true);
   writeFileSync(file, 'broken');
-  await assert.rejects(prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), false, true, statSync(join(c.dir, 'work-0'))));
+  await assert.rejects(prepareWorkDir(c.host, c.cfg, join(c.dir, 'work-0'), { kind: 'attest', identity: statSync(join(c.dir, 'work-0')) }, true));
   assert.equal(readFileSync(file, 'utf8'), 'broken');
 });
 

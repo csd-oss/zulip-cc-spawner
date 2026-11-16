@@ -147,10 +147,42 @@ place. It does not change the workspace cwd, uploads, trust settings or transcri
 paths. Git may show it as untracked; add `.cc-spawner-owner` to the workspace's
 `.git/info/exclude` after initializing a repository if desired. Ordinary spawn → stop → delete removes it with both folders.
 Status, the other directory's flag, and readiness alone
-never prove ownership. Rename/rehome/revival cannot mint an attestation for an
-existing directory. Workspace revival refuses to adopt an unattested directory;
-an existing unattested hand directory stays explicitly unproven.
-Moved-aside originals are never searched for or removed.
+never prove ownership. Rename/rehome/revival cannot mint a creation attestation
+for an existing directory. Workspace revival refuses to adopt an unattested
+directory, with one exception below; an existing unattested hand directory stays
+explicitly unproven. Moved-aside originals are never searched for or removed.
+
+**Pre-attestation workspace revival.** A hand created before workspace attestation
+has registry history for its tmux name with this exact `workDir`,
+`workDirReady: true` and no `workDirIdentity`. `spawn … name=<hand>` adopts that
+workspace once, as the agents user, only if it is exactly
+`<workRoot>/<tmux-name>`; every path component is a non-symlink and the path is
+canonical; the directory is owned by the agents user, on `workRoot`'s device and
+with no mount at or below it; it is neither a configured root (`projectDir`,
+`handsDir`, `workRoot`) nor an ancestor of one; and it neither equals, contains
+nor sits inside another hand's recorded handDir/workDir/seed (by path,
+canonical path or inode). The marker is created exclusively: a folder that
+already has `.cc-spawner-owner` is refused. The folder is set to mode 0700, as
+the pre-attestation spawner did on every preparation. Adoption is recorded as
+`workDirAdoption` (`{dev, ino, nonce}`), never as `workDirIdentity`; later
+revivals require it to match, so a swapped folder is refused, not re-adopted.
+No legacy record, a record for another path, or any recorded identity for this
+path (matching or not) still refuses. A legacy hand without a recorded `workDir`
+keeps using `projectDir` and is never adopted.
+
+**Delete consequence:** adoption proves continuity, not creation, so it grants no
+deletion authority. Ordinary `delete` still keeps a non-empty adopted workspace
+(**kept: not created by this hand**; the marker alone makes it non-empty).
+`delete … force-legacy` stays available to admins for such a hand, with the
+same exact-path checks, preview token and recursive removal as before adoption.
+(Exception, unchanged rule: if the legacy handDir was missing and revival created
+a fresh attested one, the history now has a creation attestation, so
+force-legacy refuses; ordinary delete removes that handDir and keeps the workspace.)
+If preparation fails after adoption (e.g. invalid Claude config), the helper
+removes its own marker again. If the spawner crashes before recording the
+adoption, the next revival refuses because the marker exists; inspect the folder, then remove only
+`.cc-spawner-owner` to retry. An older spawner binary ignores
+`workDirAdoption`, so it again refuses to revive and treats the hand as legacy.
 
 All existing hands from before this change lack attestations: their non-empty
 directories are kept and require manual cleanup. Unattested or identity-mismatched
@@ -543,8 +575,9 @@ five minutes, is single-use, and is invalidated by registry/configuration or
 directory-identity changes. A restart loses pending confirmations. An ordinary
 delete confirmation does not authorize this override.
 
-This override is only for histories without directory attestations. It never
-creates ownership markers or changes provenance. It recursively removes only
+This override is only for histories without directory creation attestations
+(`handDirIdentity`/`workDirIdentity`); a revival-time `workDirAdoption` does not
+count as one and is not consulted. It never creates ownership markers or changes provenance. It recursively removes only
 the exact `<handsDir>/<tmux-name>` and recorded `<workRoot>/<tmux-name>` paths.
 Nonstandard historical paths are refused, not guessed. A missing legacy workDir
 means shared `projectDir`: it is shown and kept. Configured roots, paths overlapping

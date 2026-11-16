@@ -50,6 +50,10 @@ export interface BotEntry {
   /** Set only after exclusive workspace creation and trust preparation succeed. */
   workDirReady?: boolean;
   workDirIdentity?: DirectoryIdentity;
+  /** Pre-attestation workspace adopted at revival: {dev, ino, nonce} of the
+   *  marker written then. Proves continuity for later revivals only, never
+   *  creation: delete (ordinary and force-legacy) treats the hand as legacy. */
+  workDirAdoption?: DirectoryIdentity;
   nameScheme?: 'bracket-v1' | 'stable-v2';
   harness?: string;
   engine?: 'claude' | 'codex';
