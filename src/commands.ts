@@ -109,7 +109,7 @@ export function effortError(effort: string, model: string, engine?: Engine): str
 
 export const USAGE = [
   'Usage (mention me):',
-  '`spawn <model> [name=<friendly-or-listed-target>] [effort=<level>] [engine=codex|claude]` — spawn a hand whose home is this stream + topic (model explicit: fable-5-1, opus-5-5, sonnet-5-5, haiku-4-5, … or a full id; Claude effort: low, medium, high, xhigh, max, ultracode — kept across revivals, `effort=default` clears it)',
+  '`spawn <model> [name=<friendly-or-listed-target>] [effort=<level>] [engine=codex|claude]` — spawn a hand whose home is this stream + topic (model explicit: fable-5-2, opus-5-5, sonnet-5-5, haiku-4-5, … or a full id; Claude effort: low, medium, high, xhigh, max, ultracode — kept across revivals, `effort=default` clears it)',
   'Codex: `gpt-*` → `codex` CLI; other ids → `claude`. Override with `engine=codex|claude`. Display names: `[cx-<model>] <name>` (Claude: `[cc-<model>] <name>`); new bot emails/tmux/workdirs use only `cx-<name>` / `cc-<name>`.',
   `Codex efforts: ${[...new Set(MODEL_CAPABILITIES.filter((r) => r.engine === 'codex').flatMap((r) => r.efforts))].join(', ')} (passed through; model-dependent).`,
   '`model <hand> [<model>] [effort=...]` — live same-engine switch (follows creatorOnlyControls; open by default); omit model to list the live menu',
@@ -133,6 +133,7 @@ export const USAGE = [
  * are refused: the CLI re-points them on upgrade; launches must be explicit.
  */
 export const MODEL_ALIASES: Readonly<Record<string, string>> = {
+  'fable-5-2': 'claude-fable-5-2',
   'fable-5-1': 'claude-fable-5-1',
   'fable-5': 'claude-fable-5',
   'opus-5-5': 'claude-opus-5-5',
@@ -156,22 +157,62 @@ export function modelsListing(): string {
     'Models → CLI: allowed efforts (patterns below are first-match per CLI).',
     ...Object.entries(MODEL_ALIASES).map(([alias, id]) => format(`\`${alias}\` → \`${id}\``, modelCapability(id))),
     ...MODEL_CAPABILITIES.map((row) => format(row.label, row)),
+    'Other versioned short names of fable/opus/sonnet/haiku (`fable-5-3`, `opus6`, `opus-11`, `sonnet-10-1`) → `claude-<family>-X[-Y]`, parts as written; glued digit runs that are not a listed alias (`opus11`, `fable510`) are refused, never passed raw or guessed.',
     '`default` = CLI-selected effort (no override); clears stored effort on revival. Omitted effort inherits on revival. Model must be explicit; no default model.',
   ].join('\n');
 }
 
 const BARE_FAMILY_RE = /^(fable|opus|sonnet|haiku|best|opusplan)(\[1m\])?$/i;
 const FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
+/** A family name, an optional separator, then only version digits and `-`/`.` separators. */
+const FAMILY_VERSION_ATTEMPT_RE = new RegExp(`^(${FAMILIES.join('|')})([-.]?)(\\d[\\d.-]*)$`);
 
-/** `fable5.1` / `Fable-5.1` / `opus55` → `fable-5-1` / `opus-5-5`. */
-function normalizeAlias(model: string): string {
-  const m = model.toLowerCase().match(/^([a-z]+)[-.]?(\d)(?:[-.]?(\d))?$/);
-  if (m && FAMILIES.includes(m[1])) return `${m[1]}-${m[2]}${m[3] ? `-${m[3]}` : ''}`;
-  return model.toLowerCase();
+/**
+ * Parses a versioned family short name into `<family>-X[-Y]`, or explains why
+ * it cannot. Nothing is guessed:
+ * - version parts split by `-`/`.` are literal (`fable-5-10`, `fable5.2`,
+ *   `opus10-2`); a lone run after a family separator is a literal major
+ *   (`opus-11` → opus-11, `opus-10` → opus-10);
+ * - a lone digit run is split into X-Y only when that spells a listed alias
+ *   (`opus55`, `fable-52` → fable-5-2, `haiku45`);
+ * - a single digit glued to the family is a literal major (`opus6`);
+ * - any other glued run (`opus11`, `opus10`, `fable510`) is refused.
+ * Returns undefined when `model` is not a family-version spelling at all.
+ */
+function parseFamilyVersion(model: string): { key: string } | { error: string } | undefined {
+  const m = model.toLowerCase().match(FAMILY_VERSION_ATTEMPT_RE);
+  if (!m) return undefined;
+  const [, family, separator, rest] = m;
+  const parts = rest.split(/[-.]/);
+  const hint = `separate the version parts (\`${family}-X\`, \`${family}-X-Y\`) or give a full id like \`claude-${family}-X-Y\``;
+  if (parts.length === 1) {
+    const [run] = parts;
+    const listed = run.length === 2 ? `${family}-${run[0]}-${run[1]}` : undefined;
+    if (listed && listed in MODEL_ALIASES) return { key: listed };
+    if (separator || run.length === 1) return { key: `${family}-${run}` };
+    return { error: `ambiguous model version \`${model}\` — ${hint}` };
+  }
+  if (parts.length === 2 && parts.every((p) => /^\d+$/.test(p))) return { key: `${family}-${parts[0]}-${parts[1]}` };
+  return { error: `unsupported model version \`${model}\` — ${hint}` };
 }
 
+/** Why a family-version spelling cannot be resolved, if it cannot. */
+export function modelVersionError(model: string): string | undefined {
+  const parsed = parseFamilyVersion(model);
+  return parsed && 'error' in parsed ? parsed.error : undefined;
+}
+
+/**
+ * Listed aliases first; any other versioned family short name (`fable-5-3`,
+ * `opus6`, `sonnet-10-1`) maps generically to `claude-<family>-X[-Y]`. A family
+ * short name is never passed raw: the CLI rejects it at the first message, not
+ * at launch, so spawn refuses the ambiguous ones (`modelVersionError`) up front.
+ * Also used on stored models: legacy entries may hold the raw short name.
+ */
 export function resolveModel(model: string): string {
-  return MODEL_ALIASES[normalizeAlias(model)] ?? model;
+  const parsed = parseFamilyVersion(model);
+  if (!parsed || 'error' in parsed) return model;
+  return MODEL_ALIASES[parsed.key] ?? `claude-${parsed.key}`;
 }
 
 export function isBareFamilyAlias(model: string): boolean {
@@ -208,6 +249,8 @@ export function buildSpawnCommand(model: string | undefined, friendly?: string, 
       error: `bare \`${model}\` is refused — say which version: ${MODEL_CHOICES.map((c) => `\`${c}\``).join(', ')}, or a full id like \`claude-opus-5-5\``,
     };
   }
+  const versionError = modelVersionError(model);
+  if (versionError) return { kind: 'help', error: versionError };
   const resolved = resolveModel(model);
   const error = effort === undefined ? undefined : effortError(effort, resolved, engine);
   if (error) return { kind: 'help', error };

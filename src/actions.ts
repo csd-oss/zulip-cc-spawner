@@ -26,6 +26,7 @@ import {
   USAGE,
   buildAnswerCommand,
   effortError,
+  resolveModel,
   modelSlug,
   modelsListing,
   type Command,
@@ -233,7 +234,9 @@ export class SpawnerActions {
     }
 
     const rehome = prior && (prior.streamId !== where.streamId || prior.topic !== where.topic);
-    const modelChange = prior && prior.model !== cmd.model;
+    // Legacy entries may store a raw short name (`fable-5-2`): reviving onto
+    // its resolved id is a repair, not a model change.
+    const modelChange = prior && resolveModel(prior.model) !== cmd.model;
     if (prior && (prior.engine ?? inferEngine(prior.model)) !== engine) {
       return 'Cannot change engine: Claude and Codex sessions are incompatible. Spawn a new hand with a different name instead.';
     }

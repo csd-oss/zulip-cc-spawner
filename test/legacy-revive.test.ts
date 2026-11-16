@@ -14,8 +14,8 @@ import { testConfig, tmp } from './helpers.js';
 // Real-filesystem revival of pre-attestation hands (TASK-WP4ZR). A legacy
 // record is modelled by stripping identities AND the on-disk markers: hands
 // created before 8cef78a never had either.
-function fixture() {
-  const dir = tmp('legacy-revive-'), config = testConfig(dir, { ownerUserId: 1 });
+function fixture(overrides: Parameters<typeof testConfig>[1] = {}) {
+  const dir = tmp('legacy-revive-'), config = testConfig(dir, { ownerUserId: 1, ...overrides });
   mkdirSync(config.handsDir, { recursive: true }); mkdirSync(join(dir, 'hands'));
   const registry = new Registry(join(dir, 'registry.json')), local = new LocalHost(), host = new LocalHost();
   const adoptCalls: string[] = [];
@@ -27,11 +27,12 @@ function fixture() {
   const sessions = new Set<string>();
   const tmux = { otherPaneRoots: async () => [], hasSession: async (s: string) => sessions.has(s), killSession: async (s: string) => sessions.delete(s) };
   const provisioner = { ensure: async (_full: string, short: string) => ({ bot: { userId: 100, email: short + '@offline' }, created: true }), subscribe: async () => {}, rename: async () => {}, deactivate: async () => {}, credsFor: () => ({ email: 'fake@offline', key: 'fake', site: 'https://offline' }) };
-  const launcher = { launch: async (r: { tmuxSession: string }) => { sessions.add(r.tmuxSession); return {}; } };
+  const launches: { model: string }[] = [];
+  const launcher = { launch: async (r: { tmuxSession: string; model: string }) => { launches.push(r); sessions.add(r.tmuxSession); return {}; } };
   const watcher = { transcriptPath: (id: string) => join(dir, 'transcripts', id) };
   const actions = new SpawnerActions({ config, registry, host, tmux, provisioner, launcher, watcher, notifier: {}, groupCheck: async () => false, realm: 'offline' } as any);
-  const run = async (body: string, topic = 't') => (await actions.run({ body, cmd: parseCommand(body), where: { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic }, invoker: { kind: 'user', userId: 1, name: 'Tester' } })).content;
-  return { dir, config, registry, actions, run, adoptCalls, workRoot: join(dir, 'hands') };
+  const run = async (body: string, topic = 't', userId = 1) => (await actions.run({ body, cmd: parseCommand(body), where: { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic }, invoker: { kind: 'user', userId, name: 'Tester' } })).content;
+  return { dir, config, registry, actions, run, adoptCalls, launches, workRoot: join(dir, 'hands') };
 }
 
 /** A stopped hand exactly as a pre-attestation spawner left it. */
@@ -228,4 +229,24 @@ test('refused adoption leaves folder permissions untouched', async () => {
   chmodSync(e.workDir!, 0o750);
   assert.match(await f.run('spawn opus-5-5 name=old'), /Refusing to adopt/);
   assert.equal(statSync(e.workDir!).mode & 0o777, 0o750);
+});
+
+// TASK-QD9M9: before the fix `spawn fable-5-2` stored and launched the raw
+// short name, which the CLI rejects on every message (Lynx `app-helper`).
+for (const spelling of ['fable-5-2', 'claude-fable-5-2']) test(`legacy raw model fable-5-2 revives as claude-fable-5-2 (spawn ${spelling})`, async () => {
+  const f = fixture({ creatorOnlyControls: true, allowedUsers: [1, 2] });
+  const e = await legacyHand(f, 'app-helper');
+  e.model = 'fable-5-2'; e.personaName = '[cc-fable-5-2] app-helper'; f.registry.save();
+  const before = { personaName: e.personaName, botUserId: e.botUserId, tmuxSession: e.tmuxSession, workDir: e.workDir };
+  // A collaborator (not creator/owner) may revive in strict mode: repairing
+  // the stored id is not a model change.
+  assert.match(await f.run(`spawn ${spelling} name=app-helper`, 't', 2), /Spawned|Revived/);
+  assert.equal(f.launches.at(-1)!.model, 'claude-fable-5-2', 'raw short name never reaches the CLI');
+  const revived = f.registry.all().at(-1)!;
+  assert.equal(revived.status, 'alive');
+  assert.equal(revived.model, 'claude-fable-5-2', 'stored model migrated');
+  assert.equal(revived.engine, 'claude');
+  assert.deepEqual({ personaName: revived.personaName, botUserId: revived.botUserId, tmuxSession: revived.tmuxSession, workDir: revived.workDir }, before);
+  assert.equal(revived.nameAliases, undefined, 'no rename for the same model');
+  assert.equal(readFileSync(join(e.workDir!, 'precious'), 'utf8'), 'legacy work');
 });
