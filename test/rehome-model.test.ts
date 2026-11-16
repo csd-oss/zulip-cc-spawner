@@ -930,8 +930,9 @@ test('Claude 2.1.323 end-to-end: explicit fable-5-2 matches versioned confirmati
   const f = live();
   f.state.panes = ['? for shortcuts', CLAUDE_323_CONFIRM, CLAUDE_323_CHANGED];
   assert.match((await f.run('model scout fable-5-2')).content, /without stopping/);
-  assert.equal(f.e.model, 'fable-5-2');
-  assert.deepEqual(f.texts, ['/model fable-5-2']);
+  // TASK-QD9M9: the short name resolves; the raw id never reaches the CLI.
+  assert.equal(f.e.model, 'claude-fable-5-2');
+  assert.deepEqual(f.texts, ['/model claude-fable-5-2']);
   assert.deepEqual(f.keys, [['Enter'], ['1']]);
 });
 

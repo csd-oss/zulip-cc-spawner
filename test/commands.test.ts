@@ -14,6 +14,70 @@ test('spawn resolves explicit model aliases and options', () => {
   assert.equal(resolveModel('Sonnet5.5'), 'claude-sonnet-5-5');
 });
 
+test('versioned family short names never reach the CLI raw (TASK-QD9M9)', () => {
+  for (const spelling of ['fable-5-2', 'fable5.2', 'Fable-5.2', 'fable52']) {
+    assert.equal(resolveModel(spelling), 'claude-fable-5-2', spelling);
+  }
+  assert.equal(MODEL_ALIASES['fable-5-2'], 'claude-fable-5-2');
+  // Unlisted future versions map generically instead of passing through.
+  assert.equal(resolveModel('fable-5-3'), 'claude-fable-5-3');
+  assert.equal(resolveModel('opus6'), 'claude-opus-6');
+  assert.equal(resolveModel('sonnet-6.1'), 'claude-sonnet-6-1');
+  assert.equal((parseCommand('spawn haiku-6 effort=high') as { model: string }).model, 'claude-haiku-6');
+  // Full ids, provider ids and non-Claude ids are untouched.
+  for (const id of ['claude-fable-5-2', 'gpt-5.5', 'us.anthropic.claude-opus-4-8', 'o3']) assert.equal(resolveModel(id), id);
+  assert.equal(parseCommand('spawn fable').kind, 'help');
+  // Generic ids share the capability rows with listed aliases.
+  assert.equal(modelCapability(resolveModel('fable-5-3')).label, modelCapability('claude-fable-5-2').label);
+  assert.match(modelsListing(), /`fable-5-2` → `claude-fable-5-2`/);
+  assert.match(modelsListing(), /never passed raw/);
+});
+
+test('multi-digit version components resolve unambiguously or are refused (TASK-QD9M9 review)', () => {
+  // Reviewer reproducer: never raw, never major 10 read as 1.0.
+  const spawned = (m: string) => parseCommand(`spawn ${m}`) as { kind: string; model?: string; error?: string };
+  for (const [input, expected] of [
+    ['fable-5-10', 'claude-fable-5-10'],
+    ['sonnet-10-1', 'claude-sonnet-10-1'],
+    ['fable5.10', 'claude-fable-5-10'],
+    ['Sonnet-10.1', 'claude-sonnet-10-1'],
+    ['opus10-2', 'claude-opus-10-2'],
+  ]) {
+    assert.deepEqual(spawned(input), { kind: 'spawn', model: expected, friendly: undefined, effort: undefined }, input);
+    assert.equal(resolveModel(input), expected, input);
+  }
+  // A glued digit run that is not a listed alias, and malformed versions, are refused before launch.
+  for (const input of ['opus10', 'opus11', 'fable510', 'sonnet12', 'sonnet-5-10-1', 'opus-5-', 'haiku-4-5-20251001']) {
+    const parsed = spawned(input);
+    assert.equal(parsed.kind, 'help', input);
+    assert.match(parsed.error ?? '', /(ambiguous|unsupported) model version/, input);
+    assert.notEqual(resolveModel(input), 'claude-opus-1-0', input);
+  }
+  // Compact spellings that already worked keep working.
+  for (const [input, expected] of [['fable52', 'claude-fable-5-2'], ['opus55', 'claude-opus-5-5'], ['opus-55', 'claude-opus-5-5'], ['opus6', 'claude-opus-6'], ['opus5-5', 'claude-opus-5-5']]) {
+    assert.equal(spawned(input).model, expected, input);
+  }
+  // Reviewer reproducer: a separated lone run is a literal major, never split into X.Y.
+  for (const [input, expected] of [
+    ['opus-11', 'claude-opus-11'],
+    ['sonnet-12', 'claude-sonnet-12'],
+    ['fable-21', 'claude-fable-21'],
+    ['haiku-99', 'claude-haiku-99'],
+    ['opus-10', 'claude-opus-10'],
+    ['fable-5-10', 'claude-fable-5-10'],
+    ['fable5.2', 'claude-fable-5-2'],
+  ]) {
+    assert.deepEqual(spawned(input), { kind: 'spawn', model: expected, friendly: undefined, effort: undefined }, input);
+    assert.equal((parseCommand(`model scout ${input}`) as { model?: string }).model, expected, input);
+  }
+  // Glued runs split only into listed aliases.
+  for (const [input, expected] of [['sonnet55', 'claude-sonnet-5-5'], ['haiku45', 'claude-haiku-4-5'], ['opus48', 'claude-opus-4-8']]) {
+    assert.equal(spawned(input).model, expected, input);
+  }
+  // Full ids with multi-digit versions pass through unchanged.
+  assert.equal(spawned('claude-opus-10').model, 'claude-opus-10');
+});
+
 test('spawn refuses bare families, bad names and unknown options', () => {
   assert.equal(parseCommand('spawn opus').kind, 'help');
   assert.match((parseCommand('spawn opus') as { error: string }).error, /refused/);
