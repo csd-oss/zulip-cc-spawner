@@ -1,0 +1,24 @@
+ │ scratch line 390
+ │ scratch line 391
+ │ scratch line 392
+ │ scratch line 393
+ │ scratch line 394
+ │ scratch line 395
+ │ scratch line 396
+ │ scratch line 397
+ │ scratch line 398
+ │ scratch line 399
+ │ END
+ │ rm -rf "$(printf %s /tmp/scratch/nonexistent)"
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on statically-unresolvable target: command
+ │ substitution output
+ ⚠ Claude Code will automatically block this request in 1:56, to avoid holding
+ up an unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

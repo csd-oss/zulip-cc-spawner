@@ -1,0 +1,24 @@
+   │ Worker: scheduler
+   │ Inputs:
+   │   name: sample
+   │   priority: normal
+   │   mode: preview
+   │ ---
+   │ Sample job definition
+   │ if ready:
+   │     prepare()
+   │ record()
+   │ End of example
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ About the layout — Preview Tool:
+ │ Display the sample text.
+
+ Permission rule mcp__layout__preview requires confirmation for this tool.
+ /permissions to update rules
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for layout — Preview commands in ~
+   3. No
+
+ Esc to cancel · Tab to amend

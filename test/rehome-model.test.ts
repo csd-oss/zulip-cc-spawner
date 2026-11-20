@@ -872,7 +872,7 @@ test('rename hints use current friendly name for stop, press and questions', asy
   assert.match((await f.run('press Guide esc')).content, /peek Guide/);
   f.state.escaped = false; f.state.capture = 0; f.state.panes = [PERMISSION_AFTER_MODEL];
   await f.run('rescan');
-  assert.match(f.posts.at(-1)!.content, /answer Guide 1/);
+  assert.match(f.posts.at(-1)!.content, /answer Guide <number>/);
   assert.match((await f.run('rescan')).content, /answer Guide/);
   assert.match((await f.run('stop Guide')).content, /name=Guide/);
 });

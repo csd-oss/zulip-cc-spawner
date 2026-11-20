@@ -1,0 +1,24 @@
+
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Local scratch-only permission prompt probe
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ cat <<'END'
+ │ scratch line 0
+ │ scratch line 1
+ │ scratch line 2
+ │ scratch line 3
+ │ scratch line 4
+ │ scratch line 5
+ │ END
+ │ rm -rf "$(printf %s /tmp/scratch/nonexistent)"
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on statically-unresolvable target: command
+ │ substitution output
+
+ Do you want to proceed?
+ ❯ 1. Yes, and tell Claude what to do next
+   2. No
+
+ Esc to cancel

@@ -1,0 +1,24 @@
+
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ │ Print a word and another word 0 and another word 1 and another word 2 and
+ │ another word 3 and another word 4 and another word 5 and another word 6 and
+ │ another word 7 and another word 8 and another word 9 and another word 10 and
+ │ another word 11 and another word 12 and another word 13 and another word 14
+ │ and another word 15 and another word 16 and another word 17 and another
+ │ word 18 and another word 19 and another word 20 and another word 21 and
+ │ another word 22 and another word 23 and another word 24 and another word 25
+ │ and another word 26 and another word 27 and another word 28 and another word
+ │ 29
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ printf reviewer
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Permission rule Bash requires confirmation for this command.
+ /permissions to update rules
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

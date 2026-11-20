@@ -1,0 +1,24 @@
+
+
+❯ Run the local scratch-only probe tool.
+
+  Clean up the temporary directory · from the test run
+  ⎿  $ rm -rf "$(printf %s /tmp/scratch/nonexistent)"
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Clean up the temporary directory · from the test run
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ rm -rf "$(printf %s /tmp/scratch/nonexistent)"
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on statically-unresolvable target: command
+ │ substitution output
+ ⚠ Claude Code will automatically block this request in 1:57, to avoid holding
+ up an unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

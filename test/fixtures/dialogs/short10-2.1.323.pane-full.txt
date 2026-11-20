@@ -1,0 +1,24 @@
+
+
+❯ Run the local scratch-only probe tool.
+
+  Local scratch-only permission prompt probe
+  ⎿  $ rm -rf "$(printf %s /tmp/scratch/nonexistent)"
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Local scratch-only permission prompt probe
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ rm -rf "$(printf %s /tmp/scratch/nonexistent)"
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on statically-unresolvable target: command
+ │ substitution output
+ ⚠ Claude Code will automatically block this request in 1:58, to avoid holding
+ up an unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

@@ -1,0 +1,28 @@
+
+           Claude Code v2.1.306
+           Sonnet 5.5 · API Usage Billing
+           /tmp/task-40kjf-fixture1
+
+
+❯ Run the local scratch-only probe tool.
+
+● Local scratch-only permission prompt probe
+  ⎿  $ rm -rf "$(printf %s /tmp/task-40kjf-fixture1/nonexistent)"
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Local scratch-only permission prompt probe
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ rm -rf "$(printf %s /tmp/task-40kjf-fixture1/nonexistent)"
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on statically-unresolvable target: command
+ │ substitution output
+ ⚠ Claude Code will automatically deny this request in 1:59, to avoid blocking
+ progress on an unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

@@ -7,8 +7,12 @@
  *  - `compact_boundary`: the context was compacted.
  *  - any change of the answering model.
  *  - open AskUserQuestion dialogs / permission prompts, detected from the tmux
- *    pane (an open dialog leaves no transcript trace; the tool_use/tool_result
- *    pair lands only on resolution), posted and resolved here.
+ *    pane, posted and resolved here. A Bash permission prompt is identified by
+ *    the one pending tool_use in the transcript that fits what it displays,
+ *    plus its rows from title to command box (see question.ts): the rest of
+ *    the pane redraws every second while its countdown runs, those do not.
+ *    A prompt the pane does not show from its title down is posted once, for
+ *    the terminal, and takes no answer from here.
  *
  * Transcripts are append-only JSONL, read from a persisted BYTE OFFSET through
  * the AgentHost (they belong to the agents user). Only complete lines advance
@@ -17,7 +21,7 @@
 import { join } from 'node:path';
 import type { AgentHost } from './host.js';
 import type { Notifier } from './notifier.js';
-import { dialogSig, formatQuestionPost, parseDialogPane, type PaneDialog, type PendingQuestion } from './question.js';
+import { dialogSig, formatQuestionPost, openToolUses, parseDialogPane, type OpenToolUse, type PaneDialog, type PendingQuestion } from './question.js';
 import type { BotEntry, Registry } from './registry.js';
 import type { Tmux } from './tmux.js';
 
@@ -37,6 +41,14 @@ const fmtTokens = (n: unknown): string =>
 
 /** How long a fallback event waits for the fallback model's first reply. */
 const FALLBACK_MODEL_WAIT_MS = 2 * 60_000;
+
+/** How much of the transcript's end is searched for pending tool_uses. One
+ *  turn's bookkeeping lines run to ~100 KB and the tool_use line follows them. */
+const TOOL_USE_TAIL_BYTES = 4 * 1024 * 1024;
+/** The tool_use line lands within ~50 ms of its dialog (measured on 2.1.306 /
+ *  2.1.323): look once more before settling for a pane-derived identity. */
+const TOOL_USE_SETTLE_MS = 500;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface PendingFallback {
   kind: 'refusal' | 'consent';
@@ -77,10 +89,64 @@ export class TranscriptWatcher {
     }
   }
 
+  /** The dialog on the hand's screen now, a Bash permission prompt tied to the
+   *  transcript tool_use it asks about. Sweep, rescan and the answer path all
+   *  read through here, so they agree on what "the same request" is. Rejects
+   *  when the screen cannot be read. */
+  async readDialog(entry: BotEntry): Promise<PaneDialog> {
+    return this.identify(entry, await this.screen(entry));
+  }
+
+  /** The hand's screen with its text attributes: in one capture, the rows and
+   *  which of them is set as a dialog's title (question.ts, dialogTitleRow). */
+  private screen(entry: BotEntry): Promise<string> {
+    return this.tmux.capturePane(entry.tmuxSession, 0, true);
+  }
+
+  /** `pane` only decides whether the transcript is needed at all. Reading it
+   *  takes time — two subprocesses on a split-user host — in which the prompt
+   *  can be answered at the terminal, expire, or give way to the next request.
+   *  So a permission prompt is always identified from a capture taken AFTER
+   *  that read: the caller gets the screen as it is once all our I/O is done,
+   *  never the one from before it. */
+  private async identify(entry: BotEntry, pane: string): Promise<PaneDialog> {
+    let dialog = parseDialogPane(pane);
+    for (let settled = false; ; settled = true) {
+      if (dialog.kind !== 'question' || dialog.q.kind !== 'permission') return dialog;
+      let open: OpenToolUse[] | undefined;
+      try {
+        open = await this.pendingToolUses(entry);
+      } catch (err) {
+        // A read that fails while a prompt identified with the transcript is
+        // posted says nothing about that prompt: leave it alone (no repost,
+        // no keys) until we can read. With nothing such posted the prompt is
+        // bridged by its rows, like one with no transcript.
+        const posted = entry.pendingQuestion?.questions[0];
+        if (posted?.toolUseId || posted?.lookalikes) throw new Error(`could not read its transcript (${(err as Error).message})`);
+      }
+      dialog = parseDialogPane(await this.screen(entry), open ?? []);
+      // The tool_use line can trail its dialog: look once more, then settle
+      // for the rows. Only the hand's own Bash prompt can be waiting for one.
+      if (dialog.kind !== 'question' || !dialog.awaitsToolUse || !open || settled) return dialog;
+      await sleep(TOOL_USE_SETTLE_MS);
+    }
+  }
+
+  /** Unresolved tool_uses from the transcript's tail; undefined without a transcript. */
+  private async pendingToolUses(entry: BotEntry): Promise<OpenToolUse[] | undefined> {
+    const path = this.transcriptPath(entry.sessionId, entry.workDir);
+    const size = await this.host.size(path);
+    if (size === undefined) return undefined;
+    const from = Math.max(0, size - TOOL_USE_TAIL_BYTES);
+    const tail = (await this.host.readFrom(path, from)).toString('utf8');
+    // Read from mid-file, the first line is cut short: drop it.
+    return openToolUses(from > 0 ? tail.slice(tail.indexOf('\n') + 1) : tail);
+  }
+
   private async checkDialog(entry: BotEntry): Promise<void> {
-    const pane = await this.tmux.capturePane(entry.tmuxSession).catch(() => '');
+    const pane = await this.screen(entry).catch(() => '');
     if (!pane) return;
-    const dialog = parseDialogPane(pane);
+    const dialog = await this.identify(entry, pane);
     if (dialog.kind === 'review') {
       // Only auto-confirm reviews of dialogs we drove from Zulip.
       if (entry.pendingQuestion) {
@@ -96,7 +162,8 @@ export class TranscriptWatcher {
         if (entry.pendingQuestion.messageId === undefined) await this.announceQuestion(entry, dialog);
         return;
       }
-      if (isPermission(entry)) await this.resolvePermission(entry);
+      // A different signature could be a refreshed snapshot (e.g. after an
+      // upgrade), not a terminal answer. Replace the post without resolving it.
       await this.announceQuestion(entry, dialog);
       return;
     }
@@ -107,11 +174,15 @@ export class TranscriptWatcher {
   private async resolvePermission(entry: BotEntry): Promise<void> {
     const pending = entry.pendingQuestion;
     if (!pending) return;
-    const q = pending.questions[0];
-    const how = pending.answeredWith ? `**${pending.answeredWith}** sent from Zulip` : 'answered in the terminal';
-    const denied = /^(no|deny|reject|esc)/i.test(pending.answeredWith ?? '');
-    const icon = pending.answeredWith ? (denied ? '🚫' : '✅') : 'ℹ️';
-    await this.post(entry, `${icon} **${entry.personaName}**'s permission prompt (${q.title ?? 'tool use'}) is resolved — ${how}.`);
+    if (pending.messageId) {
+      const q = pending.questions[0];
+      const denied = /^(no|deny|reject|esc)/i.test(pending.answeredWith ?? '');
+      const icon = pending.answeredWith ? (denied ? '🚫' : '✅') : 'ℹ️';
+      const status = pending.answeredWith
+        ? `is resolved — **${pending.answeredWith}** sent from Zulip`
+        : 'is no longer on screen';
+      await this.post(entry, `${icon} **${entry.personaName}**'s permission prompt (${q.title ?? 'tool use'}) ${status}.`);
+    }
     this.registry.update(entry, { pendingQuestion: undefined });
   }
 
@@ -210,7 +281,7 @@ export class TranscriptWatcher {
     this.registry.update(entry, patch);
   }
 
-  async announceQuestion(entry: BotEntry, dialog: PaneDialog & { kind: 'question' }): Promise<void> {
+  async announceQuestion(entry: BotEntry, dialog: PaneDialog & { kind: 'question' }): Promise<boolean> {
     const pending: PendingQuestion = {
       sig: dialogSig(dialog.q),
       postedAt: new Date().toISOString(),
@@ -221,6 +292,7 @@ export class TranscriptWatcher {
     const id = await this.notifier.postHome(entry, formatQuestionPost(entry, pending, this.spawnerName(), this.registry.commandTarget(entry)));
     if (id !== undefined) pending.messageId = String(id);
     this.registry.update(entry, { pendingQuestion: pending });
+    return id !== undefined;
   }
 
   /** `rescan`: re-check every hand's pane, (re)post what's open, clear stale state. */
@@ -228,24 +300,24 @@ export class TranscriptWatcher {
     const lines: string[] = [];
     for (const entry of this.registry.alive()) {
       if (entry.engine === 'codex') continue;
-      let pane: string;
+      let dialog: PaneDialog;
       try {
-        pane = await this.tmux.capturePane(entry.tmuxSession);
+        dialog = await this.readDialog(entry);
       } catch (err) {
         // An unreadable screen is not an empty one: don't resolve anything.
         lines.push(`**${entry.personaName}** — could not read its screen (${(err as Error).message}).`);
         continue;
       }
-      const dialog = parseDialogPane(pane);
       if (dialog.kind === 'question') {
         const sig = dialogSig(dialog.q);
         const what = dialog.q.kind === 'permission' ? 'permission prompt' : 'question';
         if (entry.pendingQuestion?.sig === sig && entry.pendingQuestion.messageId) {
-          lines.push(`**${entry.personaName}** — ${what} already posted, still waiting (\`answer ${this.registry.commandTarget(entry)} …\`).`);
+          const hint = dialog.q.requiresTerminal ? 'respond in the terminal' : `\`answer ${this.registry.commandTarget(entry)} …\``;
+          lines.push(`**${entry.personaName}** — ${what} already posted, still waiting (${hint}).`);
         } else {
-          if (isPermission(entry)) await this.resolvePermission(entry);
-          await this.announceQuestion(entry, dialog);
-          lines.push(`**${entry.personaName}** — open ${what} found, posted in its home topic.`);
+          const posted = await this.announceQuestion(entry, dialog);
+          const status = posted ? 'posted in its home topic' : 'could not post in its home topic; will retry';
+          lines.push(`**${entry.personaName}** — open ${what} found, ${status}.`);
         }
       } else if (dialog.kind === 'review') {
         await this.tmux.sendKeys(entry.tmuxSession, '1').catch(() => undefined);

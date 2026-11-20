@@ -1,0 +1,35 @@
+
+           Claude Code
+           v2.1.323
+ ▐▛███▛█   Sonnet 5.5
+▝▜██████▀  API Usage
+ ▝▝   ▝▝   Billing
+           /task-40kjf-2xr
+           2s_o6
+
+
+❯ Run the local
+  scratch-only probe
+  tool.
+
+● Second sample
+  ⎿  $ printf second
+
+──────────────────────────
+ Bash command      2 of 2
+ Second sample
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ printf second
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Permission rule Bash
+ requires confirmation
+ for this command.
+ /permissions to update
+ rules
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to
+ amend

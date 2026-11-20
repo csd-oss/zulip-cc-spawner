@@ -144,14 +144,14 @@ test('watcher: transcript events and dialogs are posted to the home topic', asyn
 
   t.panes.set(e.tmuxSession, PERMISSION_PANE);
   await w.sweep();
-  assert.match(posts.out.at(-1)!, /permission prompt.*@\*\*CC Spawner\*\* answer scout 1/s);
+  assert.match(posts.out.at(-1)!, /permission prompt.*@\*\*CC Spawner\*\* answer scout <number>/s);
   assert.equal(registry.all()[0].pendingQuestion?.questions[0].kind, 'permission');
   await w.sweep();
   const before = posts.out.length;
   t.panes.set(e.tmuxSession, '> idle');
   await w.sweep();
   assert.equal(posts.out.length, before + 1);
-  assert.match(posts.out.at(-1)!, /permission prompt .* is resolved — answered in the terminal/);
+  assert.match(posts.out.at(-1)!, /permission prompt .* is no longer on screen/);
   assert.equal(registry.all()[0].pendingQuestion, undefined);
 });
 
