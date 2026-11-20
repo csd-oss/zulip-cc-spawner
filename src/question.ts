@@ -36,11 +36,43 @@ import { canonicalHandTarget } from './names.js';
  * ONE RULE FOR ANSWERS: a prompt takes an answer from Zulip only when the pane
  * positively shows what is being approved — the dialog from its title down
  * (dialogTitleRow). Whatever the pane does not prove is not assumed: a prompt
- * whose start is not on screen is posted for the terminal, as far as it shows,
- * and no key goes to it from here, whether a pending call fits it or not. Such
- * a post is a notification; its identity — a fitting call's id, else its rows
- * with the expiry notice's clock set aside (dialogSig) — only keeps it from
- * being repeated, and is never what a key is sent on.
+ * whose start is not on screen takes no key from here, whether a pending call
+ * fits it or not. The watcher does not leave it at that: it makes the hand's
+ * pane taller until the dialog IS on screen from its title (transcript-watch,
+ * fit) — the TUI redraws the whole prompt, and from then on this is the same
+ * checked path as for a prompt that fitted to begin with. Only what still does
+ * not fit the tallest pane is posted as a notification; its identity — a
+ * fitting call's id, else its rows with the expiry notice's clock set aside
+ * (dialogSig) — only keeps it from being repeated, and is never what a key is
+ * sent on.
+ *
+ * WHICH OCCURRENCE IT IS. A key goes to the screen an answer finds only if that
+ * screen shows the very request that was posted — not one that reads the same.
+ * What says so (parsePermissionPane, `terminalWhy`):
+ *  - one pending call of the hand's transcript, the only one that fits the
+ *    dialog (`toolUseId`): the request is that call's;
+ *  - with no such call: the rows alone, as on PR #17 — and only for a prompt
+ *    with no countdown on its plain option list. Anything else that no call
+ *    identifies (several fitting calls; a prompt under a countdown, in its
+ *    text field or in the screen-reader layout) is posted and takes no key: a
+ *    request asked right after it would read the same.
+ * Two things that look like identity and are not:
+ *  - a countdown. Two requests asked a moment apart end a moment apart. It
+ *    only ever says "another one": expiryAllows;
+ *  - the place in the queue a title shows ("1 of 2"). It is the TUI's running
+ *    count of requests settled and open — subagents' among them — and starts
+ *    over when none is open, so the same place can come round for the next
+ *    request. It is part of the rows (a changed place is a changed screen),
+ *    never what tells two fitting calls apart.
+ *
+ * HOW A PROMPT TAKES ITS ANSWER is read off the screen as well (PendingQ.entry):
+ * the cursor list, where a digit selects and submits; the same list after Tab
+ * ("amend": the cursor row is a text field, a digit would be typed into it —
+ * Tab switches back); the screen-reader layout (the digit is typed, Enter
+ * submits). The latter two are answered in steps, only where a pending call
+ * identifies the request, and after every preparatory key the screen is read
+ * again: the next key goes out only if it still shows the same request
+ * (requestKey, expiryAllows) in the state that key is meant for.
  *
  * TUI mechanics (verified live against claude 2.1.241):
  *  - single-select: pressing the option digit selects AND submits immediately
@@ -60,11 +92,10 @@ import { canonicalHandTarget } from './names.js';
  * and an "Esc to cancel · Tab to amend" footer. A "No" yields an is_error
  * tool_result "The user doesn't want to proceed with this tool use…". Digits
  * select AND submit in the cursor list (the screen-reader layout wants digit
- * then Enter and is never driven from here). Resolution is observed pane-side
+ * then Enter: typed, checked on screen, then submitted — see injectAnswer). Resolution is observed pane-side
  * (the dialog disappears). A subagent's prompt ("Bash command · from the …
  * agent") has its tool_use in the subagent's own transcript, not the hand's.
  */
-import type { Tmux } from './tmux.js';
 import type { BotEntry } from './registry.js';
 
 /** The currently displayed question of a dialog, parsed from the pane. */
@@ -79,17 +110,38 @@ export interface PendingQ {
    *  With `shown`, the identity of the request. */
   toolUseId?: string;
   /** Several pending tool_uses fit what the dialog displays — which of them is
-   *  asking cannot be told from here. Never answered from Zulip. */
+   *  asking cannot be told from here: it takes no key. */
   lookalikes?: string[];
   /** The dialog's rows from its title (or the top of the pane) to the end of
    *  its command box, as displayed: queue position, description, command. */
   shown?: string;
-  /** No verified way to answer this from Zulip; use the terminal. */
+  /** No verified way to answer this from Zulip: no key is sent to it. */
   requiresTerminal?: boolean;
-  /** Why: `input` — not the cursor list, where a digit selects and submits;
-   *  `cut` — the pane does not show the dialog from its title down, so the
-   *  request, or whose it is, cannot be shown; `lookalike` — see `lookalikes`. */
-  terminalWhy?: 'input' | 'cut' | 'lookalike';
+  /** Why: `cut` — the pane does not show the dialog from its title down, so the
+   *  request, or whose it is, cannot be shown (and the pane could not be made
+   *  tall enough for it); `input` — it takes its answer in a way not known
+   *  here; `lookalike` — several pending calls fit it; `unbound` — no pending
+   *  call identifies it, and it is under a countdown or takes its answer in
+   *  several keys: a request asked after it that reads the same could not be
+   *  told from it; `layout` — it is on screen from its heading, with rows
+   *  between the request and its question that this layout is not known to
+   *  have (screen-reader layout). */
+  terminalWhy?: 'input' | 'cut' | 'lookalike' | 'unbound' | 'layout';
+  /** Permission prompts: how the dialog takes its answer, where that is known.
+   *  `list` — the cursor list: a digit selects and submits. `amend` — that
+   *  list after Tab: the cursor row is a text field, Tab switches back.
+   *  `reader` — the screen-reader layout: digits are typed, Enter submits. */
+  entry?: 'list' | 'amend' | 'reader';
+  /** `list` / `amend`: the number of the option the cursor is on. */
+  cursor?: number;
+  /** `reader`: what is in its input field now. */
+  typed?: string;
+  /** The expiry notice under the request ("Claude Code will automatically
+   *  block this request in 1:57, …"): which rows of `detail` it is, its clock
+   *  as displayed and in seconds (where it is exact; `about`: what a clock in
+   *  minutes comes to), and — stamped by whoever read the screen — the time
+   *  that makes it (ms since the epoch). */
+  expiry?: { rows: [number, number]; clock: string; seconds?: number; about?: number; at?: number };
   question: string;
   multiSelect: boolean;
   options: { label: string }[];
@@ -103,14 +155,39 @@ export interface PendingQuestion {
   sig: string;
   /** Relay id of the channel post presenting the dialog — the reply target. */
   messageId?: string;
+  /** Id of the last post of it, when it took several. An answer counts for
+   *  this dialog only if it was sent after all of it was in the topic. */
+  lastMessageId?: string;
   postedAt: string;
   /** The question currently on screen (dialogs are bridged screen by screen). */
   questions: PendingQ[];
   /** Tab-bar headers when the dialog has several parts (e.g. Scope, Size). */
   parts?: string[];
   /** What was sent from the channel (`answer`/`press`) — used to word the
-   *  resolution notice for permission prompts, which resolve pane-side. */
+   *  resolution notice for permission prompts, which resolve pane-side. Only
+   *  that: whether the post has had its answer is `answered`. */
   answeredWith?: string;
+  /** Keys of a checked answer (`answer`, not raw `press`) went to the prompt
+   *  this post presents. One post takes one answer; nothing sent later — raw
+   *  keys included — makes it take another. */
+  answered?: boolean;
+  /** The post shows only the head and the tail of a very long request. It is
+   *  not approved from Zulip on that: `show` posts all of it first. */
+  abridged?: boolean;
+  /** The run of the spawner that made this post (TranscriptWatcher.run). A
+   *  permission prompt's post takes an answer only in that run: one read back
+   *  from the registry — made before a restart, a crash or an upgrade, by a
+   *  build that may have shown less of the request than this one must, and
+   *  that may have sent keys on it without living to record them — authorizes
+   *  nothing, and the prompt is posted anew. Absent on older records. */
+  run?: string;
+  /** The pane of the hand's tmux session this was read from (its id). The
+   *  post is for the prompt in that pane: should the hand turn up in another,
+   *  that is another process asking, and the prompt is posted anew. */
+  pane?: string;
+  /** This post replaces one of the same prompt that takes no answer any more
+   *  (an earlier run's, or one for another pane). */
+  renewed?: boolean;
 }
 
 /** An assistant tool_use in the hand's transcript with no tool_result yet. */
@@ -157,7 +234,26 @@ const SEPARATOR_RE = /^─{6,}\s*$/;
 const BOX_BORDER_RE = /^╌{6,}\s*$/;
 const BOX_GUTTER_RE = /^ │(?: |$)/;
 const AX_PERMISSION_TITLE_RE = /^Permission Required: (.+)$/;
-const AX_PERMISSION_INPUT_RE = /^Select with numbers \[\d+-\d+\]\. Then Enter to submit or Escape to cancel:/;
+/** The hand's own Bash prompt as that heading names it, with its place in the
+ *  queue when several requests wait ("Bash command 1 of 4" — one space there;
+ *  a subagent's reads "Bash command · from the general-purpose agent 2 of 4"). */
+const AX_OWN_BASH_TITLE_RE = /^Bash command(?: \d+ of \d+)?$/;
+/** Rows of its own the TUI puts between a request and its question in the
+ *  screen-reader layout, besides the expiry notice (2.1.306, 2.1.323, a
+ *  request asked because of a permission rule). All a request supplies is
+ *  quoted there ("> …"), so a bare row is never the request's. */
+const AX_HINT_ROW_RE = /^\/permissions to update rules$/;
+const AX_PERMISSION_INPUT_RE = /^Select with numbers \[1-(\d+)\]\. Then Enter to submit or Escape to cancel:/;
+/** The cursor row once Tab has made it a text field: the first option as "Yes,
+ *  and tell Claude what to do next", the last as "No, and tell Claude what to
+ *  do differently", or "Yes, " / "No, " plus what was typed (the comma glued to
+ *  the next word on a narrow pane). An option in between that starts the same
+ *  ("2. Yes, and don't ask again for …") is that option, not a text field. */
+const amendedRow = (label: string, at: number, of: number): boolean => (at === 1 && /^Yes,/.test(label)) || (at === of && /^No,/.test(label));
+/** The expiry notice, whitespace removed (it wraps anywhere on a narrow pane). */
+const EXPIRY_NOTICE_RE = /^⚠ClaudeCodewillautomatically(?:block|deny)thisrequestin(\d+:\d\d|(?:about)?\d+(?:minutes?|seconds?)),toavoid(?:holdingup|blockingprogresson)anunattendedsession$/;
+/** A notice wraps over a few rows; more than this is not one. */
+const EXPIRY_MAX_ROWS = 8;
 
 const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
 const squeeze = (s: string): string => s.replace(/\s+/g, '');
@@ -378,7 +474,7 @@ interface Binding {
  * identity.
  *
  * The screen-reader layout is matched under its heading: description and
- * command lead the quoted block. It never takes answers (requiresTerminal).
+ * command lead the quoted block. It takes an answer only when tied.
  */
 function bindBash(
   prefix: string[],
@@ -393,7 +489,7 @@ function bindBash(
     return typeof d === 'string' && d.trim() ? [squeeze(d)] : [squeeze(DEFAULT_BASH_DESCRIPTION), ''];
   };
   if (ax) {
-    if (ax.title !== 'Bash command') return undefined;
+    if (!AX_OWN_BASH_TITLE_RE.test(ax.title)) return undefined;
     let end = ax.start;
     while (prefix[end]?.startsWith('>')) end++;
     const text = squeeze(prefix.slice(ax.start, end).map((row) => row.slice(1)).join(''));
@@ -424,6 +520,38 @@ function bindBash(
   return { fits: [...underTitle, ...fit(header, false)], titled: false, ...span };
 }
 
+/**
+ * The expiry notice of a prompt in an unattended session, where the rows above
+ * the question END in one: "⚠ Claude Code will automatically block this request
+ * in 1:57, to avoid holding up an unattended session" (2.1.306: "deny … to
+ * avoid blocking progress on …"; the screen-reader layout counts in "about 2
+ * minutes"). It is the TUI's own last word above its question, drawn after
+ * everything the request supplies — which is why only rows from `from` on are
+ * looked at: below the command box, or below the quoted block of the
+ * screen-reader layout (in a dialog with neither: below its title). Its
+ * clock ticks; nothing else about the request does. The TUI drops the notice
+ * at the first key the dialog gets.
+ */
+function expiryNotice(prefix: string[], from: number): { start: number; end: number; clock: string; seconds?: number; about?: number } | undefined {
+  let end = prefix.length;
+  while (end > from && !prefix[end - 1].trim()) end--;
+  for (let start = end - 1; start >= Math.max(from, end - EXPIRY_MAX_ROWS); start--) {
+    if (!/^ *⚠/.test(prefix[start])) continue;
+    const m = squeeze(prefix.slice(start, end).join('')).match(EXPIRY_NOTICE_RE);
+    if (!m) continue;
+    const exact = m[1].match(/^(\d+):(\d\d)$/);
+    const secs = m[1].match(/^(\d+)seconds?$/);
+    const seconds = exact ? Number(exact[1]) * 60 + Number(exact[2]) : secs ? Number(secs[1]) : undefined;
+    // "about 2 minutes", "about 30 seconds": no end time to be had from those.
+    const coarse = m[1].match(/(\d+)(m|s)[a-z]+$/);
+    return {
+      start, end, clock: m[1].replace(/^about/, 'about ').replace(/(\d)([a-z])/, '$1 $2'),
+      ...(seconds !== undefined ? { seconds } : coarse ? { about: Number(coarse[1]) * (coarse[2] === 'm' ? 60 : 1) } : {}),
+    };
+  }
+  return undefined;
+}
+
 /** Parse a captured tmux pane for an open tool-permission prompt, anchored at
  *  the bottom of the pane — the dialog's own question, options and footer are
  *  always its last rows, whatever the command above them contains. Shape:
@@ -440,6 +568,7 @@ function parsePermissionPane(lines: string[], bold: string[], open: OpenToolUse[
 
   const options: { label: string }[] = [];
   let cursors = 0;
+  let cursorAt = 0;
   let spaced = false;
   let i = qIdx + 1;
   while (i < end) {
@@ -454,7 +583,10 @@ function parsePermissionPane(lines: string[], bold: string[], open: OpenToolUse[
     if (m[1] !== String(options.length + 1)) return { kind: 'none' };
     if (next > i) spaced = true;
     i = next;
-    if (lines[i].trimStart().startsWith('❯')) cursors++;
+    if (lines[i].trimStart().startsWith('❯')) {
+      cursors++;
+      cursorAt = options.length + 1;
+    }
     let label = m[2].trim();
     i++;
     // A wrapped label continues on rows indented under it.
@@ -468,14 +600,30 @@ function parsePermissionPane(lines: string[], bold: string[], open: OpenToolUse[
   const tail = lines.slice(i, end).map((row) => row.trim()).filter(Boolean).join(' ').match(PERM_TAIL_RE);
   if (!tail) return { kind: 'none' };
   const [, instructions, footer] = tail;
-  const axInput = AX_PERMISSION_INPUT_RE.test(instructions);
+  const ax = instructions.match(AX_PERMISSION_INPUT_RE);
+  const axInput = !!ax;
   // Digits select-and-submit only in the cursor list, and a cursor alone does
   // not make one: after Tab the same list is a text field ("1. Yes, and tell
   // Claude what to do next") where a digit is typed into the amendment. The
-  // list's own footer hint is what tells them apart. Anything else — amending,
-  // the screen-reader "then Enter" input, unknown instructions, no single
-  // cursor — is posted for the terminal and never takes keys from here.
-  const digitList = instructions === '' && cursors === 1 && !spaced && options.length <= 9 && DIGIT_LIST_FOOTER_RE.test(footer);
+  // list's own footer hint is what tells them apart. The two other ways of
+  // taking an answer that are known here are told by what they show, too: the
+  // amended row under a footer without that hint, and the screen-reader
+  // layout's instruction line (with what is typed after it). Anything else —
+  // unknown instructions, no single cursor, more options than digits — takes
+  // no key from here.
+  const listed = instructions === '' && cursors === 1 && options.length <= 9;
+  const amendable = DIGIT_LIST_FOOTER_RE.test(footer);
+  // What is in the screen-reader input: shown after the instruction, one
+  // space on. Anything else there — a field with blanks in it, which cannot be
+  // counted from here — is not an input this is known to read (`fieldRead`).
+  const field = ax ? instructions.slice(ax[0].length) : '';
+  const typed = field.trim();
+  const fieldRead = field === '' || (field === ` ${typed}` && !/\s/.test(typed));
+  const input: PendingQ['entry'] =
+    listed && !spaced && amendable ? 'list'
+    : listed && !amendable && amendedRow(options[cursorAt - 1].label, cursorAt, options.length) ? 'amend'
+    : ax && cursors === 0 && !spaced && options.length <= 9 && Number(ax[1]) === options.length && typed.length <= 4 && fieldRead ? 'reader'
+    : undefined;
 
   // A heading-like row can be body text. Only the matching input layout
   // warrants cutting off the prefix; keep it when a boundary isn't clear.
@@ -490,17 +638,45 @@ function parsePermissionPane(lines: string[], bold: string[], open: OpenToolUse[
   const titleAt = axInput ? undefined : dialogTitleRow(prefix, frame, bold[0] ?? '');
   const titleIdx = axInput ? (headings.length === 1 ? headings[0] : -1) : titleAt ?? -1;
   const title = titleIdx >= 0 ? (axInput ? prefix[titleIdx].match(AX_PERMISSION_TITLE_RE)![1] : prefix[titleIdx].trim()) : undefined;
+  // The screen-reader layout quotes all the request supplies ("> …" rows, also
+  // where one wraps); the expiry notice may follow that block.
+  let quoted = titleIdx + 1;
+  if (axInput) while (prefix[quoted]?.startsWith('>')) quoted++;
+  // Looked for where the layout says which rows the request supplied: under
+  // the command box, or under that quoted block. A dialog with neither is
+  // searched from its title: no pending call is ever tied to such a one, so
+  // rows that end like the notice can only make it a prompt that takes no key.
+  const notice = expiryNotice(prefix, axInput ? quoted : frame ? frame.bottom + 1 : titleIdx + 1);
+  // Shown from its start: the title row is proven. For the screen-reader
+  // layout that is its one heading — and what stands between it and the
+  // question must be that block, the notice and the TUI's known hint rows:
+  // any other row there is a layout not known here (`strange`), which is not
+  // the same as a prompt whose top is off screen.
+  const proven = axInput ? titleIdx >= 0 : titleAt !== undefined;
+  const strange = axInput && proven &&
+    !prefix.slice(quoted).every((row, j) => !row.trim() || AX_HINT_ROW_RE.test(row) || (notice !== undefined && quoted + j >= notice.start && quoted + j < notice.end));
 
   const bound = bindBash(prefix, frame, axInput && titleIdx >= 0 ? { title: title!, start: titleIdx + 1 } : undefined, open, titleAt);
   const tie = bound?.fits.length === 1 ? bound.fits[0] : undefined;
   const lookalikes = bound && bound.fits.length > 1 ? bound.fits.map((u) => u.id) : undefined;
-  // An answer from Zulip needs the right input mode, and a post that shows
-  // what is being approved: the dialog from its proven title down. That holds
-  // for every prompt, whether or not a pending call is offered as its
-  // identity; and such a call must be the only one that fits.
-  const terminalWhy = !digitList ? 'input'
-    : titleAt === undefined || (tie && !bound!.titled) ? 'cut'
+  // An answer from Zulip needs a post that shows what is being approved — the
+  // dialog from its proven title down — a known way of giving it, and a screen
+  // that can later be told to show this request and not one like it:
+  //  - one fitting call identifies it;
+  //  - several fitting calls each read exactly like the dialog, and nothing on
+  //    screen says which of them is asking — not the place in the queue either
+  //    (see the top of this file). Under bypass they are asked one after the
+  //    other, the first still pending while the second asks;
+  //  - with no fitting call it is its rows, as it always was — for a prompt on
+  //    its plain option list with no countdown. Under a countdown the rows
+  //    change every second, and the clock cannot stand in for them
+  //    (expiryAllows); the text field and the screen-reader layout take
+  //    several keys, each of which needs the request identified afresh.
+  const terminalWhy: PendingQ['terminalWhy'] = !proven || (tie && !bound!.titled) ? 'cut'
+    : strange ? 'layout'
+    : !input ? 'input'
     : lookalikes ? 'lookalike'
+    : !tie && (notice || input !== 'list') ? 'unbound'
     : undefined;
   return {
     kind: 'question',
@@ -516,6 +692,13 @@ function parsePermissionPane(lines: string[], bold: string[], open: OpenToolUse[
       multiSelect: false,
       options,
       ...(terminalWhy ? { requiresTerminal: true, terminalWhy } : {}),
+      ...(input ? { entry: input } : {}),
+      ...(input && input !== 'reader' ? { cursor: cursorAt } : {}),
+      ...(input === 'reader' && typed ? { typed } : {}),
+      ...(notice ? { expiry: {
+        rows: [notice.start - titleIdx - 1, notice.end - titleIdx - 1] as [number, number], clock: notice.clock,
+        ...(notice.seconds !== undefined ? { seconds: notice.seconds } : {}), ...(notice.about !== undefined ? { about: notice.about } : {}),
+      } } : {}),
     },
     ...(bound && bound.fits.length === 0 ? { awaitsToolUse: true } : {}),
   };
@@ -592,32 +775,104 @@ export function parseDialogPane(pane: string, open: OpenToolUse[] = []): PaneDia
   };
 }
 
+/** How a prompt takes its answer, as far as it is part of what a post says:
+ *  nothing for the cursor list (so that its identity reads as it always did). */
+const inputKey = (q: PendingQ): string[] => (q.entry && q.entry !== 'list' ? [q.entry, ...(q.typed ? [q.typed] : [])] : []);
+
 /** Identity of a displayed question: a changed sig means a different request
- *  (or the dialog's next part) is on screen. */
+ *  (or the dialog's next part) is on screen — or the same one taking its
+ *  answer differently now (after Tab at the terminal, say). */
 export function dialogSig(q: PendingQ): string {
   // The options stay in every form: an answer is a key number, and it must
   // mean what the post said it means.
+  const labels = q.options.map((o) => o.label);
   // Tied: the pending call plus the dialog's rows from title to the end of its
   // box — queue position and description included, the reason and countdown
   // under the box not.
-  if (q.toolUseId) return JSON.stringify(['tool_use', q.toolUseId, q.shown, q.question, q.options.map((o) => o.label), !!q.requiresTerminal]);
+  if (q.toolUseId) return JSON.stringify(['tool_use', q.toolUseId, q.shown, q.question, labels, !!q.requiresTerminal, ...inputKey(q)]);
   // Several calls fit: no request is identified, the set only keeps this
-  // terminal-only post from being repeated while a countdown ticks.
-  if (q.lookalikes) return JSON.stringify(['tool_uses', q.lookalikes, q.shown, q.question, q.options.map((o) => o.label)]);
+  // post — which takes no key — from being repeated while a countdown ticks.
+  if (q.lookalikes) return JSON.stringify(['tool_uses', q.lookalikes, q.shown, q.question, labels]);
   if (q.kind === 'permission' && q.requiresTerminal) {
     // A notification, not a request anyone can answer from here: it is the
     // same notification while the rows read the same, the clock of an expiry
     // notice aside. (Two requests that differ in nothing else on screen get
     // one post; no key is sent on the strength of this.)
     const detail = maskExpiryClock(q.detail ?? '', q.terminalWhy === 'cut');
-    return JSON.stringify(['permission', 'terminal', q.terminalWhy, q.title, detail, q.question, q.options.map((o) => o.label)]);
+    return JSON.stringify(['permission', 'terminal', q.terminalWhy, q.title, detail, q.question, labels]);
   }
   if (q.kind === 'permission') {
-    // Not tied to a tool_use: every row above the question is the identity
-    // (unambiguous even with delimiter-like content) — a countdown included.
-    return JSON.stringify(['permission', q.title, q.detail, q.question, q.options.map((o) => o.label), false]);
+    // Not tied to a tool_use, and answered: every row above the question is
+    // the identity (unambiguous even with delimiter-like content). Such a
+    // prompt has no countdown and is on its option list (parsePermissionPane).
+    return JSON.stringify(['permission', q.title, q.detail, q.question, labels, false]);
   }
   return [q.kind ?? 'question', q.title ?? '', q.detail ?? '', q.question, ...q.options.map((o) => o.label)].join('§');
+}
+
+/**
+ * Identity of the REQUEST a permission prompt shows, whichever way it takes
+ * its answer just now. An answer given in steps (leave the amend field, then
+ * pick; type the digit, then Enter) sends each further key only to a screen
+ * with the same requestKey as the one the first key went to. Steps are taken
+ * only where a pending call identifies the request, so that is what the key
+ * is made of there. The option labels
+ * count, too; only the row Tab turned into a text field reads by its first
+ * word ("Yes, and tell Claude what to do next" is "Yes").
+ */
+export function requestKey(q: PendingQ): string {
+  if (q.kind !== 'permission') return dialogSig(q);
+  const labels = q.options.map((o, i) => (q.entry === 'amend' && i + 1 === q.cursor ? o.label.split(',')[0] : o.label));
+  const what = q.toolUseId ? ['tool_use', q.toolUseId, q.shown]
+    : q.lookalikes ? ['tool_uses', q.lookalikes, q.shown]
+    // By its rows: all of them (a prompt answered on its rows has no notice
+    // among them; one that has is told from it by exactly that).
+    : ['permission', q.title, q.detail];
+  return JSON.stringify([...what, q.question, labels]);
+}
+
+/** Two readings of one countdown agree on when it ends to within this. The
+ *  clock shows whole seconds and a reading takes a moment. */
+const EXPIRY_SLACK_MS = 3000;
+
+/**
+ * Could a prompt whose expiry notice read `was` be the one whose notice reads
+ * `now`? This only ever REFUSES. Two readings that agree prove nothing: a
+ * request asked right after another counts down a moment behind it (measured:
+ * twins under bypass end 130 ms apart), and a clock in whole minutes agrees
+ * with nearly anything. What they can show is that a request was asked again —
+ * each prompt starts a countdown of its own:
+ *  - the countdown ends at another time than it did;
+ *  - a clock in minutes reads more than it did;
+ *  - a notice is there that was not. The TUI drops the notice at the first key
+ *    a dialog gets and does not bring it back; a prompt read without one does
+ *    not grow one. (So a prompt recorded by a build that did not read the
+ *    notice is posted anew once, under its countdown.)
+ */
+export function expiryAllows(was: PendingQ['expiry'], now: PendingQ['expiry']): boolean {
+  if (!now) return true;
+  if (!was) return false;
+  if (was.at !== undefined && now.at !== undefined) return Math.abs(was.at - now.at) <= EXPIRY_SLACK_MS;
+  if (was.about !== undefined && now.about !== undefined) return now.about <= was.about;
+  // An exact clock after one in minutes is the same countdown further on; the
+  // other way round it is not.
+  return was.about !== undefined || now.about === undefined;
+}
+
+/**
+ * Is `now` the dialog `posted` presents? Its identity must be the same: the
+ * pending call that identifies it, or — for a prompt with none, no countdown,
+ * on its option list — its rows (dialogSig). A countdown is no part of that;
+ * it can only tell that the request was asked again (expiryAllows).
+ */
+export function sameDialog(posted: Pick<PendingQuestion, 'sig' | 'questions'>, now: PendingQ): boolean {
+  return dialogSig(now) === posted.sig && expiryAllows(posted.questions[0]?.expiry, now.expiry);
+}
+
+/** Note on a dialog read just now when its countdown ends. */
+export function stampExpiry<D extends PaneDialog>(dialog: D, readAt = Date.now()): D {
+  if (dialog.kind === 'question' && dialog.q.expiry?.seconds !== undefined) dialog.q.expiry.at = readAt + dialog.q.expiry.seconds * 1000;
+  return dialog;
 }
 
 const EXPIRY_PREFIX_RE = /(?:^|\n) *⚠\s+Claude\s+Code\s+will\s+automatically\s+(?:block|deny)\s+this\s+request\s+in\s+$/;
@@ -644,12 +899,26 @@ function maskExpiryClock(detail: string, cut: boolean): string {
 
 const POST_BUDGET = 9000; // Zulip's limit is 10000
 
+/** A dialog as topic posts: what to send, in order, and whether that shows
+ *  only part of the request (PendingQuestion.abridged). */
+export interface QuestionPosts {
+  posts: string[];
+  abridged: boolean;
+}
+
 /** Render the dialog as a topic post. Explicit about the one thing observers
  *  get wrong: the hand cannot read Zulip right now — talking to it in natural
  *  language goes nowhere; answers must go through the spawner. */
 export function formatQuestionPost(entry: BotEntry, pending: PendingQuestion, spawner: string, target = canonicalHandTarget(entry)): string {
+  return formatQuestionPosts(entry, pending, spawner, target).posts[0];
+}
+
+/** The same, as every post it takes: a permission prompt is shown whole, over
+ *  several posts when it is long. A very long one is posted as its two ends
+ *  unless `full` — then all of it, however many posts that is. */
+export function formatQuestionPosts(entry: BotEntry, pending: PendingQuestion, spawner: string, target = canonicalHandTarget(entry), full = false): QuestionPosts {
   const q = pending.questions[0];
-  if (q.kind === 'permission') return formatPermissionPost(entry, q, spawner, target);
+  if (q.kind === 'permission') return formatPermissionPosts(entry, q, spawner, target, full, pending.renewed === true);
   const partsNote =
     pending.parts && pending.parts.length > 1
       ? `\n*(part of a ${pending.parts.length}-question dialog — ${pending.parts.join(', ')} — I'll post each part as it comes up)*`
@@ -661,46 +930,144 @@ export function formatQuestionPost(entry: BotEntry, pending: PendingQuestion, sp
   ];
   for (const [i, opt] of q.options.entries()) parts.push(`> ${i + 1}. **${opt.label}**`);
   const post = parts.join('\n');
-  return post.length > POST_BUDGET ? post.slice(0, POST_BUDGET - 1) + '…' : post;
+  return { posts: [post.length > POST_BUDGET ? post.slice(0, POST_BUDGET - 1) + '…' : post], abridged: false };
 }
 
-const DETAIL_BUDGET = 4000;
+/** A request that takes more posts than this is posted as its two ends, and
+ *  in full on `show`. */
+const UNASKED_POSTS = 2;
+/** Of an abridged request: this much of its start and of its end. */
+const ABRIDGED_END = 2400;
+/** A post of a request's rows has at least this much room for them, or the
+ *  request is not posted whole at all. */
+const MIN_ROWS_ROOM = 2000;
 
 /** Why a prompt is not answered from Zulip, for its post. */
-const TERMINAL_ONLY: Record<NonNullable<PendingQ['terminalWhy']>, string> = {
-  input: 'This permission prompt requires terminal input; use the terminal to respond.',
-  cut: "The top of this prompt is off the hand's screen — its terminal is too short for it — so I cannot show the whole request or whose it is, and will not pass on an answer to it. " +
-    'What follows is only the part on screen. This permission prompt requires terminal input; read it and respond there.',
-  lookalike: 'Several pending requests of this hand look exactly like this one, so I cannot tell which of them is asking and will not pass on an answer. ' +
-    'This permission prompt requires terminal input; respond there.',
-};
+function terminalOnly(q: PendingQ): string {
+  const no = 'This permission prompt requires terminal input.';
+  switch (q.terminalWhy) {
+    case 'cut':
+      return "The top of this prompt is off the hand's screen — its terminal is too short for it, and I could not make it tall enough — so I cannot show the whole request or whose it is, " +
+        `and will not pass on an answer to it. What follows is only the part on screen. ${no}`;
+    case 'lookalike':
+      return `${q.lookalikes?.length ?? 'Several'} pending requests of this hand read exactly like this one, and nothing on its screen says which of them is asking. ` +
+        `An answer could reach another of them than the one you see, so I will not pass one on. ${no} ` +
+        'Once only one of them is left pending I can tell it, and post it to be answered.';
+    case 'unbound': {
+      const how = q.expiry ? "it is under Claude Code's countdown"
+        : q.entry === 'amend' ? 'someone at its terminal switched it to its text field (Tab), which takes an answer in two keys'
+        : 'the hand runs the screen-reader layout, which takes an answer in two keys';
+      return `No pending call of the hand identifies this request (I can tie only its own Bash requests to one, and need its transcript for that), and ${how}: ` +
+        `a request asked after it that reads the same could not be told from this one, so I will not pass on an answer. ${no}`;
+    }
+    case 'layout':
+      return 'Between this request and its question the screen shows rows I do not know from this layout, so I cannot be sure what is being asked ' +
+        `and will not pass on an answer to it. What follows is what its screen shows. ${no}`;
+    default:
+      return `This prompt takes its answer in a way I do not know — not the option list, its text field or the screen-reader input — so I will not send it keys: ${no[0].toLowerCase()}${no.slice(1)}`;
+  }
+}
+
+/** Rows as a code block that shows them to the letter: fenced by more
+ *  backticks than any run of them in the rows, so that no row ends the block
+ *  and none has to be changed to keep it from doing so. */
+function fenced(rows: string[], ticks: number): string {
+  const fence = '`'.repeat(ticks);
+  return `${fence}\n${rows.join('\n')}\n${fence}`;
+}
 
 /** A tool permission prompt: show the command/diff and how to use its options. */
-function formatPermissionPost(entry: BotEntry, q: PendingQ, spawner: string, target = canonicalHandTarget(entry)): string {
-  // Too long for a post: keep both ends — what a command finally does is as
-  // often at its tail as at its head — and say what is missing.
-  const block = (text: string, budget: number) => {
-    const head = Math.floor(budget * 0.6);
-    const cut = text.length > budget
-      ? `${text.slice(0, head)}\n[… ${text.length - budget} characters not shown here — see the terminal …]\n${text.slice(head - budget)}`
-      : text;
-    return '```\n' + cut.replace(/```/g, "'''") + '\n```';
-  };
+function formatPermissionPosts(entry: BotEntry, q: PendingQ, spawner: string, target: string, full: boolean, renewed: boolean): QuestionPosts {
   const detail = (q.detail ?? '').replace(/^\n+/, '').trimEnd();
-  const parts: string[] = [
-    `🔐 **${entry.personaName}** is waiting on a permission prompt — its session is **blocked on a dialog and cannot see Zulip**. 🤖 Natural-language replies will NOT reach it (other models included).`,
-    q.requiresTerminal
-      ? TERMINAL_ONLY[q.terminalWhy ?? 'input']
-      : `Answer with the displayed option number: \`@**${spawner}** answer ${target} <number>\`. In this topic, \`@**${spawner}** <number>\` is enough. Use \`esc\` to dismiss.`,
-    `**${collapse(q.title ?? 'Permission request')}**`,
-  ];
+  const rows = detail ? detail.split('\n') : [];
   // As the terminal showed it when this was posted — a countdown in it counts
   // from the post's time. Nothing here comes from the hand's transcript.
-  if (detail) parts.push(block(detail, DETAIL_BUDGET));
-  parts.push(`**${q.question}**`);
-  for (const [i, opt] of q.options.entries()) parts.push(`> ${i + 1}. **${opt.label}**`);
-  const post = parts.join('\n');
-  return post.length > POST_BUDGET ? post.slice(0, POST_BUDGET - 1) + '…' : post;
+  let ticks = 3;
+  for (const run of detail.match(/`{3,}/g) ?? []) ticks = Math.max(ticks, run.length + 1);
+  const fence = (part: string[]) => fenced(part, ticks);
+  const show = `\`@**${spawner}** show ${target}\``;
+  const answer = `Answer with the displayed option number: \`@**${spawner}** answer ${target} <number>\`. In this topic, \`@**${spawner}** <number>\` is enough. Use \`esc\` to dismiss.`;
+  const options = [`**${q.question}**`, ...q.options.map((opt, i) => `> ${i + 1}. **${opt.label}**`)];
+  // The notice in the request counts from the post's time; this says when that is.
+  if (q.expiry && !q.requiresTerminal) {
+    const when = q.expiry.at !== undefined ? ` — <time:${new Date(q.expiry.at).toISOString().replace(/\.\d+Z$/, 'Z')}>` : '';
+    options.push(`⏳ Claude Code refuses this request by itself in ${q.expiry.clock}${when}. An answer after that is not passed on.`);
+  }
+  const blocked = `🔐 **${entry.personaName}** is waiting on a permission prompt — its session is **blocked on a dialog and cannot see Zulip**. 🤖 Natural-language replies will NOT reach it (other models included).`;
+  const title = `**${collapse(q.title ?? 'Permission request')}**`;
+  // Posted again (PendingQuestion.renewed): say so, or the topic shows one
+  // request twice with no word on which post counts.
+  const again = renewed && !q.requiresTerminal
+    ? ['♻️ This replaces an earlier post of this request, which takes no answer any more: I was restarted since it was made, or the hand has moved to another terminal pane.']
+    : [];
+  const how: string[] = [];
+  if (q.requiresTerminal) {
+    how.push(`${terminalOnly(q)} ${show} reads its screen again.`);
+  } else {
+    how.push(...again, answer);
+    if (q.entry === 'amend') {
+      how.push('Someone at its terminal switched this prompt to its text field (Tab). An answer from here switches it back first — whatever was typed there is dropped — and then picks the option.');
+    } else if (q.entry === 'reader') {
+      how.push(`This hand runs the screen-reader layout: I type the number, check that it shows, then send Enter.${q.typed ? ` Its input field holds \`${q.typed}\` now; I clear that first.` : ''}`);
+    }
+  }
+
+  // The request whole, over as many posts as it takes. Every post is sized
+  // with all that goes around its rows, so none is ever cut to fit: what such
+  // a post shows is the request to the letter. Undefined when that cannot be
+  // done (a row longer than a post has room for).
+  const whole = (): string[] | undefined => {
+    const one = [blocked, ...how, title, ...(rows.length ? [fence(rows)] : []), ...options].join('\n');
+    if (one.length <= POST_BUDGET) return [one];
+    const first = [blocked, ...how, '*This request takes 9999 messages; its options are at the end of the last one.*', title].join('\n').length + 1;
+    const next = `🔐 **${entry.personaName}**'s permission request, continued (9999/9999):`.length + 1;
+    const tail = [...options, ...(q.requiresTerminal ? [] : [answer])].join('\n').length + 1;
+    const room = POST_BUDGET - Math.max(first, next) - tail - 2 * (ticks + 1);
+    if (room < MIN_ROWS_ROOM) return undefined;
+    const chunks: string[][] = [[]];
+    let size = 0;
+    for (const row of rows) {
+      if (row.length + 1 > room) return undefined;
+      if (size + row.length + 1 > room) {
+        chunks.push([]);
+        size = 0;
+      }
+      chunks.at(-1)!.push(row);
+      size += row.length + 1;
+    }
+    const total = chunks.length;
+    return chunks.map((chunk, i) =>
+      [
+        ...(i === 0
+          ? [blocked, ...how, `*This request takes ${total} messages; its options are at the end of the last one.*`, title]
+          : [`🔐 **${entry.personaName}**'s permission request, continued (${i + 1}/${total}):`]),
+        fence(chunk),
+        ...(i === total - 1 ? [...options, ...(q.requiresTerminal ? [] : [answer])] : []),
+      ].join('\n'));
+  };
+  const posts = whole();
+  if (posts && posts.every((post) => post.length <= POST_BUDGET) && (full || posts.length <= UNASKED_POSTS)) return { posts, abridged: false };
+
+  // Its two ends, in one post. Nothing is approved on that (actions.answer).
+  const first: string[] = [];
+  const last: string[] = [];
+  for (let n = 0, i = 0; i < rows.length && n + rows[i].length < ABRIDGED_END; n += rows[i++].length + 1) first.push(rows[i]);
+  for (let n = 0, i = rows.length - 1; i >= first.length && n + rows[i].length < ABRIDGED_END; n += rows[i--].length + 1) last.unshift(rows[i]);
+  const hidden = rows.length - first.length - last.length;
+  const why = q.requiresTerminal ? how
+    : posts ? [
+      ...again,
+      `This request is too long to post unasked (${rows.length} rows): below are its first and last rows. ${show} posts all of it, in ${posts.length} messages, ` +
+        `and I pass on an approval only after that. \`@**${spawner}** answer ${target} esc\` dismisses it as it is.`,
+    ]
+    : [
+      ...again,
+      `This request cannot be posted whole (it has a row too long for a message): below are its first and last rows, and I pass on no approval of it. ` +
+        `\`@**${spawner}** answer ${target} esc\` dismisses it as it is.`,
+    ];
+  const clip = (post: string) => (post.length > POST_BUDGET ? post.slice(0, POST_BUDGET - 1) + '…' : post);
+  const gap = posts ? `*… ${hidden} rows not shown here — ${show} posts them …*` : `*… ${hidden} rows not shown here …*`;
+  return { posts: [clip([blocked, ...why, title, ...(first.length ? [fence(first)] : []), gap, ...(last.length ? [fence(last)] : []), ...options].join('\n'))], abridged: true };
 }
 
 // ── Answer parsing ──
@@ -756,12 +1123,31 @@ export function parseAnswerSpec(body: string, q: PendingQ): ParsedAnswer {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const KEY_SETTLE_MS = 350;
 
-/** Keys reached the terminal and then a later one failed: the answer was
- *  neither delivered nor withheld. `sent` is what did go. */
+/** Keys reached the terminal and then the answer stopped short: a later key
+ *  failed, or the screen no longer showed what the next key was meant for. The
+ *  answer was neither delivered nor withheld. `sent` is what did go; `now` is
+ *  the dialog read after it, where there was a look. */
 export class PartialAnswerError extends Error {
-  constructor(message: string, readonly sent: string[]) {
+  constructor(message: string, readonly sent: string[], readonly now?: PaneDialog) {
     super(message);
   }
+}
+
+/** No key was sent: the screen does not show the dialog the answer is for.
+ *  `now` is what it shows instead, for posting. */
+export class DialogChangedError extends Error {
+  constructor(message: string, readonly now: PaneDialog) {
+    super(message);
+  }
+}
+
+/** The terminal an answer is given to: what its screen shows now, and keys to
+ *  the very pane that was looked at (TranscriptWatcher.terminal). */
+export interface DialogTerminal {
+  read(): Promise<PaneDialog>;
+  sendKeys(...keys: string[]): Promise<void>;
+  /** Literal text. */
+  sendText(text: string): Promise<void>;
 }
 
 /**
@@ -770,52 +1156,117 @@ export class PartialAnswerError extends Error {
  * key, so a throw means nothing was sent (PartialAnswerError apart). The
  * transcript watcher provides the ground-truth confirmation (the tool_use +
  * tool_result pair lands when the whole dialog resolves) — this only pushes
- * keys. `read` returns the dialog on screen now, identified the same way the
- * posted one was (the watcher's reader ties Bash prompts to the transcript and
- * looks at the screen last, after its transcript I/O); nothing but this
- * comparison stands between that look and the key.
+ * keys. `term.read` returns the dialog on screen now, identified the same way
+ * the posted one was (the watcher's reader ties Bash prompts to the transcript
+ * and looks at the screen last, after its transcript I/O); nothing but this
+ * comparison stands between that look and the key, and the key goes to the
+ * pane that look was taken from (by its id).
+ *
+ * A permission prompt that is not on its cursor list is answered in steps
+ * (PendingQ.entry): Tab out of the amend field, or clear and type into the
+ * screen-reader input — and then, with the screen read again and showing the
+ * same request in the state the next key is for, the key that answers. "The
+ * same request" is the pending call that identifies it (steps are not taken
+ * without one), and nothing about its expiry notice may say otherwise: a key
+ * makes the notice go away, so one that is there afterwards and was not
+ * before — or ends at another time — belongs to a request asked since
+ * (expiryAllows). A step that does not get
+ * there stops the answer (PartialAnswerError): what went out by then is a
+ * Tab, backspaces or an unsubmitted digit, never a choice, and what the
+ * screen shows instead is handed back for posting. EVERY key after the first
+ * is such a step — clearing the screen-reader input, too, goes one character
+ * at a time, each backspace sent only to a screen that shows the same request
+ * with exactly the input the backspace before it left.
+ *
+ * `onKeys` is called once, just before the first key goes out — after the
+ * last look at the screen, so it must do nothing that takes time.
  *
  * Once the keys are out they are out: failing to look at the screen
  * afterwards is reported as a note on a sent answer, never as a failure to
  * deliver it.
  */
 export async function injectAnswer(
-  tmux: Tmux,
-  tmuxSession: string,
+  term: DialogTerminal,
   expected: PendingQuestion,
   parsed: ParsedAnswer,
-  read: () => Promise<PaneDialog> = async () => parseDialogPane(await tmux.capturePane(tmuxSession, 0, true)),
+  onKeys?: () => void,
 ): Promise<string | undefined> {
+  const read = () => term.read();
   const dialog = await read();
   if (dialog.kind === 'none') {
-    throw new Error(
+    throw new DialogChangedError(
       'no question dialog is on screen (already answered in the terminal, or the session moved on) — `rescan` to refresh',
+      dialog,
     );
   }
   if (dialog.kind === 'review') {
     throw new Error('the dialog is on its final review screen — `rescan` to refresh, or answer `1` after it reposts');
   }
-  if (dialogSig(dialog.q) !== expected.sig) {
-    throw new Error('the dialog moved on to a different question — `rescan` to repost the current one');
+  if (!sameDialog(expected, dialog.q)) {
+    throw new DialogChangedError('the dialog moved on to a different question (the request changed, or it expired and was asked again)', dialog);
   }
-  const q = dialog.q;
+  let q = dialog.q;
   if (q.requiresTerminal) {
     throw new Error('this permission prompt requires terminal input — no keys sent; respond in the terminal');
   }
   if (parsed.kind === 'text' && q.textOptionIndex === undefined) throw new Error('this dialog has no free-text entry — pick a number');
   if (parsed.kind === 'error') throw new Error('unparsed answer'); // guarded by caller
 
+  const stepwise = parsed.kind === 'digits' && q.kind === 'permission' && (q.entry === 'amend' || q.entry === 'reader');
+  // Not reached for a prompt read by parsePermissionPane (such a one is
+  // `requiresTerminal`): an answer in several keys is for an identified request.
+  if (stepwise && !q.toolUseId) throw new Error('this permission prompt is not identified by a pending call — no keys sent; respond in the terminal');
+  const request = requestKey(q);
   const sent: string[] = [];
+  let started = false;
   const key = async (name: string) => {
-    await tmux.sendKeys(tmuxSession, name);
+    if (!started) onKeys?.();
+    started = true;
+    await term.sendKeys(name);
     sent.push(name);
+  };
+  /** After a preparatory key: the screen must show the same request, taking
+   *  its answer the way the next key needs — and no expiry notice that the
+   *  prompt the key went to cannot have. */
+  const step = async (ready: (now: PendingQ) => boolean, short: string): Promise<PendingQ> => {
+    await sleep(KEY_SETTLE_MS);
+    let now: PaneDialog;
+    try {
+      now = await read();
+    } catch (err) {
+      throw new PartialAnswerError(`I could not look at its screen after that (${(err as Error).message})`, sent);
+    }
+    if (now.kind !== 'question' || now.q.requiresTerminal || requestKey(now.q) !== request || !expiryAllows(q.expiry, now.q.expiry)) {
+      throw new PartialAnswerError('its screen no longer shows the request the answer was for, so nothing more was sent', sent, now);
+    }
+    if (!ready(now.q)) throw new PartialAnswerError(short, sent, now);
+    return now.q;
   };
   try {
     if (parsed.kind === 'esc') {
       await key('Escape');
       return undefined;
     }
-    if (parsed.kind === 'digits') {
+    if (parsed.kind === 'digits' && q.kind === 'permission' && q.entry === 'amend') {
+      await key('Tab');
+      q = await step((now) => now.entry === 'list', 'the prompt did not come back as its option list');
+    }
+    if (parsed.kind === 'digits' && q.kind === 'permission' && q.entry === 'reader') {
+      const digit = String(parsed.nums[0]);
+      // What someone left in its input goes first, a character at a time:
+      // the field must read one shorter after each backspace before the next
+      // is sent (a request that came up in between may hold input of its own).
+      for (let left = [...(q.typed ?? '')]; left.length > 0;) {
+        await key('BSpace');
+        left = left.slice(0, -1);
+        const field = left.join('');
+        q = await step((now) => now.entry === 'reader' && (now.typed ?? '') === field,
+          field ? `its input field does not read \`${field}\` after my backspace` : 'its input field did not come back empty');
+      }
+      await key(digit);
+      q = await step((now) => now.entry === 'reader' && now.typed === digit, `its input field does not show \`${digit}\`, so Enter was not sent`);
+      await key('Enter');
+    } else if (parsed.kind === 'digits') {
       for (const n of parsed.nums) {
         await key(String(n));
         await sleep(KEY_SETTLE_MS);
@@ -826,14 +1277,14 @@ export async function injectAnswer(
     } else {
       await key(String(q.textOptionIndex));
       await sleep(KEY_SETTLE_MS);
-      await tmux.sendText(tmuxSession, parsed.text);
+      await term.sendText(parsed.text);
       sent.push('the text');
       await sleep(KEY_SETTLE_MS);
       await key('Enter');
     }
   } catch (err) {
-    if (sent.length === 0) throw err;
-    throw new PartialAnswerError((err as Error).message, sent);
+    if (sent.length === 0 || err instanceof PartialAnswerError) throw err;
+    throw new PartialAnswerError(`tmux failed (${(err as Error).message})`, sent);
   }
 
   // Single-question dialogs are done; multi-part ones either show the next
@@ -847,14 +1298,14 @@ export async function injectAnswer(
   }
   if (after.kind === 'review' && q.kind !== 'permission') {
     try {
-      await tmux.sendKeys(tmuxSession, '1');
+      await term.sendKeys('1');
     } catch {
       return 'the dialog is on its final review screen and I could not confirm it — `rescan`, then answer `1`.';
     }
     return undefined;
   }
-  if (after.kind === 'question' && dialogSig(after.q) === expected.sig) {
-    return `the dialog is still showing the same question after my keystrokes — check \`peek\` or tmux attach -t ${tmuxSession}`;
+  if (after.kind === 'question' && (q.kind === 'permission' ? requestKey(after.q) === request : dialogSig(after.q) === expected.sig)) {
+    return 'the dialog is still showing the same question after my keystrokes — it is posted again at the next sweep if it stays open (`show` does that now).';
   }
   if (q.kind === 'permission' && after.kind !== 'none') {
     return 'a different dialog is now on screen.';

@@ -14,7 +14,7 @@ import { Registry } from '../src/registry.js';
 import type { Tmux } from '../src/tmux.js';
 import { TranscriptWatcher } from '../src/transcript-watch.js';
 import { prepareWorkDir, PREPARE_WORKDIR_JS } from '../src/workdir.js';
-import { testConfig, tmp } from './helpers.js';
+import { testConfig, tmp, withHandPanes } from './helpers.js';
 
 function fixture() {
   const dir = tmp();
@@ -34,7 +34,7 @@ function fixture() {
   const launch = launcher.launch.bind(launcher);
   launcher.launch = async r => { launches.push(r); return launch(r); };
   const notifier = { postHome: async () => 1, reply: async () => {}, dm: async () => {} } as Notifier;
-  const watcher = new TranscriptWatcher(registry, host, tmux, notifier, cfg, () => 'spawner');
+  const watcher = new TranscriptWatcher(registry, host, withHandPanes(tmux, registry), notifier, cfg, () => 'spawner');
   const provisioner = {
     ensure: async (_full: string, short: string) => ({ bot: { userId: 100, email: `${short}-bot@x`, apiKey: 'fake' }, created: true }),
     subscribe: async () => {}, rename: async () => {}, credsFor: () => ({ email: 'fake@x', key: 'fake', site: 'https://x' }),

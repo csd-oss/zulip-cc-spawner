@@ -1,0 +1,20 @@
+[Screen Reader Mode: on via env]
+Claude Code v2.1.306
+Sonnet 5.5 · API Usage Billing
+/tmp/scratch
+you: Run the local scratch-only probe tool.
+tool: Agent (probe)
+Backgrounded agent (↓ to manage · ctrl+o to expand)
+tool: Bash (sleep 20 && rm -rf "$(printf %s /tmp/scratch/sub)")
+Waiting…
+Permission Required: Bash command 1 of 4
+> sub rm
+> sleep 20 && rm -rf "$(printf %s /tmp/scratch/sub)"
+> Dangerous rm operation on statically-unresolvable target: command substitution output
+⚠ Claude Code will automatically deny this request in about 2 minutes, to avoid blocking progress on
+ an unattended session
+Do you want to proceed?
+1. Yes
+2. No
+Select with numbers [1-2]. Then Enter to submit or Escape to cancel:
+Esc to cancel

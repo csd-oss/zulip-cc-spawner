@@ -64,6 +64,16 @@ export interface SpawnerConfig {
    *  own systemd unit (cc-agents-tmux.service) so stopping the spawner never
    *  kills hands. Unset ⇒ tmux's default socket for the agents user. */
   tmuxSocket?: string;
+  /** Rows of a new hand's terminal (default 50; tmux's own default is 24). A
+   *  permission prompt is answered from Zulip only when it is on screen from
+   *  its title down, so the taller the terminal, the fewer prompts need it
+   *  grown first. */
+  paneRows: number;
+  /** Columns of a new hand's terminal. Unset ⇒ tmux's `default-size` (80). */
+  paneCols?: number;
+  /** How tall the spawner may make a hand's terminal for a prompt that does
+   *  not fit it (default 1000 rows); it goes back to `paneRows` afterwards. */
+  paneMaxRows: number;
   /** Home of that user: Claude Code transcripts live under <home>/.claude. */
   agentsHome: string;
   /** Per-hand files (zuliprc, bridge config, seed, zulip_mcp state), one
@@ -113,6 +123,8 @@ const DEFAULTS: SpawnerConfig = {
   inactivityMs: 24 * 60 * 60 * 1000,
   reapIntervalMs: 10 * 60 * 1000,
   watchIntervalMs: 20 * 1000,
+  paneRows: 50,
+  paneMaxRows: 1000,
   projectDir: join(HOME, 'workspace'),
   agentsHome: HOME,
   handsDir: join(HOME, '.cc-hands'),
@@ -145,6 +157,14 @@ export function loadConfig(): SpawnerConfig {
       cfg.adminUserIds.some(id => !Number.isSafeInteger(id) || id <= 0))) throw new Error('adminUserIds must be an array of positive user ids');
   if (cfg.ownerUserId != null && (!Number.isSafeInteger(cfg.ownerUserId) || cfg.ownerUserId <= 0)) throw new Error('ownerUserId must be a positive user id');
   if (typeof cfg.creatorOnlyControls !== 'boolean') throw new Error('creatorOnlyControls must be a boolean');
+
+  const cells = (key: 'paneRows' | 'paneCols' | 'paneMaxRows', min: number, max: number): void => {
+    const n = cfg[key];
+    if (n !== undefined && (!Number.isInteger(n) || n < min || n > max)) throw new Error(`${key} must be a whole number from ${min} to ${max}`);
+  };
+  cells('paneRows', 24, 1000);
+  cells('paneCols', 40, 500);
+  cells('paneMaxRows', cfg.paneRows, 5000);
 
   const envNum = (name: string, current: number): number => {
     const raw = process.env[name];

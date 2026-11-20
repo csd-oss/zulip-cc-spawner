@@ -201,7 +201,7 @@ export class ZulipControl {
     const where = this.whereOf(m);
     let result: ActionResult;
     try {
-      result = await this.actions.run({ cmd, body, where, invoker });
+      result = await this.actions.run({ cmd, body, where, invoker, messageId: m.id });
     } catch (err) {
       // Never leave a command unanswered: the asker sees the failure, the log the stack.
       log(`command failed (message ${m.id}): ${(err as Error).stack ?? err}`);

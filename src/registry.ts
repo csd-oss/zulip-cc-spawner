@@ -81,6 +81,12 @@ export interface BotEntry {
   transcriptOffset?: number;
   /** Last assistant model seen in the transcript (fallback detection). */
   lastModel?: string;
+  /** The spawner made this hand's terminal taller for a prompt that did not
+   *  fit it; it goes back to the configured height once no dialog is open. */
+  paneGrown?: boolean;
+  /** …in a window someone had split: the rows that window had before, which
+   *  is what it goes back to. */
+  paneWindowRows?: number;
   /** A dialog the session is blocked on (posted to the home topic). */
   pendingQuestion?: PendingQuestion;
   /** Snapshot only: no TUI is left open while waiting for a Zulip answer. */

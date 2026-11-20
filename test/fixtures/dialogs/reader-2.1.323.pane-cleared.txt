@@ -1,0 +1,17 @@
+[Screen Reader Mode: on via env]
+Claude Code v2.1.323
+Sonnet 5.5 · API Usage Billing
+/tmp/scratch
+you: Run the local scratch-only probe tool.
+tool: Bash (rm -rf "$(printf %s /tmp/scratch/nonexistent)")
+Waiting…
+Permission Required: Bash command
+> Local scratch-only permission prompt probe
+> rm -rf "$(printf %s /tmp/scratch/nonexistent)"
+> Dangerous rm operation on statically-unresolvable target: command substitution
+>  output
+Do you want to proceed?
+1. Yes
+2. No
+Select with numbers [1-2]. Then Enter to submit or Escape to cancel:
+Esc to cancel

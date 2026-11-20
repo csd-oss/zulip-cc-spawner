@@ -4,6 +4,22 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { SpawnerConfig } from '../src/config.js';
 
+/**
+ * Gives a fake tmux its `sessionPanes`: every session is one pane, its id is
+ * the session's name (so a fake's screens and keys stay keyed by session), and
+ * tmux's record of what it was started with names the conversation of every
+ * hand in `registry` — as the launcher starts a hand's pane.
+ */
+export function withHandPanes<T extends object>(tmux: T, registry: { all(): readonly { sessionId: string }[] }): T {
+  const fake = tmux as T & { capturePane?: (pane: string, lines?: number, styled?: boolean) => Promise<string>; sessionPanes?: unknown };
+  if (typeof fake.sessionPanes === 'function') return tmux; // a real Tmux, or a fake with panes of its own
+  fake.sessionPanes = async (name: string, capture?: string, styled?: boolean) => ({
+    panes: [{ id: name, dead: false, synchronized: false, command: `claude ${registry.all().map((e) => `--resume '${e.sessionId}'`).join(' ')}` }],
+    ...(capture !== undefined ? { screen: await fake.capturePane!(capture, 0, styled) } : {}),
+  });
+  return tmux;
+}
+
 export function tmp(prefix = 'ccsp-'): string {
   // Short base: tmux sockets have a ~104-byte path limit on macOS.
   return mkdtempSync(join(process.platform === 'darwin' ? '/tmp' : tmpdir(), prefix));
@@ -57,6 +73,8 @@ export function testConfig(dir: string, overrides: Partial<SpawnerConfig> = {}):
     inactivityMs: 24 * 3600_000,
     reapIntervalMs: 600_000,
     watchIntervalMs: 20_000,
+    paneRows: 50,
+    paneMaxRows: 1000,
     projectDir: dir,
     agentsHome: join(dir, 'home'),
     handsDir: join(dir, 'hand-files'),

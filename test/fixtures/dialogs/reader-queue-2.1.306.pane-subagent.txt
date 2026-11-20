@@ -1,0 +1,18 @@
+[Screen Reader Mode: on via env]
+Claude Code v2.1.306
+Sonnet 5.5 · API Usage Billing
+/tmp/scratch
+you: Run the local scratch-only probe tool.
+tool: Agent (probe)
+Backgrounded agent (↓ to manage · ctrl+o to expand)
+tool: Bash (sleep 20 && rm -rf "$(printf %s /tmp/scratch/sub)")
+Running…
+Permission Required: Bash command · from the general-purpose agent 2 of 4
+> sub rm
+> sleep 20 && rm -rf "$(printf %s /tmp/scratch/sub)"
+> Dangerous rm operation on statically-unresolvable target: command substitution output
+Do you want to proceed?
+1. Yes
+2. No
+Select with numbers [1-2]. Then Enter to submit or Escape to cancel:
+Esc to cancel · ctrl+x ctrl+k twice to stop background agents

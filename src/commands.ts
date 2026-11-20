@@ -11,6 +11,7 @@
  *   stop <name>            (alias: kill)
  *   peek <name> [lines] [here] (DM by default; here replies at invocation)
  *   answer <name> <choice>
+ *   show [<name>]          (aliases: request, refresh)
  *   press <name> <keys…>
  *   rescan
  *   help
@@ -25,6 +26,8 @@ export type Command =
   | { kind: 'stop'; target: string }
   | { kind: 'peek'; target: string; lines?: number; here?: boolean }
   | { kind: 'answer'; target: string; spec: string }
+  /** Without a target: the one hand blocked on a dialog in the invoking topic. */
+  | { kind: 'show'; target?: string }
   | { kind: 'press'; target: string; keys: string[] }
   | { kind: 'rescan' }
   | { kind: 'help'; error?: string; unknownVerb?: boolean };
@@ -124,6 +127,7 @@ export const USAGE = [
   '`stop <name>` — stop a hand (identity and conversation are kept; `spawn` the same name revives it, optionally with a new home/model)',
   '`peek <name> [lines] [here]` — terminal tail (default 20 lines), DM by default; here shares it with everyone in the invoking topic (or replies in the invoking DM)',
   '`answer <name> <choice>` — answer a hand\'s pending question or permission prompt (`2`, `1,3`, `yes`/`no`, `text: …`, or `esc`)',
+  '`show <name>` — read a blocked hand\'s screen again and post the request it is waiting on, in full; in its topic, `show` is enough. An answer is checked against the newest post: if the request changed or expired meanwhile, nothing is sent and the current one is posted',
   '`press <name> <keys…>` — raw keystrokes into a hand\'s terminal (`press scout 1 enter`; keys: digits, `enter`, `esc`, `tab`, `up`/`down`, `ctrl-c`, or literal text)',
   '`rescan` — re-check every hand for an open question dialog and (re)post it',
 ].join('\n');
@@ -422,6 +426,10 @@ export function parseCommand(body: string): Command {
       const spec = afterVerb.slice(target?.length ?? 0).trim();
       return buildAnswerCommand(target || undefined, spec || undefined);
     }
+    case 'show':
+    case 'request':
+    case 'refresh':
+      return extra(2) ?? (tokens[1] ? { kind: 'show', target: tokens[1] } : { kind: 'show' });
     case 'press':
     case 'keys':
       return buildPressCommand(tokens[1], tokens.slice(2).join(' '));

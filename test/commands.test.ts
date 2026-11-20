@@ -254,3 +254,12 @@ test('legacy confirmation and stopped filters are explicit and composable', () =
     assert.equal(parseCommand(text).kind, 'help');
   }
 });
+
+test('show takes an optional hand; request and refresh are the same command', () => {
+  assert.deepEqual(parseCommand('show scout'), { kind: 'show', target: 'scout' });
+  assert.deepEqual(parseCommand('show'), { kind: 'show' });
+  assert.deepEqual(parseCommand('request scout'), { kind: 'show', target: 'scout' });
+  assert.deepEqual(parseCommand('refresh'), { kind: 'show' });
+  // "show scout the door" in a conversational message is not a command.
+  assert.equal(parseCommand('show scout the door').kind, 'help');
+});

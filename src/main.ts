@@ -78,6 +78,7 @@ async function main(): Promise<void> {
     notifier,
     { agentsHome: config.agentsHome, projectDir: config.projectDir },
     () => control?.name ?? 'spawner',
+    { rows: config.paneRows, maxRows: config.paneMaxRows },
   );
   // Asked as the hand's own bot: covers every stream it posted in.
   const lastPost = (e: { botEmail: string }) => provisioner.lastPostOf(e.botEmail, (c) => new ZulipClient(c));

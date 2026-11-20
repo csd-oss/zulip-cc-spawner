@@ -1,0 +1,48 @@
+ [1m[38;5;153mBash command[0m
+ [38;5;246mLocal scratch-only permission prompt probe[39m
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m [2m│[0m cat <<'END'
+ [2m│[0m scratch line 0
+ [2m│[0m scratch line 1
+ [2m│[0m scratch line 2
+ [2m│[0m scratch line 3
+ [2m│[0m scratch line 4
+ [2m│[0m scratch line 5
+ [2m│[0m scratch line 6
+ [2m│[0m scratch line 7
+ [2m│[0m scratch line 8
+ [2m│[0m scratch line 9
+ [2m│[0m scratch line 10
+ [2m│[0m scratch line 11
+ [2m│[0m scratch line 12
+ [2m│[0m scratch line 13
+ [2m│[0m scratch line 14
+ [2m│[0m scratch line 15
+ [2m│[0m scratch line 16
+ [2m│[0m scratch line 17
+ [2m│[0m scratch line 18
+ [2m│[0m scratch line 19
+ [2m│[0m scratch line 20
+ [2m│[0m scratch line 21
+ [2m│[0m scratch line 22
+ [2m│[0m scratch line 23
+ [2m│[0m scratch line 24
+ [2m│[0m scratch line 25
+ [2m│[0m scratch line 26
+ [2m│[0m scratch line 27
+ [2m│[0m scratch line 28
+ [2m│[0m scratch line 29
+ [2m│[0m END
+ [2m│[0m rm -rf "$(printf %s /tmp/scratch/nonexistent)"
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m [2m│[0m Dangerous rm operation on statically-unresolvable target: command
+ [2m│[0m substitution output
+ [38;5;220m⚠ Claude Code will automatically block this request in 1:54, to avoid holding [39m
+ [38;5;220mup an unattended session[39m
+
+
+ Do you want to proceed?
+ [38;5;153m❯[39m [38;5;246m1. [38;5;153mYes[39m
+   [38;5;246m2. [39mNo
+
+ [38;5;246mEsc to cancel · Tab to amend[39m

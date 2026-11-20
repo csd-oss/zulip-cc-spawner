@@ -8,7 +8,7 @@ import { Reaper, SILENCE_WARN_MS } from '../src/reaper.js';
 import { Registry, type BotEntry } from '../src/registry.js';
 import type { Tmux } from '../src/tmux.js';
 import { TranscriptWatcher, transcriptPath } from '../src/transcript-watch.js';
-import { tmp } from './helpers.js';
+import { tmp, withHandPanes } from './helpers.js';
 
 class FakeTmux {
   sessions = new Set<string>();
@@ -123,7 +123,7 @@ test('watcher: transcript events and dialogs are posted to the home topic', asyn
   registry.add(e);
   const t = new FakeTmux();
   const posts = new Posts();
-  const w = new TranscriptWatcher(registry, new LocalHost(), t as unknown as Tmux, posts, { agentsHome: join(dir, 'home'), projectDir: '/work/proj' }, () => 'CC Spawner');
+  const w = new TranscriptWatcher(registry, new LocalHost(), withHandPanes(t, registry) as unknown as Tmux, posts, { agentsHome: join(dir, 'home'), projectDir: '/work/proj' }, () => 'CC Spawner');
   const path = transcriptPath(join(dir, 'home'), '/work/proj', 'sess');
   assert.equal(path, join(dir, 'home', '.claude', 'projects', '-work-proj', 'sess.jsonl'));
   mkdirSync(dirname(path), { recursive: true });
