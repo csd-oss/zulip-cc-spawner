@@ -1,0 +1,30 @@
+
+
+❯ Run the local scratch-only probe
+  tool.
+
+● Agent(probe)
+  ⎿  Backgrounded agent (↓ to
+
+● Done with local replay.
+
+✻ Waiting for 3 background agents to
+  finish
+
+──────────────────────────────────────
+ Bash       · from the
+ command    general-purpose agent
+ sub rm
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ rm -rf "$(printf %s
+ /tmp/task-40kjf-ewh541ni/sub)"
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on
+ │ statically-unresolvable target:
+ │ command substitution output
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend · ctrl…

@@ -1,0 +1,24 @@
+
+           Claude Code v2.1.323
+  ▐█▛█▜    Sonnet 5.5
+  ▐████    API Usage Billing
+  ▝▝ ▝▝    /…/task-40kjf-h_bltnp0
+
+
+❯ Run the local scratch-only probe
+  tool.
+──────────────────────────────────────
+ ☐ Fruit
+
+Which fruit should I use?
+
+❯ 1. Apple
+     Crunchy
+  2. Banana
+     Soft
+  3. Type something.
+──────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate ·
+Esc to cancel

@@ -1,0 +1,16 @@
+> Local scratch-only permission prompt
+> probe
+> rm -rf "$(printf %s
+> /tmp/task-40kjf-fixture1/nonexistent)"
+> Dangerous rm operation on
+> statically-unresolvable target: command
+> substitution output
+⚠ Claude Code will automatically block
+this request in about 2 minutes, to avoid
+holding up an unattended session
+Do you want to proceed?
+1. Yes
+2. No
+Select with numbers [1-2]. Then Enter to
+submit or Escape to cancel:
+Esc to cancel

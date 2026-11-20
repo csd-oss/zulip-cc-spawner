@@ -38,7 +38,7 @@ import type { ClaudeLauncher } from './launcher.js';
 import type { Notifier } from './notifier.js';
 import type { Provisioner } from './provision.js';
 import { LiveModelSwitcher } from './model-switch.js';
-import { injectAnswer, parseAnswerSpec } from './question.js';
+import { injectAnswer, parseAnswerSpec, PartialAnswerError } from './question.js';
 import type { BotEntry, Registry } from './registry.js';
 import type { Tmux } from './tmux.js';
 import type { TranscriptWatcher } from './transcript-watch.js';
@@ -800,19 +800,42 @@ Nothing changed. Confirm within 5 minutes with \`delete ${registry.commandTarget
     // AskUserQuestion stays collaborative; permission prompts follow the
     // optional creator-only policy, just like raw terminal keys.
     if (pending.questions[0]?.kind === 'permission' && !this.canControl(inv, entry)) return this.ownerRefusal(entry);
+    if (!pending.messageId) return `**${entry.personaName}**'s current dialog hasn't been posted yet — \`rescan\` to retry; no keys sent.`;
     const parsed = parseAnswerSpec(spec, pending.questions[0]);
     if (parsed.kind === 'error') return `Can't parse that answer: ${parsed.error}`;
+    let warning: string | undefined;
     try {
-      const warning = await injectAnswer(this.d.tmux, entry.tmuxSession, pending, parsed);
-      if (pending.questions[0].kind === 'permission') {
-        const label =
-          parsed.kind === 'esc' ? 'Esc' : parsed.kind === 'digits' ? pending.questions[0].options[parsed.nums[0] - 1]?.label ?? String(parsed.nums[0]) : '?';
-        this.d.registry.update(entry, { pendingQuestion: { ...pending, answeredWith: label } });
-      }
-      const what = parsed.kind === 'esc' ? 'Dismissal' : 'Answer';
-      return `${what} sent to **${entry.personaName}** — I'll confirm once its session registers it.${warning ? `\nℹ️ ${warning}` : ''}`;
+      warning = await injectAnswer(this.d.tmux, entry.tmuxSession, pending, parsed, () => this.d.watcher.readDialog(entry));
     } catch (err) {
+      if (err instanceof PartialAnswerError) {
+        // Some keys are in the terminal: neither delivered nor withheld.
+        const target = this.d.registry.commandTarget(entry);
+        return `Only part of the answer reached **${entry.personaName}**: sent ${err.sent.map((k) => `\`${k}\``).join(' ')}, then tmux failed. ` +
+          `The dialog may be half-answered — inspect with \`peek ${target}\` before trying again; \`press ${target} esc\` cancels it.`;
+      }
       return `Could not deliver the answer to **${entry.personaName}**: ${(err as Error).message}`;
+    }
+    // The keys are out. Nothing below may turn that into "could not deliver":
+    // whoever reads that sends the answer again, to whatever is on screen then.
+    const what = parsed.kind === 'esc' ? 'Dismissal' : 'Answer';
+    const note = warning ? `\nℹ️ ${warning}` : '';
+    if (pending.questions[0].kind !== 'permission') return `${what} sent to **${entry.personaName}** — I'll confirm once its session registers it.${note}`;
+    const label =
+      parsed.kind === 'esc' ? 'Esc' : parsed.kind === 'digits' ? pending.questions[0].options[parsed.nums[0] - 1]?.label ?? String(parsed.nums[0]) : '?';
+    const unrecorded = this.recordSent(entry, { ...pending, answeredWith: label });
+    return `${what} sent to **${entry.personaName}** — **${label}**. This confirms the key was sent, not the outcome.${note}${unrecorded}`;
+  }
+
+  /** Note on the pending dialog what was sent to it. The note is bookkeeping
+   *  for the resolution notice; failing to save it does not unsend anything,
+   *  so it is reported as that and never thrown. */
+  private recordSent(entry: BotEntry, pendingQuestion: NonNullable<BotEntry['pendingQuestion']>): string {
+    try {
+      this.d.registry.update(entry, { pendingQuestion });
+      return '';
+    } catch (err) {
+      log(`${entry.tmuxSession}: keys sent, but recording them failed: ${(err as Error).stack ?? err}`);
+      return `\n⚠️ It **was sent** — do not send it again. I could not save my record of it (${(err as Error).message}), so the notice when this prompt closes may not say what was sent.`;
     }
   }
 
@@ -838,10 +861,8 @@ Nothing changed. Confirm within 5 minutes with \`delete ${registry.commandTarget
       sent.push(named ?? raw);
       await new Promise((r) => setTimeout(r, 300));
     }
-    if (entry.pendingQuestion) {
-      this.d.registry.update(entry, { pendingQuestion: { ...entry.pendingQuestion, answeredWith: `keys ${sent.join(' ')}` } });
-    }
-    return `Sent ${sent.map((k) => `\`${k}\``).join(' ')} to **${entry.personaName}** — \`peek ${this.d.registry.commandTarget(entry)}\` to see what it did.`;
+    const unrecorded = entry.pendingQuestion ? this.recordSent(entry, { ...entry.pendingQuestion, answeredWith: `keys ${sent.join(' ')}` }) : '';
+    return `Sent ${sent.map((k) => `\`${k}\``).join(' ')} to **${entry.personaName}** — \`peek ${this.d.registry.commandTarget(entry)}\` to see what it did.${unrecorded}`;
   }
 
   private async rescan(): Promise<string> {

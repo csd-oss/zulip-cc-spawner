@@ -1,0 +1,30 @@
+ ▐▛███▛█   Claude Code v2.1.323
+▝▜██████▀  Sonnet 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/scratch
+
+
+❯ Run the local scratch-only probe tool.
+
+● Agent(probe)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Sub rm
+  ⎿  $ sleep 20 && rm -rf "$(printf %s /tmp/scratch/sub)"
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command                                                            1 of 4
+ sub rm
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ sleep 20 && rm -rf "$(printf %s /tmp/scratch/sub)"
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Dangerous rm operation on statically-unresolvable target: command
+ │ substitution output
+ ⚠ Claude Code will automatically block this request in 1:58, to avoid holding
+ up an unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

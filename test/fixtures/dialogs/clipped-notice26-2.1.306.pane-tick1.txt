@@ -1,0 +1,12 @@
+ automatically deny this
+ request in 1:37, to
+ avoid blocking progress
+ on an unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to
+ amend

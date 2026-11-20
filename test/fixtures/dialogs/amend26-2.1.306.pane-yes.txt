@@ -1,0 +1,35 @@
+
+           Claude Code
+           v2.1.306
+ ▐▛███▛█   Sonnet 5.5
+▝▜██████▀  API Usage
+ ▝▝   ▝▝   Billing
+           /task-40kjf-fr2
+           ftb7q
+
+
+❯ Run the local
+  scratch-only probe
+  tool.
+
+● Printing a word
+  ⎿  $ printf reviewer
+
+──────────────────────────
+ Bash command
+ Print a word
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ printf reviewer
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Permission rule Bash
+ requires confirmation
+ for this command.
+ /permissions to update
+ rules
+
+ Do you want to proceed?
+ ❯ 1. Yes,and tell Claude…
+
+   2. No
+
+ Esc to cancel

@@ -519,6 +519,58 @@ Codex spawn/revive snapshots an inclusive home-topic message-ID boundary: catch-
   not bypass caller/stream allow-lists. No owner is required when a list is set.
 - Upgrade note: rename/model now follow `creatorOnlyControls`, too. They are open to
   allowed callers by default; enable strict mode to retain creator/owner-only controls.
+- Upgrade note: a permission prompt already pending during upgrade will be reposted
+  if it's still on screen at the next sweep or `rescan`. Answers against the old
+  signature are refused until the replacement is posted; a failed post is retried.
+  A repost doesn't mean the prompt was answered. Screen-reader prompts and other
+  permission layouts where the bot cannot verify that digits submit immediately
+  must be answered in the terminal.
+- A Bash permission prompt is identified by a pending `tool_use` in the hand's
+  transcript plus the dialog's own rows from its title to the end of its command
+  box — not by the rest of the screen, so the expiry countdown ("will
+  automatically block this request in 1:42") ticking under it neither reposts it
+  nor stales its answer. The transcript is only a hint; the screen decides:
+  - A dialog is tied to a pending call only when that call is the **only** one
+    fitting everything the dialog displays: its command, its description, and
+    the hand's own title ("Bash command", with "2 of 3" when several requests
+    queue). A pending call is not necessarily the one being asked about — an
+    approved call can still be running while the next one asks — so queue
+    position and description stay part of the identity.
+  - A prompt that names another requester ("Bash command · from the
+    general-purpose agent") is never tied to the hand's own calls.
+  - When several pending calls fit the same dialog, it is tied to none of them
+    and is posted **terminal-only**, until one of them resolves.
+  - The post is what the terminal shows; nothing from the transcript is posted.
+  - **One rule for answers:** the bot passes on an answer only when the hand's
+    screen positively shows what is being approved — the dialog from its title
+    down. That is so when the rule that opens the dialog is on screen; or when
+    the screen's first row is a Bash prompt's title above a whole command box.
+    That row is known as the title by how the terminal sets it — the words
+    "Bash command" in bold, read with `tmux capture-pane -e` — not by its
+    words: a description may read "Bash command" while the real title, naming
+    a subagent, is one row off screen.
+  - Anything less is posted **once**, showing only what is on screen, and is
+    **terminal-only**: no key is sent to it, whether or not a pending call fits
+    it. That is every prompt taller than its terminal (a detached tmux session
+    is 80×24 unless tmux's `default-size` says otherwise): the pane then starts
+    in the description, inside the command box, or under it with nothing of the
+    request on screen at all. Such a post is a notification — it is not
+    repeated while the screen reads the same but for the countdown's clock.
+    Make the pane tall enough and the prompt is posted again, answerable.
+  - Digits are sent only to the option list whose footer offers "Tab to amend".
+    After Tab the same row is a text field ("Yes, and tell Claude what to do
+    next"); that screen is posted terminal-only.
+  - The screen is captured again after the transcript is read, and an answer is
+    sent only if that capture still shows the posted request.
+  Prompts with no fitting `tool_use` — a subagent's, other tools', or when there
+  is no transcript — are identified by all their rows as before: still posted
+  and, under the rule above, answerable; but if such an answerable prompt shows
+  a ticking countdown it is reposted as it ticks. Resizing a hand's pane
+  re-wraps the box and reposts the prompt once.
+- "Answer sent" confirms the key, not the outcome. If the bot cannot look at the
+  screen after sending, or cannot save its record of what it sent, it says so
+  on the "Answer sent" reply — the key is out, do not send it again. It reports
+  "Could not deliver" only when no key was sent.
 - Adopted hands without `spawnedBy` never acquire the reviver as creator. With no owner
   configured, all these controls (including rename/model) remain collaborative **even
   in strict mode**, so they are not stranded. With an owner configured and strict mode enabled,

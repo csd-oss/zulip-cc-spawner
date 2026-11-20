@@ -72,8 +72,11 @@ export class Tmux {
   // NB: pane-target contexts (capture-pane, send-keys) need `=name:` — the bare
   // `=name` exact-match form only parses in session-target contexts (upstream,
   // verified on tmux 3.6a).
-  async capturePane(name: string, scrollbackLines = 0): Promise<string> {
+  // `styled`: with the cells' attributes as escape sequences (-e) — one
+  // capture then gives both the text and which of it is bold (question.ts).
+  async capturePane(name: string, scrollbackLines = 0, styled = false): Promise<string> {
     const args = ['capture-pane', '-p'];
+    if (styled) args.push('-e');
     if (scrollbackLines > 0) args.push('-S', `-${scrollbackLines}`);
     args.push('-t', `=${name}:`);
     const { stdout } = await this.tmux(args);
