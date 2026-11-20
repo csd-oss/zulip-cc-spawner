@@ -1,0 +1,17 @@
+[Screen Reader Mode: on via env]
+Claude Code v2.1.323
+Sonnet 5.5 · API Usage Billing
+/tmp/scratch
+you: Run the local scratch-only probe tool.
+tool: Bash (printf reviewer)
+Waiting…
+Permission Required: Bash command
+> Print a word
+> printf reviewer
+> Permission rule Bash requires confirmation for this command.
+/permissions to update rules
+Do you want to proceed?
+1. Yes
+2. No
+Select with numbers [1-2]. Then Enter to submit or Escape to cancel:
+Esc to cancel

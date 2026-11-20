@@ -108,3 +108,30 @@ test('config: collaborative controls default, optional owner, strict boolean val
     else process.env.CC_SPAWNER_CONFIG = previous;
   }
 });
+
+test('config: a hand\'s terminal is 50 rows unless said otherwise; sizes are validated', async () => {
+  const dir = tmp(); const cfgPath = join(dir, 'config.json');
+  const previous = process.env.CC_SPAWNER_CONFIG;
+  process.env.CC_SPAWNER_CONFIG = cfgPath;
+  const { loadConfig } = await import('../src/config.js');
+  writeFileSync(join(dir, 's.rc'), '[api]\nemail=a\nkey=b\nsite=https://x\n');
+  const base = { spawnerRc: join(dir, 's.rc'), adminRc: join(dir, 's.rc'), devMode: true, allowedStreams: ['cc-hands'], allowedUsers: [1] };
+  const load = (patch: Record<string, unknown> = {}) => {
+    writeFileSync(cfgPath, JSON.stringify({ ...base, ...patch }));
+    return loadConfig();
+  };
+  try {
+    const cfg = load();
+    assert.equal(cfg.paneRows, 50);
+    assert.equal(cfg.paneCols, undefined); // tmux's default-size decides the width
+    assert.equal(cfg.paneMaxRows, 1000);
+    assert.deepEqual([load({ paneRows: 24 }).paneRows, load({ paneCols: 120 }).paneCols, load({ paneRows: 60, paneMaxRows: 60 }).paneMaxRows], [24, 120, 60]);
+    for (const paneRows of [0, 23, 1001, 50.5, '50', null]) assert.throws(() => load({ paneRows }), /paneRows must be a whole number from 24 to 1000/);
+    for (const paneCols of [0, 39, 501, 80.5, '80']) assert.throws(() => load({ paneCols }), /paneCols must be a whole number from 40 to 500/);
+    for (const paneMaxRows of [49, 5001, 100.5, '100']) assert.throws(() => load({ paneMaxRows }), /paneMaxRows must be a whole number from 50 to 5000/);
+    assert.throws(() => load({ paneRows: 200, paneMaxRows: 100 }), /paneMaxRows must be a whole number from 200 to 5000/);
+  } finally {
+    if (previous === undefined) delete process.env.CC_SPAWNER_CONFIG;
+    else process.env.CC_SPAWNER_CONFIG = previous;
+  }
+});

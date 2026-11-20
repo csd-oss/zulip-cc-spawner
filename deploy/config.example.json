@@ -22,5 +22,7 @@
   "attributionHeaders": {},
   "handDmAllowlist": [],
   "maxSessions": 10,
+  "paneRows": 50,
+  "paneMaxRows": 1000,
   "catchupLimit": 500
 }

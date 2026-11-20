@@ -162,7 +162,7 @@ export class ClaudeLauncher {
    *  cannot start (the caller kills the session); returns a warning when it
    *  started but something needs a human look. */
   async launch(req: LaunchRequest): Promise<{ warning?: string }> {
-    await this.tmux.newSession(req.tmuxSession, req.workDir ?? this.cfg.projectDir, buildCommand(this.cfg, req));
+    await this.tmux.newSession(req.tmuxSession, req.workDir ?? this.cfg.projectDir, buildCommand(this.cfg, req), { cols: this.cfg.paneCols, rows: this.cfg.paneRows });
     return this.settleStartup(req.tmuxSession, req.workDir ?? this.cfg.projectDir);
   }
 

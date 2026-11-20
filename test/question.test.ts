@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { captureText, dialogSig, openToolUses, parseAnswerSpec, parseDialogPane, type OpenToolUse } from '../src/question.js';
+import {
+  captureText, dialogSig, expiryAllows, formatQuestionPosts, openToolUses, parseAnswerSpec, parseDialogPane, requestKey, sameDialog, stampExpiry,
+  type OpenToolUse, type PendingQ,
+} from '../src/question.js';
+import type { BotEntry } from '../src/registry.js';
 
 // Shapes from upstream's verified TUI notes (claude 2.1.241 / 2.1.258).
 const ASK = [
@@ -136,12 +140,22 @@ for (const [name, capture, ticks, words, top] of [
       assert.deepEqual(Object.keys(q).filter((k) => /command|input/.test(k)), []);
     }
     assert.equal(new Set(qs.map(dialogSig)).size, 1);
-    // By the rows alone (no transcript) an answerable prompt differs from
-    // second to second. One that takes no answer is one notification while
-    // only its clock moves.
+    // By the rows alone (no transcript) it is one prompt through the ticks as
+    // well — one post — and it takes no answer: under a countdown, rows that
+    // read the same are not proof of the same request (TASK-BYSTH round 2;
+    // PR #17 had such a prompt differ from second to second, a post per tick).
     const untied = ticks.map((tick) => permission(live(`${name}.${capture}-${tick}.txt`)));
-    assert.equal(new Set(untied.map(dialogSig)).size, untied[0].requiresTerminal ? 1 : ticks.length);
-    assert.equal(untied[0].requiresTerminal, qs[0].requiresTerminal);
+    assert.equal(new Set(untied.map(dialogSig)).size, 1);
+    for (const q of untied) assert.equal(q.terminalWhy, top === 'title' || top === 'rule' ? 'unbound' : 'cut');
+    // The notice is read as what it is — its rows of the detail, its clock —
+    // and its clock runs down from tick to tick.
+    const clocks = untied.map((q) => q.expiry!.seconds!);
+    for (const [i, q] of untied.entries()) {
+      const [from, to] = q.expiry!.rows;
+      assert.match(q.detail!.split('\n').slice(from, to).join(' ').replace(/\s+/g, ' '), new RegExp(`^ ⚠ Claude Code will automatically ${words} this request in ${q.expiry!.clock}, to avoid .* an unattended session$`));
+      assert.equal(q.expiry!.clock, `1:${clocks[i] - 60}`);
+      if (i > 0) assert.ok(clocks[i] < clocks[i - 1]);
+    }
   });
 }
 
@@ -259,8 +273,10 @@ test('title off screen but the whole box on it: tied as a hint, answered in the 
   assert.equal(noHeader.toolUseId, 'toolu_main0');
   assert.equal(noHeader.terminalWhy, 'cut');
   // Read by the pane alone the same holds: without the rule, only a first row
-  // set as a Bash title says the dialog is on screen from its start.
-  assert.equal(permission(six).requiresTerminal, undefined);
+  // set as a Bash title says the dialog is on screen from its start. (Shown
+  // from its start, it is still under a countdown with no call to tie it to:
+  // that is what it takes no key for then — `unbound`, not `cut`.)
+  assert.equal(permission(six).terminalWhy, 'unbound');
   assert.equal(permission(rows.slice(1).join('\n')).terminalWhy, 'cut'); // description first
   assert.equal(permission(rows.slice(2).join('\n')).terminalWhy, 'cut'); // top border first
   const sub = permission(live('subagent13-2.1.323.styled-open.txt')); // a subagent's title first
@@ -387,7 +403,7 @@ for (const version of ['2.1.323', '2.1.306']) {
     const own = live(`heredoc6-${version}.styled-tick0.txt`);
     const ownOpen = pending(`heredoc6-${version}.transcript`);
     assert.equal(permission(own, ownOpen).requiresTerminal, undefined);
-    assert.equal(permission(own).requiresTerminal, undefined);
+    assert.equal(permission(own).terminalWhy, 'unbound'); // shown from its title; nothing ties it under its countdown
     assert.equal(permission(captureText(own), ownOpen).terminalWhy, 'cut');
     assert.equal(permission(captureText(own)).terminalWhy, 'cut');
     assert.equal(permission(live(`subagent13-${version}.pane-open.txt`)).terminalWhy, 'cut');
@@ -409,7 +425,10 @@ for (const version of ['2.1.323', '2.1.306']) {
     const pane = live(`descfrom-${version}.pane-tick0.txt`);
     const other = permission(pane.replace(/^ Bash command$/m, ' Bash command · from the general-purpose agent'), open);
     assert.equal(other.toolUseId, undefined);
-    assert.equal(other.requiresTerminal, undefined);
+    assert.equal(other.title, 'Bash command · from the general-purpose agent');
+    // (Shown from its title. This capture has the hand's own countdown under it,
+    // which a subagent's prompt does not have: untied under one, it takes no key.)
+    assert.equal(other.terminalWhy, 'unbound');
     // …also with the rule off screen, where nothing proves which row the title is.
     const rows = pane.split('\n');
     const top = rows.findIndex((row) => /^─{6,}/.test(row));
@@ -424,7 +443,9 @@ for (const version of ['2.1.323', '2.1.306']) {
 test('only bold on exactly the words "Bash command" makes a first row a title', () => {
   const plain = captureText(live('heredoc6-2.1.323.styled-tick0.txt'));
   const body = plain.slice(plain.indexOf('\n'));
-  const first = (row: string) => permission(row + body).requiresTerminal;
+  // Tied to its pending call, the prompt takes an answer exactly when its title is proven.
+  const open = pending('heredoc6-2.1.323.transcript');
+  const first = (row: string) => permission(row + body, open).requiresTerminal;
   assert.equal(first(' \x1b[1m\x1b[38;5;153mBash command\x1b[0m'), undefined); // as captured, dark theme
   assert.equal(first(' \x1b[1m\x1b[94mBash command\x1b[0m'), undefined); // dark-ansi
   assert.equal(first(' \x1b[0;1mBash command\x1b[22m'), undefined);
@@ -519,7 +540,8 @@ for (const version of ['2.1.323', '2.1.306']) {
   });
 
   test(`two pending calls that the dialog cannot tell apart are tied to neither and take no answer (Claude ${version})`, () => {
-    // Same command AND same description; only the queue position moves.
+    // Same command AND same description; only the queue position moves. As on
+    // PR #17 (TASK-BYSTH round 1 answered the one on screen).
     const at = (tag: string) => permission(live(`twin-${version}.pane-${tag}.txt`), pending(`twin-${version}.transcript-${tag}`));
     const [first, overlap, second] = ['first', 'overlap', 'second'].map(at);
     for (const q of [first, overlap]) {
@@ -530,7 +552,8 @@ for (const version of ['2.1.323', '2.1.306']) {
     }
     // The queue position on screen stays in the identity: 1 of 2 is not 2 of 2.
     assert.notEqual(dialogSig(first), dialogSig(overlap));
-    // Once the first call has its result, one call fits: a new, answerable post.
+    assert.notEqual(requestKey(first), requestKey(overlap));
+    // Once the first call has its result, one call fits: a new post, tied.
     assert.equal(second.toolUseId, 'toolu_main1');
     assert.equal(second.requiresTerminal, undefined);
     assert.notEqual(dialogSig(overlap), dialogSig(second));
@@ -544,10 +567,14 @@ test('a queue position on a narrow pane is still the hand\'s own title', () => {
   assert.equal(q.requiresTerminal, undefined);
 });
 
+const HAND = { personaName: 'Scout', suffix: 'scout', tmuxSession: 'cc-scout' } as BotEntry;
+
 test('the post is what the dialog shows; pending calls that both fit its rows leave it untied', () => {
   // A line break in the box may stand for a space or a newline in the command,
   // so two different pending calls can both match these rows. Then neither is
-  // tied — whichever comes first in the transcript — and no answer is taken.
+  // tied — whichever comes first in the transcript. What is posted is the rows
+  // of the dialog on screen; the transcript adds nothing to them. Nothing
+  // says which of the two is asking: it takes no key (as on PR #17).
   const shown = BOXED.replace(/^ rm -rf [^\n]+$/m, () => ' │ tail -f /dev/null #\n │ rm -rf "$HOME"');
   assert.match(shown, /╌\n │ tail -f/);
   const oneLine = bash('tail -f /dev/null # rm -rf "$HOME"', 'comment'); // the rm is a comment
@@ -558,6 +585,21 @@ test('the post is what the dialog shows; pending calls that both fit its rows le
     assert.deepEqual(q.lookalikes, open.map((u) => u.id));
     assert.equal(q.terminalWhy, 'lookalike');
     assert.match(q.detail!, /\n │ tail -f \/dev\/null #\n │ rm -rf "\$HOME"\n╌/); // two rows, as on screen
+    assert.match(q.shown!, /^ Bash command\n[\s\S]*\n │ tail -f \/dev\/null #\n │ rm -rf "\$HOME"\n╌+$/);
+    const post = formatQuestionPosts(HAND, { sig: dialogSig(q), postedAt: '', questions: [q] }, 'CC Spawner').posts.join('\n');
+    assert.match(post, /2 pending requests of this hand read exactly like this one, and nothing on its screen says which of them is asking\. An answer could reach another of them than the one you see, so I will not pass one on\./);
+    assert.doesNotMatch(post, /comment|runs-rm|Answer with the displayed option number/);
+    // The place in the queue is a row like any other — "2 of 2" is another
+    // screen than "1 of 2" — but it does not say which call is asking: the
+    // TUI's count starts over when no request is open, and the same place
+    // comes round. No key with it either.
+    const placed = (place: string) => permission(shown.replace(/^ Bash command$/m, ` Bash command${' '.repeat(60)}${place}`), open);
+    for (const place of ['1 of 2', '2 of 2', '1 of 1', '3 of 2']) {
+      assert.deepEqual(placed(place).lookalikes, open.map((u) => u.id), place);
+      assert.equal(placed(place).terminalWhy, 'lookalike', place);
+    }
+    assert.notEqual(dialogSig(placed('1 of 2')), dialogSig(placed('2 of 2')));
+    assert.notEqual(dialogSig(placed('1 of 2')), dialogSig(q));
   }
   const alone = permission(shown, [twoLines]);
   assert.equal(alone.toolUseId, 'runs-rm');
@@ -668,7 +710,7 @@ test('footers wrapped onto the last row still belong to their own dialog', () =>
   assert.deepEqual(narrow.options.map((o) => o.label), ['Yes', 'No']);
   assert.equal(narrow.requiresTerminal, undefined);
   assert.match(narrow.detail!, /printf reviewer/);
-  assert.equal(permission(live('narrow26-2.1.323.pane-tick0.txt')).requiresTerminal, undefined);
+  assert.equal(permission(live('narrow26-2.1.323.pane-tick0.txt'), pending('narrow26-2.1.323.transcript')).requiresTerminal, undefined);
 
   // 38 columns: AskUserQuestion's "… to navigate ·" / "Esc to cancel".
   const ask = parseDialogPane(live('ask-wrapped38-2.1.323.pane.txt'));
@@ -697,29 +739,125 @@ test('footers wrapped onto the last row still belong to their own dialog', () =>
   if (more.kind === 'question') assert.deepEqual(more.q.options.map((o) => o.label), ['Apple', 'Banana']);
 });
 
-test('only the cursor list takes digits: screen-reader and unknown input layouts are terminal-only', () => {
+test('only the cursor list takes a bare digit: the screen-reader layout is read as such, unknown input layouts take no key', () => {
   for (const name of ['ax-2.1.323', 'ax-2.1.306']) {
     const open = pending(`${name}.transcript`);
     const q = permission(live(`${name}.pane-tick0.txt`), open);
-    assert.equal(q.requiresTerminal, true);
+    // TASK-BYSTH: answered in steps (digit, look, Enter) — no longer terminal-only.
+    assert.equal(q.requiresTerminal, undefined);
+    assert.equal(q.entry, 'reader');
+    assert.equal(q.typed, undefined);
+    assert.equal(q.cursor, undefined);
     assert.equal(q.toolUseId, 'toolu_main0'); // one post for the life of the prompt
-    assert.equal(q.terminalWhy, 'input');
+    assert.equal(q.expiry?.clock, 'about 2 minutes');
+    assert.equal(q.expiry?.seconds, undefined); // not a clock to hold an answer to
     assert.match(q.shown!, /^Permission Required: Bash command\n> Local scratch-only permission prompt probe\n[\s\S]*\n> rm -rf [\s\S]*\n> Dangerous rm operation/);
     assert.match(q.detail!, /automatically (block|deny) this request in about 2 minutes/);
     assert.equal(permission(live(`${name}.pane-tick0.txt`), [bash(`${open[0].input.command as string} && true`)]).toolUseId, undefined);
   }
-  // Heading scrolled off, instruction wrapped over two rows; a typed digit awaiting Enter.
-  for (const name of ['permission-ax-clipped', 'permission-ax-open', 'permission-ax-typed']) {
+  // Heading scrolled off: not shown from its start, no key. Instruction
+  // wrapped over two rows; a typed digit awaiting Enter.
+  for (const [name, entry, typed, why] of [
+    ['permission-ax-clipped', 'reader', undefined, 'cut'], ['permission-ax-open', 'reader', undefined, undefined], ['permission-ax-typed', 'reader', '2', undefined],
+  ] as const) {
     const q = permission(fixture(name), [bash(BOXED_COMMAND)]);
-    assert.equal(q.requiresTerminal, true, name);
+    assert.equal(q.entry, entry, name);
+    assert.equal(q.typed, typed, name);
+    assert.equal(q.terminalWhy, why, name);
+    assert.equal(q.requiresTerminal, why ? true : undefined, name);
     assert.deepEqual(q.options.map((o) => o.label), ['Yes', 'No']);
   }
   assert.equal(permission(fixture('permission-ax-clipped'), [bash(BOXED_COMMAND)]).toolUseId, undefined);
+  // The typed digit is part of what a post says, not of which request it is.
+  const [empty, digit] = ['permission-ax-open', 'permission-ax-typed'].map((name) => permission(fixture(name), [bash(BOXED_COMMAND)]));
+  assert.notEqual(dialogSig(empty), dialogSig(digit));
+  assert.equal(requestKey(empty), requestKey(digit));
+  // The layout is known by its instruction line: another range than the
+  // options listed, more typed than a few characters, or rows between its
+  // quoted block and the question that are not its expiry notice, and it is not.
+  const reader = fixture('permission-ax-open');
+  assert.equal(permission(reader.replace('[1-2]', '[1-3]')).terminalWhy, 'input');
+  assert.equal(permission(fixture('permission-ax-typed').replace('cancel: 2', 'cancel: 21212')).terminalWhy, 'input');
+  // A field with blanks in it cannot be counted from here (a leading one
+  // would stay behind the backspaces): not an input known to be read.
+  for (const field of ['cancel:  2', 'cancel: 1 2', 'cancel:   ']) {
+    const blank = permission(fixture('permission-ax-typed').replace('cancel: 2', field), [bash(BOXED_COMMAND)]);
+    assert.equal(blank.entry, field.trim() === 'cancel:' ? 'reader' : undefined, JSON.stringify(field));
+    assert.equal(blank.terminalWhy, field.trim() === 'cancel:' ? undefined : 'input', JSON.stringify(field));
+  }
+  // (That last one is `layout`, not `cut`: the prompt is on screen from its
+  // heading, and a taller terminal would show nothing more of it.)
+  assert.equal(permission(reader.replace('\nDo you want to proceed?', '\nsome other row\nDo you want to proceed?')).terminalWhy, 'layout');
+  assert.equal(permission(reader.replace('Permission Required: Bash command', 'Permission Required: Bash command\n> x\nPermission Required: Bash command')).terminalWhy, 'cut');
   assert.equal(permission(PERMISSION.replace(' ❯ 1. Yes', '   1. Yes')).requiresTerminal, true);
   assert.equal(permission(PERMISSION.replace('\n Esc to cancel', '\n Press Enter to confirm\n Esc to cancel')).requiresTerminal, true);
 });
 
-test('amending is not the digit list: a cursor alone does not make a digit an answer', () => {
+// Review of e90e6be (LOW): two screen-reader prompts that were all on screen,
+// with their call pending, and posted as "top off the hand's screen".
+test("screen-reader layout: the TUI's own hint row is known; any other row there is an unknown layout, not a short terminal", () => {
+  for (const version of ['2.1.323', '2.1.306']) {
+    const pane = live(`reader-rule-${version}.pane-open.txt`);
+    assert.match(pane, /\n> Permission rule Bash requires confirmation for this command\.\n\/permissions to update rules\nDo you want to proceed\?\n/);
+    const call = bash('printf reviewer', 'toolu_main0', 'Print a word');
+    const q = permission(pane, [call]);
+    assert.equal(q.title, 'Bash command');
+    assert.equal(q.toolUseId, 'toolu_main0');
+    assert.equal(q.entry, 'reader');
+    assert.equal(q.requiresTerminal, undefined, version);
+    // The post shows the hint row with the rest: nothing on screen is left out of it.
+    const post = formatQuestionPosts(HAND, { sig: dialogSig(q), postedAt: '', questions: [q] }, 'CC Spawner').posts.join('\n');
+    assert.match(post, /\n> Permission rule Bash requires confirmation for this command\.\n\/permissions to update rules\n```\n/);
+    assert.match(post, /answer hand:cc-scout <number>/);
+    // With no call to tie it to it takes no key, as any screen-reader prompt.
+    assert.equal(permission(pane).terminalWhy, 'unbound');
+    // A row there that is not known: posted as that — nothing about its height.
+    for (const strange of [pane.replace('/permissions to update rules', '/permissions to update rules\nPress ? for more'), pane.replace('/permissions to update rules', '/permissions  to update rules now')]) {
+      const odd = permission(strange, [call]);
+      assert.equal(odd.terminalWhy, 'layout');
+      assert.equal(odd.toolUseId, 'toolu_main0'); // a readable transcript does not make it answerable
+      const card = formatQuestionPosts(HAND, { sig: dialogSig(odd), postedAt: '', questions: [odd] }, 'CC Spawner').posts.join('\n');
+      assert.match(card, /Between this request and its question the screen shows rows I do not know from this layout.*will not pass on an answer to it\. What follows is what its screen shows\. This permission prompt requires terminal input\./);
+      assert.doesNotMatch(card, /off the hand.s screen|too short|answer hand:cc-scout <number>/);
+      assert.match(card, /\n\*\*Bash command\*\*\n```\n> Print a word\n> printf reviewer\n/);
+    }
+  }
+});
+
+test('screen-reader layout: the hand\'s own heading with its place in the queue is tied to its call; a subagent\'s is not', () => {
+  for (const version of ['2.1.323', '2.1.306']) {
+    const command = 'sleep 20 && rm -rf "$(printf %s /tmp/scratch/sub)"';
+    // The hand's transcript: its Agent call and its own Bash call. The
+    // subagent's call, the same command and description, is in another file.
+    const open: OpenToolUse[] = [{ id: 'toolu_main0', name: 'Agent', input: { description: 'probe' } }, bash(command, 'toolu_main1', 'sub rm')];
+    const own = permission(live(`reader-queue-${version}.pane-own.txt`), open);
+    assert.equal(own.title, 'Bash command 1 of 4');
+    assert.equal(own.toolUseId, 'toolu_main1');
+    assert.equal(own.entry, 'reader');
+    assert.equal(own.requiresTerminal, undefined, version);
+    assert.match(own.shown!, /^Permission Required: Bash command 1 of 4\n> sub rm\n> sleep 20/);
+    // Another command pending, or none: not tied, and under its countdown no key.
+    assert.equal(permission(live(`reader-queue-${version}.pane-own.txt`), [bash(`${command} && true`, 'toolu_main1', 'sub rm')]).terminalWhy, 'unbound');
+    assert.equal(permission(live(`reader-queue-${version}.pane-own.txt`)).terminalWhy, 'unbound');
+    // The subagent's prompt reads the same below its heading, and the hand's
+    // call is still pending: tied to nothing, no key — and not the same request.
+    const sub = permission(live(`reader-queue-${version}.pane-subagent.txt`), open);
+    assert.equal(sub.title, 'Bash command · from the general-purpose agent 2 of 4');
+    assert.equal(sub.toolUseId, undefined);
+    assert.equal(sub.terminalWhy, 'unbound');
+    assert.notEqual(requestKey(sub), requestKey(own));
+    assert.equal(sameDialog({ sig: dialogSig(own), questions: [own] }, sub), false);
+    // The place in the queue is part of what is on screen, never what ties it.
+    const second = permission(live(`reader-queue-${version}.pane-own.txt`).replace('Bash command 1 of 4', 'Bash command 3 of 4'), open);
+    assert.equal(second.toolUseId, 'toolu_main1');
+    assert.notEqual(dialogSig(second), dialogSig(own));
+    for (const title of ['Bash command 1 of', 'Bash command  1 of 4', 'Bash command 1 of 4 more', 'Bash commands 1 of 4']) {
+      assert.equal(permission(live(`reader-queue-${version}.pane-own.txt`).replace('Bash command 1 of 4', title), open).toolUseId, undefined, title);
+    }
+  }
+});
+
+test('amending is not the digit list: a cursor alone does not make a digit an answer; the amended row is read as that', () => {
   for (const version of ['2.1.323', '2.1.306']) {
     const open = pending(`amend-${version}.transcript`);
     // As asked: cursor list, footer "Esc to cancel · Tab to amend".
@@ -734,23 +872,35 @@ test('amending is not the digit list: a cursor alone does not make a digit an an
       assert.equal(pane.match(/❯ \d\. /g)?.length, 1);
       for (const q of [permission(pane, open), permission(pane)]) {
         assert.deepEqual(q.options.map((o) => o.label), labels);
-        assert.equal(q.requiresTerminal, true);
-        assert.equal(q.terminalWhy, 'input');
+        // TASK-BYSTH: read as what it is — the list after Tab — and answered
+        // by leaving the field first, where a pending call says which request
+        // it is (two keys, a look between them). A digit alone is never sent
+        // to it; with nothing but its rows to go by it takes no key at all.
+        assert.equal(q.terminalWhy, q.toolUseId ? undefined : 'unbound');
+        assert.equal(q.entry, 'amend');
+        assert.equal(q.cursor, tag === 'yes' ? 1 : 2);
       }
       assert.equal(permission(pane, open).toolUseId, 'toolu_main0');
       assert.notEqual(dialogSig(permission(pane, open)), dialogSig(list));
+      // The same request as the list's, in another state.
+      assert.equal(requestKey(permission(pane, open)), requestKey(list));
+      assert.equal(requestKey(permission(pane)), requestKey(permission(live(`amend-${version}.pane-open.txt`))));
     }
+    assert.equal(list.entry, 'list');
+    assert.equal(list.cursor, 1);
     // The reported heredoc prompt, amended while its countdown ran.
     const heredoc = permission(live(`amend-heredoc6-${version}.pane-yes.txt`), pending(`amend-heredoc6-${version}.transcript`));
     assert.equal(heredoc.toolUseId, 'toolu_main0');
-    assert.equal(heredoc.terminalWhy, 'input');
+    assert.equal(heredoc.entry, 'amend');
+    assert.equal(heredoc.expiry, undefined); // the countdown is gone while amending
     // 26 columns: a blank row follows the text field. Both options are still
     // read (the post lists them), and it is still not the cursor list.
     const narrow = live(`amend26-${version}.pane-yes.txt`);
     assert.match(narrow, /\n ❯ 1\. Yes,and tell Claude…\n\n   2\. No\n\n Esc to cancel\n$/);
     const spaced = permission(narrow, pending(`amend26-${version}.transcript`));
     assert.deepEqual(spaced.options.map((o) => o.label), ['Yes,and tell Claude…', 'No']);
-    assert.equal(spaced.terminalWhy, 'input');
+    assert.equal(spaced.entry, 'amend');
+    assert.equal(spaced.requiresTerminal, undefined);
     assert.equal(spaced.toolUseId, 'toolu_main0');
   }
   // Options set apart by blank rows are not the cursor list, whatever the footer says.
@@ -762,9 +912,27 @@ test('amending is not the digit list: a cursor alone does not make a digit an an
   const gap = permission(PERMISSION.replace('   2. No\n', '\n   3. No\n'));
   assert.deepEqual(gap.options.map((o) => o.label), ['Yes']);
   assert.equal(gap.terminalWhy, 'input');
-  // A typed digit shows up in the amendment, not as a choice.
-  assert.equal(permission(PERMISSION.replace('1. Yes', '1. Yes, 2').replace(' · Tab to amend', '')).requiresTerminal, true);
+  // A typed digit shows up in the amendment, not as a choice: still the amend field.
+  const typedInto = permission(PERMISSION.replace('1. Yes', '1. Yes, 2').replace(' · Tab to amend', ''));
+  assert.equal(typedInto.entry, 'amend');
+  assert.equal(requestKey(typedInto), requestKey(permission(PERMISSION)));
+  // A cursor list without the hint and without an amended row is no state known here.
   assert.equal(permission(PERMISSION.replace('Esc to cancel · Tab to amend', 'Esc to cancel')).requiresTerminal, true);
+  assert.equal(permission(PERMISSION.replace('Esc to cancel · Tab to amend', 'Esc to cancel')).terminalWhy, 'input');
+  // Only the row the cursor is on reads by its first word; another row that
+  // starts the same is that option, whole.
+  const three = PERMISSION.replace('   2. No', "   2. Yes, and don't ask again\n   3. No");
+  assert.notEqual(requestKey(permission(three)), requestKey(permission(three.replace("2. Yes, and don't ask again", '2. Yes'))));
+  // …and with the cursor on it under a footer without the hint, it is still
+  // that option — a row between the first and the last is no text field.
+  const onSecond = permission(three.replace(' ❯ 1. Yes', '   1. Yes').replace("   2. Yes, and don't ask again", " ❯ 2. Yes, and don't ask again").replace(' · Tab to amend', ''));
+  assert.equal(onSecond.entry, undefined);
+  assert.equal(onSecond.terminalWhy, 'input');
+  // The last row amended ("No, …") is one; the first as "No, …" or the last as "Yes, …" is not.
+  const footless = three.replace(' · Tab to amend', '').replace(' ❯ 1. Yes', '   1. Yes');
+  assert.equal(permission(footless.replace('   3. No', ' ❯ 3. No, and tell Claude what to do differently')).entry, 'amend');
+  assert.equal(permission(footless.replace('   3. No', ' ❯ 3. Yes, x')).entry, undefined);
+  assert.equal(permission(PERMISSION.replace(' ❯ 1. Yes', ' ❯ 1. No, x').replace(' · Tab to amend', '')).entry, undefined);
   // The list's footer wrapped, or followed by more hints, is still the list's.
   assert.equal(permission(PERMISSION.replace('Esc to cancel · Tab to amend', 'Esc to cancel · Tab to\n amend')).requiresTerminal, undefined);
   assert.equal(permission(PERMISSION.replace('Tab to amend', 'Tab to amend · ctrl+x ctrl+k twice to stop background agents')).requiresTerminal, undefined);
@@ -804,7 +972,14 @@ test('a malformed option block is not bridged', () => {
   assert.equal(permission(PERMISSION.replace(' · Tab to amend', ', Tab to amend')).requiresTerminal, undefined);
 });
 
-test('without a pending tool_use no row is dropped from the identity — countdown text included', () => {
+test('without a pending tool_use every row is the identity; under the TUI\'s expiry notice such a prompt takes no key and is one post through its ticks', () => {
+  // PR #17: the notice counted like any row — the prompt was another one every
+  // second, reposted per tick, an answer after a tick refused. TASK-BYSTH
+  // round 1 set the notice aside and held an answer to the time it ends; a
+  // request asked right after another ends a moment after it, so that proved
+  // nothing. Now the notice — the rows that END the detail, under the command
+  // box — makes an untied prompt one that takes no answer, posted once.
+  // Countdown text anywhere else is the request's own and counts as ever.
   const LOOKALIKE = '⚠ Claude Code will automatically block this request in 0:24, to avoid holding up an unattended session';
   for (const pane of [
     BOXED,
@@ -812,13 +987,173 @@ test('without a pending tool_use no row is dropped from the identity — countdo
     BOXED.replace(' │ Dangerous rm', ` │ ${LOOKALIKE}\n │ Dangerous rm`),
     BOXED.replace(/^╌+\n/m, ''),
     PERMISSION.replace(' Dangerous rm', ` ${LOOKALIKE}\n Dangerous rm`),
+    // …in the command box, as its last rows:
+    BOXED.replace(/^( rm -rf [^\n]+)$/m, `$1\n ${LOOKALIKE}`),
   ]) {
     const q = permission(pane);
     assert.equal(q.toolUseId, undefined);
-    for (const [from, to] of [['1:59', '1:58'], ['0:24', '0:25'], ['nonexistent', 'nonexistenu'], ['Dangerous rm', 'Dangerous mv']]) {
+    // (BOXED without its top border, under its rule, is no layout known here:
+    // no command box to look under. Its rows end in the notice all the same —
+    // round 2 looks for it from the title down in such a dialog: PR #17 had
+    // its clock count as a row, and an answer at the same tick was passed on.)
+    const timed = pane.includes('1:59');
+    assert.equal(q.terminalWhy, timed ? 'unbound' : undefined);
+    for (const [from, to] of [['0:24', '0:25'], ['nonexistent', 'nonexistenu'], ['Dangerous rm', 'Dangerous mv']]) {
       if (pane.includes(from)) assert.notEqual(dialogSig(q), dialogSig(permission(pane.replaceAll(from, to))), `${from} → ${to}`);
     }
+    if (timed) {
+      assert.equal(q.expiry?.seconds, 119);
+      assert.equal(dialogSig(q), dialogSig(permission(pane.replace('1:59', '1:58'))), 'the notice under the request: one post through its ticks');
+      // The same rows without a notice are another prompt — one that takes an answer, by its rows.
+      const [from, to] = q.expiry!.rows;
+      const rows = pane.split('\n');
+      const at = rows.findIndex((row) => row.includes('will automatically block this request in 1:59'));
+      const bare = permission([...rows.slice(0, at), ...rows.slice(at + to - from)].join('\n'));
+      assert.equal(bare.requiresTerminal, undefined);
+      assert.equal(bare.expiry, undefined);
+      assert.notEqual(dialogSig(q), dialogSig(bare));
+      assert.notEqual(requestKey(q), requestKey(bare));
+    } else {
+      assert.equal(q.expiry, undefined);
+    }
   }
+  // A notice with rows after it is not the one that ends the detail.
+  const trailed = permission(BOXED.replace(' Do you want to proceed?', ' some other row\n\n Do you want to proceed?'));
+  assert.equal(trailed.expiry, undefined);
+  assert.notEqual(dialogSig(trailed), dialogSig(permission(BOXED.replace(' Do you want to proceed?', ' some other row\n\n Do you want to proceed?').replace('1:59', '1:58'))));
+});
+
+test('an expiry notice never says "the same request"; it says "another" — it ends at another time, reads more minutes, or is there after a key', () => {
+  const notice = (q: PendingQ, readAt: number) => stampExpiry({ kind: 'question' as const, q: structuredClone(q) }, readAt).q.expiry;
+  const t0 = 1_800_000_000_000;
+  const exact = permission(BOXED); // "1:59"
+  const at = (clock: string, ms: number) => notice(permission(BOXED.replace('1:59', clock)), t0 + ms);
+  assert.equal(at('1:59', 0)?.at, t0 + 119_000);
+  // One countdown, read again: allowed (and no more than that — see sameDialog).
+  for (const [clock, ms] of [['1:39', 20_000], ['1:40', 20_000], ['1:38', 20_000], ['1:57', 0]] as const) assert.equal(expiryAllows(at('1:59', 0), at(clock, ms)), true, clock);
+  // Asked again: the clock is back at 1:59, or reads what a countdown started 10 s / 4 s later would.
+  assert.equal(expiryAllows(at('1:59', 0), at('1:59', 20_000)), false);
+  assert.equal(expiryAllows(at('1:59', 0), at('1:49', 20_000)), false);
+  assert.equal(expiryAllows(at('1:59', 0), at('1:55', 0)), false);
+  // The notice gone (a key at the dialog dropped it): nothing to refuse on.
+  assert.equal(expiryAllows(at('1:59', 0), undefined), true);
+  // A notice where there was none is a request asked since: a key takes the
+  // notice away for good, and a prompt read without one does not grow one.
+  assert.equal(expiryAllows(undefined, at('1:59', 0)), false);
+  assert.equal(expiryAllows(undefined, undefined), true);
+  assert.ok(exact.expiry && exact.expiry.at === undefined && exact.expiry.about === undefined);
+  // The screen-reader layout counts in minutes: no end time. It only goes down.
+  for (const version of ['2.1.323', '2.1.306']) {
+    const pane = live(`reader-${version}.pane-open.txt`);
+    const two = notice(permission(pane), t0);
+    const one = notice(permission(pane.replace('about 2 minutes', 'about 1 minute')), t0 + 70_000);
+    assert.deepEqual([two?.clock, two?.about, two?.at, one?.about], ['about 2 minutes', 120, undefined, 60]);
+    assert.equal(expiryAllows(two, one), true);
+    assert.equal(expiryAllows(two, notice(permission(pane), t0 + 8_000)), true); // 8 s on, the next request reads the same: no proof either way
+    assert.equal(expiryAllows(one, two), false); // more than it read: asked again
+    assert.equal(expiryAllows(two, at('0:45', 75_000)), true); // on to seconds
+    assert.equal(expiryAllows(at('0:45', 75_000), two), false);
+  }
+});
+
+test('in steps, the request is the pending call that identifies it — with or without its expiry notice, which the TUI drops at the first key', () => {
+  for (const version of ['2.1.323', '2.1.306']) {
+    // heredoc6 under its countdown, and after Tab (amend-heredoc6): no notice, one blank row fewer.
+    // Not the same capture session (other scratch paths were replaced alike), same rows, same call.
+    const names = [`heredoc6-${version}.styled-tick0.txt`, `amend-heredoc6-${version}.pane-yes.txt`];
+    const [ticking, amended] = names.map((name, i) => permission(live(name), pending(`${i ? 'amend-' : ''}heredoc6-${version}.transcript`)));
+    assert.deepEqual([ticking.title, amended.title], ['Bash command', 'Bash command']); // both shown from their title
+    assert.deepEqual([ticking.toolUseId, amended.toolUseId], ['toolu_main0', 'toolu_main0']);
+    assert.deepEqual([ticking.requiresTerminal, amended.requiresTerminal], [undefined, undefined]);
+    assert.ok(ticking.expiry);
+    assert.equal(amended.expiry, undefined);
+    assert.notEqual(dialogSig(ticking), dialogSig(amended));
+    assert.equal(requestKey(ticking), requestKey(amended));
+    assert.notEqual(requestKey(ticking), requestKey(permission(live(names[1]).replace('scratch line 3', 'scratch line X'), pending(`amend-heredoc6-${version}.transcript`))));
+    // By their rows alone nothing says the prompt without the notice is the
+    // one that had it (TASK-BYSTH round 1 took it for that, and after a Tab
+    // sent the digit to a request asked meanwhile — review control "between").
+    // Neither takes a key: one is under a countdown, the other in its text field.
+    const [bare, bareAmended] = names.map((name) => permission(live(name)));
+    assert.deepEqual([bare.terminalWhy, bareAmended.terminalWhy], ['unbound', 'unbound']);
+    assert.notEqual(requestKey(bare), requestKey(bareAmended));
+    // The screen-reader layout: typed into, its notice is gone too.
+    const reader = pending(`reader-${version}.transcript`);
+    const [open, typed] = ['open', 'typed'].map((tag) => permission(live(`reader-${version}.pane-${tag}.txt`), reader));
+    assert.ok(open.expiry);
+    assert.equal(typed.expiry, undefined);
+    assert.deepEqual([open.toolUseId, open.requiresTerminal, open.entry], ['toolu_main0', undefined, 'reader']);
+    assert.equal(requestKey(open), requestKey(typed));
+    // Untied it is posted once through its minutes, and takes no key.
+    const pane = live(`reader-${version}.pane-open.txt`);
+    const untied = permission(pane);
+    assert.deepEqual([untied.toolUseId, untied.terminalWhy, untied.entry], [undefined, 'unbound', 'reader']);
+    assert.equal(dialogSig(untied), dialogSig(permission(pane.replace('about 2 minutes', 'about 1 minute'))));
+    assert.notEqual(requestKey(untied), requestKey(permission(live(`reader-${version}.pane-typed.txt`))));
+    // Tied to its call, the clock is no part of it.
+    assert.equal(dialogSig(open), dialogSig(permission(pane.replace('about 2 minutes', 'about 1 minute'), reader)));
+  }
+  // A dialog without a command box (or the quoted block): searched from its
+  // title down. With rows that end in the notice it is a prompt under a
+  // countdown, which — no call is ever tied to such a dialog — takes no key and
+  // is one post through its ticks. (PR #17: not searched; the clock was a row
+  // like any other, so it was reposted per tick, and an answer that found the
+  // clock reading what the post showed was passed on.)
+  const unboxed = PERMISSION.replace(' Do you want to proceed?', ' ⚠ Claude Code will automatically block this request in 1:59, to avoid holding up an unattended session\n\n Do you want to proceed?');
+  assert.equal(permission(PERMISSION).requiresTerminal, undefined);
+  assert.equal(permission(unboxed).expiry?.seconds, 119);
+  assert.equal(permission(unboxed).terminalWhy, 'unbound');
+  assert.equal(dialogSig(permission(unboxed)), dialogSig(permission(unboxed.replace('1:59', '1:58'))));
+  assert.notEqual(dialogSig(permission(unboxed)), dialogSig(permission(PERMISSION)));
+});
+
+test('which post it is: the same identity under a countdown that ends at another time is the request asked again — for every kind of prompt', () => {
+  const read = (pane: string, open: OpenToolUse[], readAt: number): PendingQ => {
+    const d = stampExpiry(parseDialogPane(pane, open), readAt);
+    assert.equal(d.kind, 'question');
+    return d.q;
+  };
+  const t0 = 1_800_000_000_000;
+  const twins = [bash(BOXED_COMMAND, 'a'), bash(BOXED_COMMAND, 'b')];
+  for (const [what, open, why] of [['untied', [], 'unbound'], ['two fitting calls', twins, 'lookalike'], ['tied', [bash(BOXED_COMMAND)], undefined]] as const) {
+    const at = (clock: string, ms: number) => read(BOXED.replace('1:59', clock), [...open], t0 + ms);
+    const posted = at('1:59', 0);
+    assert.equal(posted.terminalWhy, why, what);
+    assert.equal(posted.expiry?.at, t0 + 119_000);
+    const card = { sig: dialogSig(posted), questions: [posted] };
+    // 20 s on, the clock reads 1:39 (give or take the second it shows): the
+    // post's prompt still — nothing to post again. (Whether it takes a KEY is
+    // not this: the two that no call identifies take none at any tick.)
+    for (const clock of ['1:39', '1:40', '1:38']) assert.equal(sameDialog(card, at(clock, 20_000)), true, `${what} ${clock}`);
+    assert.equal(sameDialog(card, at('1:57', 0)), true, what);
+    // Blocked and asked again: the clock is back at 1:59, or reads what a
+    // countdown started 10 s later would. A new post — and for the tied one,
+    // whose call id would have vouched for it, no key on the old.
+    assert.equal(sameDialog(card, at('1:59', 20_000)), false, what);
+    assert.equal(sameDialog(card, at('1:49', 20_000)), false, what);
+    assert.equal(sameDialog(card, at('1:55', 0)), false, what);
+    // A post made with no notice on screen (or by a build that did not read
+    // it): the notice that is there now was not — posted anew.
+    assert.equal(sameDialog({ sig: card.sig, questions: [{ ...posted, expiry: undefined }] }, at('1:59', 60_000)), false, what);
+    // The notice gone (a key at the terminal dropped it) is no ground to refuse:
+    // a tied prompt is its call's still. (The untied one reads as another
+    // prompt then — one that takes an answer by its rows.)
+    const bare = (() => {
+      const rows = BOXED.split('\n');
+      const from = rows.findIndex((row) => row.includes('will automatically block this request in 1:59'));
+      return read([...rows.slice(0, from), ...rows.slice(from + posted.expiry!.rows[1] - posted.expiry!.rows[0])].join('\n'), [...open], t0 + 30_000);
+    })();
+    assert.equal(bare.expiry, undefined);
+    assert.equal(sameDialog(card, bare), what !== 'untied', what);
+  }
+  // Two fitting calls with no place in a queue: the post is the same one with
+  // the notice gone (a key at the terminal dropped it) — as on PR #17.
+  const both = permission(BOXED, twins);
+  assert.deepEqual(both.lookalikes, ['a', 'b']);
+  const rows = BOXED.split('\n');
+  const at = rows.findIndex((row) => row.includes('will automatically block this request in 1:59'));
+  const [from, to] = both.expiry!.rows;
+  assert.equal(dialogSig(both), dialogSig(permission([...rows.slice(0, at), ...rows.slice(at + to - from)].join('\n'), twins)));
 });
 
 test('ordinary untimed permission prompts keep their detail and options', () => {

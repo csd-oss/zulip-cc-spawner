@@ -16,7 +16,7 @@ import { Registry, type BotEntry } from '../src/registry.js';
 import { Tmux } from '../src/tmux.js';
 import { TranscriptWatcher } from '../src/transcript-watch.js';
 import type { ZulipClient } from '../src/zulip.js';
-import { integrationTest, testConfig, tmp } from './helpers.js';
+import { integrationTest, testConfig, tmp, withHandPanes } from './helpers.js';
 
 const home: Where = { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic: 'release' };
 const tester: Invoker = { userId: 1, name: 'Tester', kind: 'user' };
@@ -52,7 +52,7 @@ function core(opts: { tmux: Tmux; launcher: ClaudeLauncher; host?: AgentHost; re
   const registry = opts.registry ?? new Registry(join(dir, 'r.json'));
   const host = opts.host ?? new LocalHost();
   const posts = new Posts();
-  const watcher = new TranscriptWatcher(registry, host, opts.tmux, posts, { agentsHome: dir, projectDir: dir }, () => 'CC Spawner');
+  const watcher = new TranscriptWatcher(registry, host, withHandPanes(opts.tmux, registry), posts, { agentsHome: dir, projectDir: dir }, () => 'CC Spawner');
   const actions = new SpawnerActions({
     config: cfg, registry, host, tmux: opts.tmux, provisioner, launcher: opts.launcher, notifier: posts, watcher,
     groupCheck: async () => false, realm: 'https://chat.example.org',
@@ -176,7 +176,7 @@ test('a dialog post that failed is retried on the next sweep', async () => {
   });
   const posts = new Posts();
   posts.failNext = 1;
-  const w = new TranscriptWatcher(registry, new LocalHost(), tmux, posts, { agentsHome: dir, projectDir: dir }, () => 'CC Spawner');
+  const w = new TranscriptWatcher(registry, new LocalHost(), withHandPanes(tmux, registry), posts, { agentsHome: dir, projectDir: dir }, () => 'CC Spawner');
   await w.sweep();
   assert.equal(posts.out.length, 0);
   assert.equal(registry.all()[0].pendingQuestion?.messageId, undefined);

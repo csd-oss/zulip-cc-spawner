@@ -38,10 +38,10 @@ import type { ClaudeLauncher } from './launcher.js';
 import type { Notifier } from './notifier.js';
 import type { Provisioner } from './provision.js';
 import { LiveModelSwitcher } from './model-switch.js';
-import { injectAnswer, parseAnswerSpec, PartialAnswerError } from './question.js';
+import { DialogChangedError, injectAnswer, parseAnswerSpec, PartialAnswerError, sameDialog, type PaneDialog } from './question.js';
 import type { BotEntry, Registry } from './registry.js';
 import type { Tmux } from './tmux.js';
-import type { TranscriptWatcher } from './transcript-watch.js';
+import { answeredFromZulip, HandPaneError, type TranscriptWatcher } from './transcript-watch.js';
 
 const log = (msg: string) => console.log(`${new Date().toISOString()} [actions] ${msg}`);
 
@@ -59,6 +59,9 @@ export interface Invocation {
   cmd: Command;
   /** The message body with leading mentions stripped (for the answer shortcut). */
   body: string;
+  /** Zulip id of the message the command came in. Ids rise in the order the
+   *  server took messages in, so this places it before or after our own posts. */
+  messageId?: number;
   where: Where;
   invoker: Invoker;
 }
@@ -131,7 +134,7 @@ export class SpawnerActions {
       return { content: `Not authorized: ${auth.reason}` };
     }
     const cmd = this.resolveShortcut(inv);
-    if ('target' in cmd && this.d.registry.matchingHands(cmd.target).length > 1) {
+    if ('target' in cmd && cmd.target !== undefined && this.d.registry.matchingHands(cmd.target).length > 1) {
       return { content: 'Ambiguous hand name — use a target shown by `list` or `list stopped`; nothing was changed.' };
     }
     log(`command from ${inv.invoker.name} (${inv.invoker.userId}): ${JSON.stringify(cmd)}`);
@@ -154,6 +157,8 @@ export class SpawnerActions {
         return this.peek(cmd.target, cmd.lines, cmd.here);
       case 'answer':
         return { content: await this.answer(inv, cmd.target, cmd.spec) };
+      case 'show':
+        return { content: await this.show(inv, cmd.target) };
       case 'press':
         return { content: await this.press(inv, cmd.target, cmd.keys) };
       case 'rescan':
@@ -176,6 +181,46 @@ export class SpawnerActions {
       .alive()
       .filter((e) => (e.pendingQuestion || e.pendingModelMenu) && e.streamId === streamId && e.topic.toLowerCase() === topic.toLowerCase());
     return blocked.length === 1 ? buildAnswerCommand(this.d.registry.commandTarget(blocked[0]), inv.body) : inv.cmd;
+  }
+
+  /** `show`: post what a hand's screen is asking now — a permission request in
+   *  full. Reading is all it does to the hand, so it is open to every allowed
+   *  caller, like `rescan`. Without a target: the hand blocked in this topic. */
+  private async show(inv: Invocation, target?: string): Promise<string> {
+    let entry: BotEntry | undefined;
+    if (target === undefined) {
+      const where = inv.where;
+      const here = where.kind === 'stream'
+        ? this.d.registry.alive().filter((e) => e.pendingQuestion && e.streamId === where.streamId && e.topic.toLowerCase() === where.topic.toLowerCase())
+        : [];
+      if (here.length !== 1) return 'show needs a hand — `show <name>` (in a topic where exactly one hand is blocked on a dialog, `show` alone is enough).';
+      entry = here[0];
+    } else {
+      entry = this.d.registry.findAlive(target);
+      if (!entry) return `No running hand matches \`${target}\` — try \`list\`.`;
+    }
+    if (entry.engine === 'codex') return `**${entry.personaName}** is a Codex hand; its dialogs are not read — use \`peek\`.`;
+    return `**${entry.personaName}** — ${await this.d.watcher.showDialog(entry)}`;
+  }
+
+  /** After an answer that was not (wholly) delivered: post what the hand's
+   *  screen shows instead, so the next answer is to that. Returns the sentence
+   *  for the reply. `anew`: also when it shows the posted request still — that
+   *  post has had its answer. */
+  private async reshow(entry: BotEntry, now: PaneDialog | undefined, anew = false): Promise<string> {
+    const target = this.d.registry.commandTarget(entry);
+    now ??= await this.d.watcher.readDialog(entry).catch(() => undefined);
+    if (now?.kind === 'none') return ' No prompt is on its screen now.';
+    if (now?.kind !== 'question') return ` \`show ${target}\` posts what is on its screen now.`;
+    if (!anew && entry.pendingQuestion?.messageId && sameDialog(entry.pendingQuestion, now.q) && this.d.watcher.standing(entry, entry.pendingQuestion)) {
+      return ' Its screen still shows the request as it was posted.';
+    }
+    const posted = await this.d.watcher.announceQuestion(entry, now).catch(() => false);
+    if (!posted) return ` I could not post what its screen shows now; \`show ${target}\` retries.`;
+    const how = now.q.requiresTerminal ? ' (it takes no answer from here — the post says why)'
+      : entry.pendingQuestion?.abridged ? ` (its first and last rows; \`show ${target}\` posts all of it)`
+      : ' — answer that post';
+    return ` What its screen shows now is posted in its home topic${how}.`;
   }
 
   // ── spawn ──
@@ -541,7 +586,9 @@ export class SpawnerActions {
     }
     this.d.registry.update(entry, { pendingModelMenu: undefined });
     try {
-      const result = await (this.d.modelSwitcher ?? new LiveModelSwitcher(this.d.tmux)).run(entry.tmuxSession, engine, cmd.model, cmd.effort);
+      // Its keys go to the hand's own pane, as an answer's do (or, if that
+      // cannot be told, nowhere: the catch below says why).
+      const result = await (this.d.modelSwitcher ?? new LiveModelSwitcher(this.d.tmux)).run(await this.d.watcher.handPane(entry), engine, cmd.model, cmd.effort);
       if (result.kind === 'menu') {
         const options = result.menu.options.filter(o => result.menu.kind === 'models' && !/More|default|custom/i.test(o.label));
         if (!options.length) return 'No selectable model list found; menu cancelled, old model kept.';
@@ -766,7 +813,15 @@ Nothing changed. Confirm within 5 minutes with \`delete ${registry.commandTarget
       return { content: `**${entry.personaName}**'s tmux session is gone — it'll be marked reaped on the next sweep.`, private: !here };
     }
     const want = wantLines ?? PEEK_DEFAULT_LINES;
-    const pane = await tmux.capturePane(entry.tmuxSession, want > 30 ? want + 50 : 0);
+    // The hand's own pane, not whichever pane of its session is selected.
+    let own: string;
+    try {
+      own = await this.d.watcher.handPane(entry);
+    } catch (err) {
+      if (!(err instanceof HandPaneError)) throw err;
+      return { content: `Cannot show **${entry.personaName}**'s screen: ${err.message}.`, private: !here };
+    }
+    const pane = await tmux.capturePane(own, want > 30 ? want + 50 : 0);
     const uptime = await tmux.sessionUptime(entry.tmuxSession);
     const idleMin = Math.round((Date.now() - Date.parse(entry.lastActivity)) / 60_000);
     const lines = pane.replace(/\s+$/, '').split('\n').filter((l) => l.trim());
@@ -801,27 +856,99 @@ Nothing changed. Confirm within 5 minutes with \`delete ${registry.commandTarget
     // optional creator-only policy, just like raw terminal keys.
     if (pending.questions[0]?.kind === 'permission' && !this.canControl(inv, entry)) return this.ownerRefusal(entry);
     if (!pending.messageId) return `**${entry.personaName}**'s current dialog hasn't been posted yet — \`rescan\` to retry; no keys sent.`;
+    // A permission prompt's post authorizes an answer only in the run of the
+    // spawner that made it. One read back from the registry was made before a
+    // restart: by a build that may have shown less of the request than this
+    // one must, or by a process that sent keys on it and did not live to
+    // record that. Whatever it shows, it takes no answer; what is on screen
+    // now is posted, and that post does.
+    if (!this.d.watcher.fromThisRun(pending)) {
+      return `**${entry.personaName}**'s request was posted before I was last restarted, and a post from before a restart takes no answer — no keys sent.` +
+        await this.reshow(entry, undefined, true);
+    }
+    // An answer is for a dialog its sender was shown. One sent before the
+    // current dialog's post was in the topic was written looking at an earlier
+    // one (it waited behind a sweep, or behind an answer whose refusal posted
+    // the new state): it is not passed on to a dialog nobody had seen. That
+    // holds whatever the dialog now open is — a question that took a
+    // permission prompt's place no more than the other way round.
+    const through = Number(pending.lastMessageId ?? pending.messageId);
+    if (inv.messageId !== undefined && Number.isFinite(through) && inv.messageId < through) {
+      const what = pending.questions[0]?.kind === 'permission' ? 'request' : 'question';
+      return `That answer was sent before **${entry.personaName}**'s current ${what} was posted, so it was for an earlier one — no keys sent. ` +
+        `The ${what} to answer is the last one posted in its home topic.`;
+    }
+    // One post, one answer. A second answer to a post that had one would go to
+    // whatever is on screen by then: the same prompt if the key did not take —
+    // or the next request, should it read the same.
+    if (answeredFromZulip(pending)) {
+      const which = pending.answeredWith && !pending.answeredWith.startsWith('keys ') ? ` (**${pending.answeredWith}**)` : '';
+      return `**${entry.personaName}**'s request already had an answer from Zulip${which} — no keys sent.${await this.reshow(entry, undefined, true)}`;
+    }
     const parsed = parseAnswerSpec(spec, pending.questions[0]);
     if (parsed.kind === 'error') return `Can't parse that answer: ${parsed.error}`;
+    // Only the two ends of this request were posted: nobody has been shown
+    // what an approval would approve. Dismissing it needs no more than that.
+    if (pending.abridged && parsed.kind !== 'esc') {
+      const target = this.d.registry.commandTarget(entry);
+      return `**${entry.personaName}**'s request was too long to post unasked, so only its first and last rows are in the topic — no keys sent. ` +
+        `\`show ${target}\` posts all of it; answer after that (\`answer ${target} esc\` dismisses it as it is).`;
+    }
     let warning: string | undefined;
+    // This post has its answer from the moment the first key goes out: noted
+    // on the record in memory right there (nothing that takes time may stand
+    // between the look at the screen and the key), saved once the keys are out.
+    // Should this process die before that save, the post is spent all the
+    // same: the next run answers nothing on a post it did not make (above).
+    let keyed = false;
+    const spend = pending.questions[0]?.kind === 'permission'
+      ? () => {
+        keyed = true;
+        pending.answered = true;
+      }
+      : undefined;
+    const saveSpent = () => {
+      try {
+        this.d.registry.update(entry, { pendingQuestion: pending });
+      } catch (saveErr) {
+        log(`${entry.tmuxSession}: keys of an answer went out, but recording that failed: ${(saveErr as Error).stack ?? saveErr}`);
+      }
+    };
     try {
-      warning = await injectAnswer(this.d.tmux, entry.tmuxSession, pending, parsed, () => this.d.watcher.readDialog(entry));
+      warning = await injectAnswer(this.d.watcher.terminal(entry), pending, parsed, spend);
     } catch (err) {
       if (err instanceof PartialAnswerError) {
-        // Some keys are in the terminal: neither delivered nor withheld.
-        const target = this.d.registry.commandTarget(entry);
-        return `Only part of the answer reached **${entry.personaName}**: sent ${err.sent.map((k) => `\`${k}\``).join(' ')}, then tmux failed. ` +
-          `The dialog may be half-answered — inspect with \`peek ${target}\` before trying again; \`press ${target} esc\` cancels it.`;
+        // Some keys are in the terminal: neither delivered nor withheld. The
+        // post they were sent on is spent; what is on screen gets a new one.
+        saveSpent();
+        return `Only part of the answer reached **${entry.personaName}**: sent ${err.sent.map((k) => `\`${k}\``).join(' ')}, then stopped — ${err.message}. ` +
+          `The dialog may be half-answered.${await this.reshow(entry, err.now, spend !== undefined)}`;
       }
-      return `Could not deliver the answer to **${entry.personaName}**: ${(err as Error).message}`;
+      if (keyed) {
+        // tmux failed on the very first key. Whether it reached the terminal
+        // is not known, so the post it was sent on is spent all the same.
+        saveSpent();
+        return `Could not deliver the answer to **${entry.personaName}**: ${(err as Error).message}. ` +
+          `The key may still have reached its terminal, so the post it was sent on takes no further answer.${await this.reshow(entry, undefined, true)}`;
+      }
+      // The request changed or expired since the post that was answered:
+      // nothing was sent, and what is there now is shown.
+      const shown = err instanceof DialogChangedError && err.now.kind === 'question' ? await this.reshow(entry, err.now) : '';
+      // Whose pane the answer would go to could not be told: none was read, none was keyed.
+      const unread = err instanceof HandPaneError ? '. No keys sent.' : '';
+      return `Could not deliver the answer to **${entry.personaName}**: ${(err as Error).message}${shown ? `.\nNo keys sent.${shown}` : unread}`;
     }
     // The keys are out. Nothing below may turn that into "could not deliver":
     // whoever reads that sends the answer again, to whatever is on screen then.
     const what = parsed.kind === 'esc' ? 'Dismissal' : 'Answer';
     const note = warning ? `\nℹ️ ${warning}` : '';
     if (pending.questions[0].kind !== 'permission') return `${what} sent to **${entry.personaName}** — I'll confirm once its session registers it.${note}`;
-    const label =
-      parsed.kind === 'esc' ? 'Esc' : parsed.kind === 'digits' ? pending.questions[0].options[parsed.nums[0] - 1]?.label ?? String(parsed.nums[0]) : '?';
+    // The option as its list names it: the row Tab made a text field reads
+    // "Yes, and tell Claude what to do next" there, and it is "Yes" that was picked.
+    const picked = pending.questions[0];
+    const amended = parsed.kind === 'digits' && picked.entry === 'amend' && picked.cursor === parsed.nums[0];
+    const chosen = parsed.kind === 'digits' ? picked.options[parsed.nums[0] - 1]?.label ?? String(parsed.nums[0]) : '?';
+    const label = parsed.kind === 'esc' ? 'Esc' : amended ? chosen.split(',')[0] : chosen;
     const unrecorded = this.recordSent(entry, { ...pending, answeredWith: label });
     return `${what} sent to **${entry.personaName}** — **${label}**. This confirms the key was sent, not the outcome.${note}${unrecorded}`;
   }
@@ -844,13 +971,24 @@ Nothing changed. Confirm within 5 minutes with \`delete ${registry.commandTarget
     const entry = this.d.registry.findAlive(target);
     if (!entry) return `No running hand matches \`${target}\` — try \`list\`.`;
     if (!this.canControl(inv, entry)) return this.ownerRefusal(entry);
+    // Raw keys are bound to nothing on screen — but they are this hand's: they
+    // go to its own pane (by id), or nowhere.
+    let own: string;
+    try {
+      own = await this.d.watcher.handPane(entry);
+    } catch (err) {
+      if (err instanceof HandPaneError) return `No keys sent to **${entry.personaName}**: ${err.message}.`;
+      // tmux itself failed: as when it rejects a key, what it said stays in the log.
+      log(`press ${this.d.registry.commandTarget(entry)} failed before any key: ${(err as Error).stack ?? err}`);
+      return `No keys sent to **${entry.personaName}**: tmux did not tell me which pane of its session is the hand's.`;
+    }
     const sent: string[] = [];
     for (const raw of keys) {
       const named = KEY_NAMES[raw.toLowerCase()];
       try {
-        if (named) await this.d.tmux.sendKeys(entry.tmuxSession, named);
-        else if (/^\d$/.test(raw)) await this.d.tmux.sendKeys(entry.tmuxSession, raw);
-        else await this.d.tmux.sendText(entry.tmuxSession, raw);
+        if (named) await this.d.tmux.sendKeys(own, named);
+        else if (/^\d$/.test(raw)) await this.d.tmux.sendKeys(own, raw);
+        else await this.d.tmux.sendText(own, raw);
       } catch (err) {
         log(`press ${this.d.registry.commandTarget(entry)} failed at key ${sent.length + 1}: ${(err as Error).stack ?? err}`);
         const prefix = sent.length ? sent.map((k) => `\`${k}\``).join(' ') : 'none confirmed';

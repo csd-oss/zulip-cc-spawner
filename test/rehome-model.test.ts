@@ -16,7 +16,7 @@ import type { Provisioner } from '../src/provision.js';
 import { Registry, type BotEntry } from '../src/registry.js';
 import type { Tmux } from '../src/tmux.js';
 import { TranscriptWatcher, transcriptPath } from '../src/transcript-watch.js';
-import { testConfig, tmp } from './helpers.js';
+import { testConfig, tmp, withHandPanes } from './helpers.js';
 import { CLAUDE_323_CONFIRM, CLAUDE_323_CHANGED, CLAUDE_CONFIRM, CLAUDE_CHANGED, CODEX_MODELS, CODEX_REASONING, CODEX_CHANGED } from './model-fixtures.js';
 
 const home: Where = { kind: 'stream', streamName: 'cc-hands', streamId: 7, topic: 'old' };
@@ -45,7 +45,7 @@ function fixture(overrides: Partial<SpawnerConfig> = {}) {
     async sendText(_s: string, text: string) { texts.push(text); state.escaped = false; },
   } as unknown as Tmux;
   const notifier = { async postHome(e: { streamName: string; topic: string }, content: string) { posts.push({ ...e, content }); return 1; }, async dm() {}, async reply() {} };
-  const watcher = new TranscriptWatcher(registry, host, tmux, notifier, config, () => 'spawner');
+  const watcher = new TranscriptWatcher(registry, host, withHandPanes(tmux, registry), notifier, config, () => 'spawner');
   const launcher = { async launch(req: LaunchRequest) {
     launches.push(req);
     if (state.failLaunch) throw new Error('launch refused');

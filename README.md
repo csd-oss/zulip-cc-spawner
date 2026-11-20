@@ -24,7 +24,8 @@ Mention the spawner at the **start** of a message in an allowed stream (or DM it
 @**CC Spawner** stop scout                                   # alias: kill
 @**CC Spawner** peek scout [lines] [here]                    # terminal tail, DM unless here
 @**CC Spawner** answer scout 2 | 1,3 | yes | text: … | esc   # a hand blocked on a dialog
-@**CC Spawner** press scout 1 enter                          # raw keys, the escape hatch
+@**CC Spawner** show scout                                   # read its screen again, post the request in full
+@**CC Spawner** press scout 1 enter                          # raw keys (not for prompts: use answer)
 @**CC Spawner** rescan
 ```
 
@@ -219,7 +220,11 @@ sensitive terminal output. In a DM, `here` replies in that DM instead.
   by default; creator/owner in strict mode (with the adopted-hand exception below).
   Revival never transfers authorship to the reviver; ordinary command allow-lists still apply.
 - **Blocked hands**: a question dialog or permission prompt is posted in the hand's topic; answer
-  with `answer`, or in that topic simply `@**CC Spawner** yes` / `2` / `esc`.
+  with `answer`, or in that topic simply `@**CC Spawner** yes` / `2` / `esc`. A permission prompt's
+  post is the whole request as the hand's terminal shows it (see *Permission prompts* below);
+  `show <hand>` (in its topic: `show`) reads the screen again and posts what is open now.
+  The few prompts the bot cannot tell from a request asked after them are posted with the
+  reason and take no answer from here (same section); no post asks for raw keys.
 - **Answers**: AskUserQuestion remains collaborative for allowed users. Tool permission
   prompts and raw keys are collaborative by default, restricted with `creatorOnlyControls: true`.
   Model-menu answers also follow `creatorOnlyControls` (open to allowed callers by default).
@@ -522,55 +527,222 @@ Codex spawn/revive snapshots an inclusive home-topic message-ID boundary: catch-
 - Upgrade note: a permission prompt already pending during upgrade will be reposted
   if it's still on screen at the next sweep or `rescan`. Answers against the old
   signature are refused until the replacement is posted; a failed post is retried.
-  A repost doesn't mean the prompt was answered. Screen-reader prompts and other
-  permission layouts where the bot cannot verify that digits submit immediately
-  must be answered in the terminal.
-- A Bash permission prompt is identified by a pending `tool_use` in the hand's
-  transcript plus the dialog's own rows from its title to the end of its command
-  box — not by the rest of the screen, so the expiry countdown ("will
-  automatically block this request in 1:42") ticking under it neither reposts it
-  nor stales its answer. The transcript is only a hint; the screen decides:
-  - A dialog is tied to a pending call only when that call is the **only** one
-    fitting everything the dialog displays: its command, its description, and
-    the hand's own title ("Bash command", with "2 of 3" when several requests
-    queue). A pending call is not necessarily the one being asked about — an
-    approved call can still be running while the next one asks — so queue
-    position and description stay part of the identity.
-  - A prompt that names another requester ("Bash command · from the
-    general-purpose agent") is never tied to the hand's own calls.
-  - When several pending calls fit the same dialog, it is tied to none of them
-    and is posted **terminal-only**, until one of them resolves.
-  - The post is what the terminal shows; nothing from the transcript is posted.
-  - **One rule for answers:** the bot passes on an answer only when the hand's
-    screen positively shows what is being approved — the dialog from its title
-    down. That is so when the rule that opens the dialog is on screen; or when
-    the screen's first row is a Bash prompt's title above a whole command box.
-    That row is known as the title by how the terminal sets it — the words
-    "Bash command" in bold, read with `tmux capture-pane -e` — not by its
-    words: a description may read "Bash command" while the real title, naming
-    a subagent, is one row off screen.
-  - Anything less is posted **once**, showing only what is on screen, and is
-    **terminal-only**: no key is sent to it, whether or not a pending call fits
-    it. That is every prompt taller than its terminal (a detached tmux session
-    is 80×24 unless tmux's `default-size` says otherwise): the pane then starts
-    in the description, inside the command box, or under it with nothing of the
-    request on screen at all. Such a post is a notification — it is not
-    repeated while the screen reads the same but for the countdown's clock.
-    Make the pane tall enough and the prompt is posted again, answerable.
-  - Digits are sent only to the option list whose footer offers "Tab to amend".
-    After Tab the same row is a text field ("Yes, and tell Claude what to do
-    next"); that screen is posted terminal-only.
-  - The screen is captured again after the transcript is read, and an answer is
-    sent only if that capture still shows the posted request.
-  Prompts with no fitting `tool_use` — a subagent's, other tools', or when there
-  is no transcript — are identified by all their rows as before: still posted
-  and, under the rule above, answerable; but if such an answerable prompt shows
-  a ticking countdown it is reposted as it ticks. Resizing a hand's pane
-  re-wraps the box and reposts the prompt once.
+  A repost doesn't mean the prompt was answered.
+- Upgrade note (pane size): new and revived Claude hands start in a terminal of
+  `paneRows` rows (default **50**; `paneCols` columns if set, else tmux's
+  `default-size`, 80). Hands already running keep their 80×24 until a prompt does
+  not fit it; then they are resized as described below. Codex hands are unchanged.
+
+### Permission prompts
+
+A permission prompt of a Claude hand is answered from Zulip wherever the bot can
+show the whole request and can later tell that the screen still shows *that*
+request. Two rules decide it:
+
+> **A key is sent only to a prompt that the hand's screen shows from its title
+> down, and only while the screen shows the very request that was posted — not
+> one that merely reads the same.**
+>
+> **Where the bot cannot tell, it sends nothing:** it posts what is on screen
+> and says why it takes no answer.
+
+- **The hand's own pane, and no other.** A hand's tmux session can hold more
+  than the hand: someone attaches, splits the window, starts another program —
+  another Claude Code session, even — and leaves that pane selected. The bot
+  does not read or key "the session" (which is whichever pane was selected
+  last). It asks tmux what each pane of the session was started with, takes
+  the one started with the hand's conversation id (`--session-id <id>` /
+  `--resume <id>`, as the launcher starts it) for the hand's, and reads, sizes
+  and keys that pane **by its pane id** — the list and the screen come from
+  one tmux command, and the key goes to the id that was read. That holds for
+  prompts, questions, `show`, `rescan`, `peek`, `press` and the live model
+  switch. A post of a prompt is for the pane it was read from: if the hand
+  later turns up in another pane (restarted by hand with `--resume`), the
+  prompt there is posted anew, marked ♻️, and the earlier post takes no
+  answer. The bot reads nothing and sends nothing — an answer is refused with
+  the reason, and the hand's topic is told once that its prompts are not
+  relayed until this is put right — when it cannot tell the pane, or cannot
+  key it alone: no pane of the session was started for the hand (its pane is
+  gone while the session lives on, or it was restarted without that id); its
+  program has exited; several panes were started for it; or its window has
+  tmux's `synchronize-panes` on, which would hand every key to all panes of
+  the window. (Codex hands have no dialogs bridged; their `peek` and `press`
+  go to the session as before.)
+- **The pane is fitted to the prompt.** A prompt taller than the hand's terminal
+  (the pane then starts in its description, inside its command box, or under it),
+  one on a pane someone made small, or a subagent's prompt whose title is one row
+  off screen, used to be posted once "for the terminal". Now the spawner makes the
+  pane taller — twice its height per step, from `paneRows` up to `paneMaxRows`
+  (default 1000) — until the title is on screen; Claude Code redraws the whole
+  prompt, and from there it is read, posted and answered like any other. Only the
+  height changes, so a request reads the same before and after: the hand's
+  *window* is given more rows, its width is never set, so in a window someone
+  has split the panes beside the hand's keep their width (panes stacked above
+  or below share the added rows). Once no dialog is open the pane goes back to
+  `paneRows` — a window that was split when it was grown goes back to the
+  height it had. Nothing about the hidden rows is taken from the transcript or
+  assumed: they are put on screen. (tmux keeps a window that was resized this
+  way at the size it was given: someone attaching to such a hand sees it at
+  that size, not at their terminal's.)
+- **The post is the request, to the letter.** It is what the terminal shows from
+  the title to the question; nothing in it comes from the transcript, and no row
+  is altered to fit: the rows are in a code block fenced with more backticks
+  than any run of them in the request. A long request takes several messages,
+  each sized with everything that goes around its rows, so none is cut. More
+  than two messages' worth is posted as its first and last rows with a count of
+  what is between; `show <hand>` posts all of it, and only then is an option
+  passed on — until then only `esc` is. So an approval is never for rows nobody
+  was shown. (A request with a row too long for a message cannot be shown whole
+  and takes no approval at all.)
+- **Which request it is.** The rows of two requests can be the same, so rows
+  alone do not say that the request on screen is the one that was posted. What
+  does:
+  1. *One pending call.* A Bash prompt is tied to a pending `tool_use` of the
+     hand's transcript when that call is the **only** one fitting everything the
+     dialog displays — its command, its description, and the hand's own title
+     ("Bash command", with "2 of 3" when requests queue; in the screen-reader
+     layout the heading "Bash command" or "Bash command 2 of 3"). The request is that
+     call's: its id plus the rows from the title to the end of the command box.
+     The countdown under it is no part of that, so it neither reposts the
+     prompt nor stales an answer. Only the hand's own Bash requests are tied.
+  2. *Its rows* — for a prompt no call is tied to, with **no countdown**, on
+     its plain option list: a subagent's prompt ("Bash command · from the
+     general-purpose agent", never tied to the hand's own calls), another
+     tool's, or one whose transcript cannot be read. This is as it was before;
+     two such requests that read the same are one request to the bot.
+  The place in the queue that a title shows ("1 of 2") is one of the rows — a
+  changed place is a changed screen, and reposts the prompt — but it is not
+  the request's own: it is Claude Code's running count of requests settled and
+  open, subagents' among them, and starts over when none is open. It never
+  tells two fitting calls apart.
+  The title is proven when the rule that opens the dialog is on screen; or when
+  the screen's first row is a Bash prompt's title above a whole command box —
+  known as the title by how the terminal sets it (the words "Bash command" in
+  bold, read with `tmux capture-pane -e`), not by its words: a description may
+  read "Bash command" while the real title, naming a subagent, is one row off
+  screen. Resizing a hand's pane sideways re-wraps the box and reposts the
+  prompt once.
+- **What takes no key**, because the bot could not tell the request from one
+  asked after it:
+  - *several pending calls fit* (the same command and description twice in one
+    turn). In an unattended session they are asked one after the other under
+    the same title, the first still pending while the second asks; with
+    permissions asked for, as "1 of 2" and "2 of 2". When only one of them is
+    left pending, that request is posted anew and takes its answer;
+  - *a prompt under Claude Code's countdown that no pending call identifies*:
+    the hand's transcript cannot be read, or the prompt is not one of its own
+    Bash requests. Its rows change every second, and the clock cannot stand in
+    for them — see below. (In our runs of 2.1.306 / 2.1.323 under bypass, the
+    prompts that carried a countdown were the hand's own Bash safety checks; a
+    subagent's prompt had none, and writes to settings or hook files were not
+    asked about at all);
+  - *a prompt in its text field (after Tab at the terminal) or in the
+    screen-reader layout that no pending call identifies.* Those take an answer
+    in two keys, and each key needs the request identified afresh;
+  - a prompt that does not fit `paneMaxRows` rows, or whose pane tmux will not
+    resize; one that takes its answer in a way not known to the bot; and a
+    screen-reader prompt with rows between the request and its question that
+    the bot does not know from that layout (it knows the expiry notice and
+    "/permissions to update rules") — its post says that, not that the
+    terminal is too short.
+  Such a prompt is posted **once**, as far as the screen shows it, with the
+  reason, and is not repeated while it reads the same but for its countdown's
+  clock. `show <hand>` reads it again. The post is a notification; no answer —
+  `esc` included — is passed on to it. It can be answered at the hand's
+  terminal; under a countdown Claude Code refuses it by itself; otherwise the
+  hand can be stopped.
+- **A countdown never proves it is the same request.** In an unattended session
+  Claude Code refuses a request by itself after about two minutes ("will
+  automatically block this request in 1:42"); the post gives that time
+  (`⏳ … <time>`). Two requests asked a moment apart end a moment apart
+  (measured: 130 ms), and the screen-reader layout counts in "about 2 minutes",
+  so an agreeing clock says nothing. It is used the other way only: a countdown
+  that ends at another time than the posted one (more than 3 s off), reads more
+  minutes than it did, or is there where the post had none, belongs to a
+  request asked again — nothing is sent, and that request is posted. This
+  holds for every prompt, a tied one included. (A prompt under a countdown that
+  was posted by an earlier release is therefore posted anew once.)
+- **An answer is held to the post it answers:**
+  1. *The screen.* The transcript is read, **then** the screen is captured, and
+     nothing else is read between that capture and the key. The capture must
+     show the posted request; else no key is sent and **the request that is on
+     screen is posted in its place**. The same if the prompt is gone (answered
+     at the terminal, or expired): nothing is sent, and the reply says so.
+  2. *The order of messages.* An answer whose Zulip message is older than the
+     post of the dialog now open (its last message, when there are several)
+     was written looking at an earlier one — it waited behind a sweep, or
+     behind another answer whose refusal posted the new dialog. It is refused,
+     whether the dialog now open is a permission prompt or a question.
+  3. *One post, one answer.* Once the first key of an answer from Zulip went to
+     a post, a further answer to that post is refused — whatever was sent to
+     the hand since, raw `press` keys included. If a prompt is open then — the
+     same one because the key did not take, or a next one — it is posted as a
+     request of its own (at once on such an answer, else at the next sweep).
+  4. *The run that posted it.* A post of a permission prompt takes an answer
+     only from the spawner process that made it. After a restart — an upgrade,
+     a crash, a deploy — every such post still in the registry is void: it was
+     made under the rules of whatever build posted it (an earlier release cut
+     the middle out of long requests and changed their backticks), and a
+     process that died may have sent a key on it without getting to record
+     that. A prompt still open is posted anew — at the first sweep, or at once
+     if an answer comes in before that — marked ♻️ ("This replaces an earlier
+     post of this request…"), and that post is the one to answer. Nothing is
+     written to disk between the look at the screen and the key for this: a
+     post is simply never answered by a process that did not make it. So after
+     every restart each open, answerable permission prompt appears once more
+     in its topic. (A notification that takes no answer anyway is not
+     repeated, and multiple-choice questions are answered across restarts as
+     before.)
+- **How the answer is given** is read off the screen too, and a key that would
+  mean something else is never sent:
+  - the option list (footer "Tab to amend"): the digit selects and submits;
+  - the same list after someone pressed Tab at the terminal (its first row
+    reads "Yes, and tell Claude what to do next", or its last "No, and tell
+    Claude what to do differently" — a digit would be typed into that field):
+    the post says so; an answer sends Tab, **reads the screen again**, and sends
+    the digit only if it shows the same request back on its option list. What
+    was typed in the field is dropped;
+  - the screen-reader layout ("Select with numbers … Then Enter"): the digit is
+    typed, the screen is read again, and Enter is sent only if its input field
+    shows exactly that digit under the same request. Anything already typed
+    there is deleted first, one character at a time: each backspace goes out
+    only after the screen was read again and shows the same request with the
+    field one character shorter. (A field with blanks in it cannot be counted
+    from the screen; such a prompt takes no key.)
+  The last two are done only for a request a pending call identifies (1
+  above). "The same request" at the second look is that call again — and no
+  expiry notice that the prompt the first key went to cannot have: a key makes
+  the notice go away, so one that is there afterwards and was not before
+  belongs to a request asked meanwhile. If a step does not get there, the
+  answer stops — what went out is a Tab, a backspace or an unsubmitted digit,
+  never a choice — the reply says which keys went, and what the screen shows
+  is posted as a new request.
+- **What is not covered.** Capture and key are two steps: a prompt that changes
+  in the instant between them gets the key (nothing else is done in that
+  instant). An answer sent after a new post appeared counts as an answer to
+  that post, wherever it was written — the bot answers *the latest post*, it
+  cannot know which one its sender was looking at. The pending calls are as the
+  transcript had them just before the screen was captured: a transcript that
+  stays behind through a whole turn of the model would let a request tied to a
+  call pass for a later, identical one (the countdown check above is what is
+  left then). Two prompts with no countdown and no fitting call that read the
+  same are one request, as they always were. The hand's pane is told by what
+  tmux started in it: a pane someone respawned with another program under the
+  hand's own command line would pass for it. A hand's pane that someone has
+  put in tmux's copy mode takes the key into that mode, not into Claude Code:
+  the post is spent and the prompt posted anew. (The start-up screens of a
+  launch are answered in the session as it was just created: one pane.)
+- `press` is not part of any of this: it sends raw keys — to the hand's own
+  pane — with no check of what is on screen, and no post or reply suggests it
+  for a prompt.
 - "Answer sent" confirms the key, not the outcome. If the bot cannot look at the
   screen after sending, or cannot save its record of what it sent, it says so
   on the "Answer sent" reply — the key is out, do not send it again. It reports
-  "Could not deliver" only when no key was sent.
+  "Could not deliver" when no key was sent — or when tmux failed on the very
+  first key, where it cannot know: the reply then says the key may still have
+  reached the terminal, and that post takes no further answer — and "Only part
+  of the answer reached …" when an answer given in steps stopped before the
+  key that submits.
 - Adopted hands without `spawnedBy` never acquire the reviver as creator. With no owner
   configured, all these controls (including rename/model) remain collaborative **even
   in strict mode**, so they are not stranded. With an owner configured and strict mode enabled,

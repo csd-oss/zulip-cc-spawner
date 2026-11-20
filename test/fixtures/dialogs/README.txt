@@ -105,3 +105,39 @@ replays. Each pair is the first two plain captures (20 seconds apart):
 clipped-notice26  26x12. The pane starts inside the warning: "automatically
                   block this" (2.1.323) or "automatically deny this"
                   (2.1.306). The only visible difference is the clock.
+
+Added for TASK-BYSTH (same binaries and stub, 2026-11-20; bypass mode with a
+countdown unless said otherwise). Scratch path replaced by /tmp/scratch.
+
+tall30        A 30-line heredoc + rm, launched at 80x24 and resized while the
+              prompt was open; styled captures (capture-pane -e -p) of one
+              prompt: "24" — the pane starts inside the command box; "48" —
+              its first row is the title (bold), no rule; "60" — the rule that
+              opens the dialog is on screen. The TUI redrew the whole prompt
+              after each resize.
+subtall30     The same heredoc asked by a background subagent ("Bash command ·
+              from the general-purpose agent", no countdown), at 80x24 ("24")
+              and resized to 80x80 ("80": the frame is drawn from the top
+              there; the blank rows under it are trimmed).
+reader        CLAUDE_AX_SCREEN_READER=1, 80x24, one prompt: "open" as asked
+              (expiry notice "in about 2 minutes"); "typed" after the key 2
+              (the notice is gone, the digit stands after the instruction);
+              "cleared" after Backspace; "typed12" after the keys 1 2.
+amend         "typed": the amend-2.1.x prompt after Tab and the key x — the
+              cursor row reads "Yes, x".
+
+Added for TASK-BYSTH round 3 (the reviewer's captures of run-01M7WR6S…, same
+binaries and stub, CLAUDE_AX_SCREEN_READER=1; scratch path replaced by
+/tmp/scratch, trailing blank rows trimmed). No transcript was captured with
+them: the tests give the pending calls as the scenario defined them.
+
+reader-rule   100x40, default permission mode with a Bash ask rule. `printf
+              reviewer`, description "Print a word". Between the quoted block
+              and the question the TUI prints a row of its own, unquoted:
+              "/permissions to update rules".
+reader-queue  80x50, bypass mode. The hand's own Bash call (toolu_main1:
+              `sleep 20 && rm -rf "$(printf %s /tmp/scratch/sub)"`, "sub rm")
+              and a background subagent's with the same command and
+              description. "own": the heading carries the place in the queue,
+              "Bash command 1 of 4". "subagent": the next one, "Bash command ·
+              from the general-purpose agent 2 of 4", no countdown.
